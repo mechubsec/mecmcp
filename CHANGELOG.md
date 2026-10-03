@@ -27,6 +27,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [0.26.1] - 2026-10-03
+
+### Security
+
+- **mecmcp-redact: Junos XML pass now derives its extra secret-element set
+  from the same closed key vocabulary the text pass uses** (MEC-1459,
+  mecmcp#486), instead of a separately hand-maintained one-entry list, so
+  the two redaction passes cannot drift apart on which Junos-specific
+  element names are secret-bearing. Not a regression — the prior XML-pass
+  list was simply incomplete relative to the text pass — but closes a gap
+  where a non-crypt plaintext value under an affected element passed
+  through `redact_xml` unredacted.
+
+### Fixed
+
+- **mecmcp-redact: strengthened the key-exemption marker-collision
+  regression test** (MEC-1244, mecmcp#485). The previous test input shape
+  would not have caught the earlier guard/unguard-based implementation's
+  bug, so it was not actually pinning the fix it was meant to protect.
+- **docs/THREAT-MODEL: corrected stale T1/T11 rows** (mecmcp#488) that
+  described blocklist-mode fail-open behavior as explicit opt-in only;
+  rustjunosmcp and rustpanosmcp also infer blocklist mode for pre-existing
+  configs with deny rules and no mode key.
+
 ## [0.26.0] - 2026-10-02
 
 ### Security
