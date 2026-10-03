@@ -161,6 +161,32 @@ pub fn parse_provenance(
     })
 }
 
+/// Parse the `--oidc-issuer`/`--oidc-subject` pair accepted by `token add`.
+///
+/// Both or neither: a token bound to only one of the two would either bind to
+/// "any issuer" (dangerous) or fail validation downstream with a less
+/// specific error than this can give the operator directly.
+///
+/// # Errors
+///
+/// Returns [`TokenCommandError::InvalidArgument`] if exactly one of the two
+/// flags was given.
+pub fn parse_oidc_subject(
+    oidc_issuer: Option<String>,
+    oidc_subject: Option<String>,
+) -> Result<Option<mecmcp_auth::OidcSubject>, TokenCommandError> {
+    match (oidc_issuer, oidc_subject) {
+        (None, None) => Ok(None),
+        (Some(issuer), Some(subject)) => Ok(Some(mecmcp_auth::OidcSubject { issuer, subject })),
+        (Some(_), None) => Err(TokenCommandError::InvalidArgument(
+            "--oidc-issuer requires --oidc-subject".to_owned(),
+        )),
+        (None, Some(_)) => Err(TokenCommandError::InvalidArgument(
+            "--oidc-subject requires --oidc-issuer".to_owned(),
+        )),
+    }
+}
+
 /// Execute a token management command.
 ///
 /// # Arguments
@@ -235,12 +261,15 @@ where
             provider_tier,
             on_behalf_of,
             actor_type,
+            oidc_issuer,
+            oidc_subject,
             server_pid,
         } => {
             let devices_scope = parse_scope(devices, "devices")?;
             let tools_scope = parse_scope(tools, "tools")?;
 
             let provenance = parse_provenance(provider, provider_tier, on_behalf_of, actor_type)?;
+            let oidc_subject = parse_oidc_subject(oidc_issuer, oidc_subject)?;
 
             // Not a safety check — the store already refuses an invalid grant
             // before writing: `add_with_options` builds a `TokenStore` (which
@@ -270,6 +299,7 @@ where
                 provenance.provider_tier,
                 provenance.on_behalf_of,
                 provenance.actor_type,
+                oidc_subject,
                 &known,
             )?;
             let mut out = std::io::stdout().lock();
@@ -683,6 +713,37 @@ fn signal_reload(pid: Option<i32>) -> Result<(), TokenCommandError> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oidc_subject_absent_when_neither_flag_given() {
+        assert!(parse_oidc_subject(None, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn oidc_subject_present_when_both_flags_given() {
+        let subject = parse_oidc_subject(
+            Some("https://idp.example.com".to_owned()),
+            Some("alice".to_owned()),
+        )
+        .unwrap()
+        .expect("both flags given must produce a subject");
+        assert_eq!(subject.issuer, "https://idp.example.com");
+        assert_eq!(subject.subject, "alice");
+    }
+
+    #[test]
+    fn oidc_issuer_without_subject_is_rejected() {
+        let err = parse_oidc_subject(Some("https://idp.example.com".to_owned()), None)
+            .expect_err("issuer alone must be refused");
+        assert!(matches!(err, TokenCommandError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn oidc_subject_without_issuer_is_rejected() {
+        let err = parse_oidc_subject(None, Some("alice".to_owned()))
+            .expect_err("subject alone must be refused");
+        assert!(matches!(err, TokenCommandError::InvalidArgument(_)));
+    }
 
     /// A supplied PID means SIGHUP was delivered, so there is nothing to warn about.
     #[test]

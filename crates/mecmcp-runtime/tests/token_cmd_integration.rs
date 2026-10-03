@@ -34,6 +34,8 @@ fn add_creates_token_and_returns_secret() {
         provider_tier: None,
         on_behalf_of: None,
         actor_type: None,
+        oidc_issuer: None,
+        oidc_subject: None,
         server_pid: None,
     };
 
@@ -62,6 +64,8 @@ fn list_shows_token_metadata_not_secret() {
         provider_tier: None,
         on_behalf_of: None,
         actor_type: None,
+        oidc_issuer: None,
+        oidc_subject: None,
         server_pid: None,
     };
     run(add_action, &[], KNOWN_TOOLS).unwrap();
@@ -95,6 +99,8 @@ fn revoke_removes_token() {
         provider_tier: None,
         on_behalf_of: None,
         actor_type: None,
+        oidc_issuer: None,
+        oidc_subject: None,
         server_pid: None,
     };
     run(add_action, &[], KNOWN_TOOLS).unwrap();
@@ -127,6 +133,8 @@ fn rotate_changes_secret_preserves_scopes() {
         provider_tier: None,
         on_behalf_of: None,
         actor_type: None,
+        oidc_issuer: None,
+        oidc_subject: None,
         server_pid: None,
     };
     run(add_action, &[], KNOWN_TOOLS).unwrap();
@@ -190,6 +198,8 @@ fn wildcard_mixed_with_names_rejected() {
         provider_tier: None,
         on_behalf_of: None,
         actor_type: None,
+        oidc_issuer: None,
+        oidc_subject: None,
         server_pid: None,
     };
 
@@ -217,6 +227,8 @@ fn unknown_tool_rejected() {
         provider_tier: None,
         on_behalf_of: None,
         actor_type: None,
+        oidc_issuer: None,
+        oidc_subject: None,
         server_pid: None,
     };
 
@@ -239,6 +251,8 @@ fn device_validation_when_known_devices_provided() {
         provider_tier: None,
         on_behalf_of: None,
         actor_type: None,
+        oidc_issuer: None,
+        oidc_subject: None,
         server_pid: None,
     };
     assert!(run(valid_action, &known_devices, KNOWN_TOOLS).is_ok());
@@ -253,6 +267,8 @@ fn device_validation_when_known_devices_provided() {
         provider_tier: None,
         on_behalf_of: None,
         actor_type: None,
+        oidc_issuer: None,
+        oidc_subject: None,
         server_pid: None,
     };
     assert!(run(invalid_action, &known_devices, KNOWN_TOOLS).is_err());
@@ -271,6 +287,8 @@ fn empty_device_scope_rejected() {
         provider_tier: None,
         on_behalf_of: None,
         actor_type: None,
+        oidc_issuer: None,
+        oidc_subject: None,
         server_pid: None,
     };
 
@@ -297,6 +315,8 @@ fn empty_tool_scope_rejected() {
         provider_tier: None,
         on_behalf_of: None,
         actor_type: None,
+        oidc_issuer: None,
+        oidc_subject: None,
         server_pid: None,
     };
 
@@ -329,6 +349,8 @@ fn signal_reload_with_valid_pid_succeeds() {
         provider_tier: None,
         on_behalf_of: None,
         actor_type: None,
+        oidc_issuer: None,
+        oidc_subject: None,
         server_pid: Some(init_pid),
     };
 
@@ -363,6 +385,8 @@ fn signal_reload_with_invalid_pid_fails() {
         provider_tier: None,
         on_behalf_of: None,
         actor_type: None,
+        oidc_issuer: None,
+        oidc_subject: None,
         server_pid: Some(0),
     };
 
@@ -384,6 +408,8 @@ fn signal_reload_on_non_unix_with_pid_fails() {
         provider_tier: None,
         on_behalf_of: None,
         actor_type: None,
+        oidc_issuer: None,
+        oidc_subject: None,
         server_pid: Some(1234),
     };
 
@@ -469,6 +495,8 @@ mod grant_lifecycle {
                 provider_tier: None,
                 on_behalf_of: None,
                 actor_type: None,
+                oidc_issuer: None,
+                oidc_subject: None,
                 server_pid: None,
             },
             &[],
@@ -615,6 +643,8 @@ mod grant_lifecycle {
                 provider_tier: None,
                 on_behalf_of: None,
                 actor_type: None,
+                oidc_issuer: None,
+                oidc_subject: None,
                 server_pid: None,
             },
             &[],
@@ -738,6 +768,8 @@ mod grant_lifecycle {
                 provider_tier: None,
                 on_behalf_of: None,
                 actor_type: None,
+                oidc_issuer: None,
+                oidc_subject: None,
                 server_pid: None,
             },
             &[],
@@ -837,6 +869,8 @@ mod set_scopes {
                 provider_tier: None,
                 on_behalf_of: None,
                 actor_type: None,
+                oidc_issuer: None,
+                oidc_subject: None,
                 server_pid: None,
             },
             &[],
@@ -958,6 +992,8 @@ mod set_scopes {
                 provider_tier: None,
                 on_behalf_of: None,
                 actor_type: None,
+                oidc_issuer: None,
+                oidc_subject: None,
                 server_pid: None,
             },
             &["device1".to_owned(), "device2".to_owned()],
@@ -1002,6 +1038,8 @@ mod set_scopes {
                 provider_tier: None,
                 on_behalf_of: None,
                 actor_type: None,
+                oidc_issuer: None,
+                oidc_subject: None,
                 server_pid: None,
             },
             &["device1".to_owned(), "device2".to_owned()],
@@ -1059,6 +1097,8 @@ mod set_scopes {
                 provider_tier: None,
                 on_behalf_of: None,
                 actor_type: None,
+                oidc_issuer: None,
+                oidc_subject: None,
                 server_pid: None,
             },
             &["device1".to_owned()],
@@ -1112,6 +1152,8 @@ mod set_scopes {
                 provider_tier: None,
                 on_behalf_of: None,
                 actor_type: None,
+                oidc_issuer: None,
+                oidc_subject: None,
                 server_pid: None,
             },
             &["device1".to_owned()],
@@ -1161,6 +1203,8 @@ mod set_scopes {
                 provider_tier: None,
                 on_behalf_of: None,
                 actor_type: None,
+                oidc_issuer: None,
+                oidc_subject: None,
                 server_pid: None,
             },
             &["device1".to_owned()],
@@ -1318,4 +1362,79 @@ mod set_scopes {
         .unwrap_err();
         assert!(error.to_string().contains("at least one"), "got {error}");
     }
+}
+
+#[test]
+fn add_with_both_oidc_flags_stores_the_binding() {
+    let (_dir, tokens_file) = temp_tokens_file();
+
+    let action = TokenAction::Add {
+        tokens_file: tokens_file.clone(),
+        name: "alice".to_string(),
+        devices: vec!["*".to_string()],
+        tools: vec!["*".to_string()],
+        provider: None,
+        provider_tier: None,
+        on_behalf_of: None,
+        actor_type: Some("human".to_owned()),
+        oidc_issuer: Some("https://idp.example.com".to_owned()),
+        oidc_subject: Some("alice".to_owned()),
+        server_pid: None,
+    };
+    if let Err(e) = &run(action, &[], KNOWN_TOOLS) {
+        panic!("add failed: {e}");
+    }
+
+    let store_file = TokenStoreFile::<mecmcp_auth::NoGrant>::load(&tokens_file).unwrap();
+    let store = store_file.store();
+    let entry = store
+        .entries()
+        .iter()
+        .find(|e| e.name == "alice")
+        .expect("token exists");
+    let oidc_subject = entry.oidc_subject.as_ref().expect("oidc_subject stored");
+    assert_eq!(oidc_subject.issuer, "https://idp.example.com");
+    assert_eq!(oidc_subject.subject, "alice");
+}
+
+#[test]
+fn add_with_only_oidc_issuer_is_rejected() {
+    let (_dir, tokens_file) = temp_tokens_file();
+
+    let action = TokenAction::Add {
+        tokens_file: tokens_file.clone(),
+        name: "alice".to_string(),
+        devices: vec!["*".to_string()],
+        tools: vec!["*".to_string()],
+        provider: None,
+        provider_tier: None,
+        on_behalf_of: None,
+        actor_type: None,
+        oidc_issuer: Some("https://idp.example.com".to_owned()),
+        oidc_subject: None,
+        server_pid: None,
+    };
+    let error = run(action, &[], KNOWN_TOOLS).unwrap_err();
+    assert!(error.to_string().contains("--oidc-subject"), "got {error}");
+}
+
+#[test]
+fn add_with_only_oidc_subject_is_rejected() {
+    let (_dir, tokens_file) = temp_tokens_file();
+
+    let action = TokenAction::Add {
+        tokens_file: tokens_file.clone(),
+        name: "alice".to_string(),
+        devices: vec!["*".to_string()],
+        tools: vec!["*".to_string()],
+        provider: None,
+        provider_tier: None,
+        on_behalf_of: None,
+        actor_type: None,
+        oidc_issuer: None,
+        oidc_subject: Some("alice".to_owned()),
+        server_pid: None,
+    };
+    let error = run(action, &[], KNOWN_TOOLS).unwrap_err();
+    assert!(error.to_string().contains("--oidc-issuer"), "got {error}");
 }

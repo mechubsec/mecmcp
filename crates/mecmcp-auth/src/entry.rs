@@ -59,6 +59,21 @@ fn default_actor_type() -> ActorType {
     ActorType::Unknown
 }
 
+/// An IdP subject a token is bound to, for verified-approver identity
+/// (mecmcp#400 Phase 2 / MEC-994).
+///
+/// On a `human` token, this means only this IdP subject may use the token to
+/// approve a change set. On an `agent` token, it records the human this agent
+/// proposes for, so a proposal's `owner_subject` can later be compared
+/// against an approver's verified subject.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OidcSubject {
+    /// The IdP's issuer URL, matched against a verified JWT's `iss`.
+    pub issuer: String,
+    /// The IdP's `sub` claim identifying the human at that issuer.
+    pub subject: String,
+}
+
 /// Rejection reason for a malformed token entry.
 #[derive(Debug, thiserror::Error)]
 pub enum EntryError {
@@ -171,6 +186,12 @@ pub struct TokenEntry<G: Grant = NoGrant> {
         skip_serializing_if = "is_default_actor_type"
     )]
     pub actor_type: ActorType,
+
+    /// The IdP subject this token is bound to, for verified-approver identity
+    /// (MEC-994). Absent by default, so every existing `tokens.json` loads
+    /// byte-for-byte unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oidc_subject: Option<OidcSubject>,
 }
 
 /// Predicate for `skip_serializing_if` on `actor_type`.
@@ -311,6 +332,30 @@ impl<G: Grant> TokenEntry<G> {
                 "token '{}': provider metadata contradicts actor_type \"human\"",
                 self.name
             )));
+        }
+        if let Some(oidc_subject) = &self.oidc_subject {
+            // Empty is rejected because it reads as declared (like the
+            // provider/on_behalf_of blank check above), and `|` is rejected
+            // because the approval digest (v7) joins fields with it — an
+            // unrejected `|` here would let two different (issuer, subject)
+            // pairings collide into the same digest.
+            for (field, value) in [
+                ("oidc_subject.issuer", oidc_subject.issuer.as_str()),
+                ("oidc_subject.subject", oidc_subject.subject.as_str()),
+            ] {
+                if value.trim().is_empty() {
+                    return Err(EntryError::Invalid(format!(
+                        "token '{}': {field} must not be empty",
+                        self.name
+                    )));
+                }
+                if value.contains('|') {
+                    return Err(EntryError::Invalid(format!(
+                        "token '{}': {field} cannot contain '|' (the digest separator)",
+                        self.name
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -584,6 +629,91 @@ mod tests {
             ActorType::Unknown,
             "actor_type defaults to Unknown (untagged legacy token provides no data)"
         );
+        assert!(
+            entry.oidc_subject.is_none(),
+            "oidc_subject defaults to None (MEC-994)"
+        );
+    }
+
+    #[test]
+    fn oidc_subject_round_trips_and_is_absent_when_unset() {
+        let mut entry: TokenEntry = serde_json::from_str(JUNOS_SHAPE).expect("parse");
+        assert!(
+            !serde_json::to_string(&entry)
+                .expect("serialize")
+                .contains("oidc")
+        );
+
+        entry.oidc_subject = Some(OidcSubject {
+            issuer: "https://idp.example.com".to_owned(),
+            subject: "alice".to_owned(),
+        });
+        let json = serde_json::to_string(&entry).expect("serialize");
+        let round_tripped: TokenEntry = serde_json::from_str(&json).expect("parse");
+        assert_eq!(round_tripped.oidc_subject, entry.oidc_subject);
+    }
+
+    #[test]
+    fn an_empty_oidc_subject_field_is_rejected() {
+        let mut entry: TokenEntry = serde_json::from_str(JUNOS_SHAPE).expect("parse");
+        entry.oidc_subject = Some(OidcSubject {
+            issuer: "https://idp.example.com".to_owned(),
+            subject: String::new(),
+        });
+        let err = entry.validate().expect_err("empty subject must be refused");
+        assert!(matches!(err, EntryError::Invalid(_)), "{err}");
+    }
+
+    #[test]
+    fn an_empty_oidc_issuer_field_is_rejected() {
+        let mut entry: TokenEntry = serde_json::from_str(JUNOS_SHAPE).expect("parse");
+        entry.oidc_subject = Some(OidcSubject {
+            issuer: String::new(),
+            subject: "alice".to_owned(),
+        });
+        let err = entry.validate().expect_err("empty issuer must be refused");
+        assert!(matches!(err, EntryError::Invalid(_)), "{err}");
+    }
+
+    #[test]
+    fn a_pipe_in_the_oidc_subject_is_rejected() {
+        // The v7 approval digest joins fields with `|`; an unrejected `|` here
+        // would let two different (issuer, subject) pairings collide into the
+        // same digest.
+        let mut entry: TokenEntry = serde_json::from_str(JUNOS_SHAPE).expect("parse");
+        entry.oidc_subject = Some(OidcSubject {
+            issuer: "https://idp.example.com".to_owned(),
+            subject: "ali|ce".to_owned(),
+        });
+        let err = entry
+            .validate()
+            .expect_err("a '|' in the subject must be refused");
+        assert!(matches!(err, EntryError::Invalid(_)), "{err}");
+    }
+
+    #[test]
+    fn a_pipe_in_the_oidc_issuer_is_rejected() {
+        let mut entry: TokenEntry = serde_json::from_str(JUNOS_SHAPE).expect("parse");
+        entry.oidc_subject = Some(OidcSubject {
+            issuer: "https://idp|example.com".to_owned(),
+            subject: "alice".to_owned(),
+        });
+        let err = entry
+            .validate()
+            .expect_err("a '|' in the issuer must be refused");
+        assert!(matches!(err, EntryError::Invalid(_)), "{err}");
+    }
+
+    #[test]
+    fn a_valid_oidc_subject_passes_validation() {
+        let mut entry: TokenEntry = serde_json::from_str(JUNOS_SHAPE).expect("parse");
+        entry.oidc_subject = Some(OidcSubject {
+            issuer: "https://idp.example.com".to_owned(),
+            subject: "alice".to_owned(),
+        });
+        entry
+            .validate()
+            .expect("a well-formed oidc_subject is valid");
     }
 
     #[test]

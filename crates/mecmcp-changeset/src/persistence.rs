@@ -5,7 +5,7 @@ use crate::{
     digest::{
         compute_approval_digest_legacy, compute_approval_digest_v4, compute_approval_digest_v5,
         compute_waiver_digest, compute_waiver_digest_v3, validate_fingerprint,
-        validate_principal_for_digest, verify_approval_digest_v6,
+        validate_principal_for_digest, verify_approval_digest_v6, verify_approval_digest_v7,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -103,7 +103,7 @@ pub fn read_state_with_key(
     let on_disk: OnDiskChangesetState = serde_json::from_slice(bytes)
         .map_err(|error| PersistenceError::new(format!("invalid changeset state JSON: {error}")))?;
 
-    if !(1..=7).contains(&on_disk.version) {
+    if !(1..=8).contains(&on_disk.version) {
         return Err(PersistenceError::new(format!(
             "unsupported changeset state version {}",
             on_disk.version
@@ -312,20 +312,42 @@ pub fn validate_state_with_key(
                 ));
             }
 
+            // `mechanism`/`issuer`/`subject` are bound into the digest only
+            // for v7 approvals (MEC-994 W4). A v4/v5/v6 digest does not cover
+            // them, so a record claiming one of those versions while also
+            // carrying these fields is either hand-edited or written by a
+            // future binary with the version rolled back — either way the
+            // fields are unauthenticated and must not be trusted. Rejected
+            // before the digest branch, the same way the approver/waived
+            // conflict above is.
+            if approval.digest_version != 7
+                && (approval.mechanism.is_some()
+                    || approval.issuer.is_some()
+                    || approval.subject.is_some())
+            {
+                return Err(PersistenceError::new(format!(
+                    "changeset state approval carries digest_version {} but also carries \
+                     mechanism/issuer/subject fields, which only a v7 digest binds",
+                    approval.digest_version
+                )));
+            }
+
             // Fail closed on a downgrade: once a deployment holds an approval
             // digest key, the key decides whether an approval verifies, not
             // whichever `digest_version` the record happens to claim. Accepting
             // a v4/v5/legacy approver digest here would let anyone who can write
             // the state file (but not read the key) forge an approval simply by
             // omitting `digest_version: 6` — the exact downgrade the keying
-            // feature exists to close (MEC-457 review, finding 1).
+            // feature exists to close (MEC-457 review, finding 1). v7 (MEC-994)
+            // is keyed the same way v6 is — it only adds more fields to the
+            // same HMAC — so it satisfies this gate too.
             if approval_digest_key.is_some()
                 && approval.approver.is_some()
-                && approval.digest_version != 6
+                && !matches!(approval.digest_version, 6 | 7)
             {
                 return Err(PersistenceError::new(format!(
                     "changeset state approval carries digest_version {} but this deployment \
-                     requires keyed (v6) approvals: it is not signed under the keyed rule",
+                     requires keyed (v6/v7) approvals: it is not signed under the keyed rule",
                     approval.digest_version
                 )));
             }
@@ -400,6 +422,53 @@ pub fn validate_state_with_key(
                                 &record.owner,
                                 approver,
                                 approval.approved_at_unix,
+                                &approval.digest,
+                            ) {
+                                approval.digest.clone()
+                            } else {
+                                return Err(PersistenceError::new(
+                                    "changeset state approval digest mismatch: approval evidence has been tampered with",
+                                ));
+                            }
+                        }
+                        7 => {
+                            // Keyed, same as v6, plus the approver's identity
+                            // mechanism and the owner's recorded subject
+                            // (MEC-994 W4). Editing `mechanism`, `issuer`,
+                            // `subject` on this record or `owner_subject` on
+                            // the change set invalidates the HMAC the same
+                            // way editing `owner`/`approver` does.
+                            let Some(key) = approval_digest_key else {
+                                return Err(PersistenceError::new(
+                                    "changeset state approval carries a v7 (keyed) digest but \
+                                     no approval digest key was supplied; it cannot be verified",
+                                ));
+                            };
+                            let mechanism = approval.mechanism.as_deref().unwrap_or_default();
+                            let approver_oidc = match (&approval.issuer, &approval.subject) {
+                                (Some(issuer), Some(subject)) => {
+                                    Some((issuer.as_str(), subject.as_str()))
+                                }
+                                _ => None,
+                            };
+                            let owner_subject = record
+                                .owner_subject
+                                .as_ref()
+                                .map(|s| (s.issuer.as_str(), s.subject.as_str()));
+                            if verify_approval_digest_v7(
+                                key,
+                                id,
+                                &record.digest,
+                                record
+                                    .preview
+                                    .as_ref()
+                                    .map(|preview| preview.digest.as_str()),
+                                &record.owner,
+                                approver,
+                                approval.approved_at_unix,
+                                mechanism,
+                                approver_oidc,
+                                owner_subject,
                                 &approval.digest,
                             ) {
                                 approval.digest.clone()
@@ -667,7 +736,19 @@ pub(crate) fn write_state(
         .change_sets
         .values()
         .any(|cs| cs.approval.as_ref().is_some_and(|a| a.digest_version >= 6));
-    let version = if keyed_approvals_need_v7 {
+    // Version 8 is required once a record carries a v7 (verified-approver)
+    // approval digest, or an `owner_subject` recorded at propose time
+    // (MEC-994 W4). Both are new fields/values a v1-v7 reader does not know
+    // how to interpret: `ApprovalRecord::mechanism`/`issuer`/`subject` and
+    // `ChangeSetRecord::owner_subject` did not exist before this, and a v6
+    // reader would recompute the unkeyed/v6 digest for a v7 approval and
+    // reject the file. Content-based like every rule above it.
+    let verified_approver_needs_v8 = state.change_sets.values().any(|cs| {
+        cs.owner_subject.is_some() || cs.approval.as_ref().is_some_and(|a| a.digest_version >= 7)
+    });
+    let version = if verified_approver_needs_v8 {
+        8
+    } else if keyed_approvals_need_v7 {
         7
     } else if preview_bound_approvals_need_v6 {
         6

@@ -21,6 +21,20 @@ pub struct VerifiedClaims {
     /// bound how long to trust a claim set it may cache in memory, without
     /// retaining the token itself.
     pub expires_at: i64,
+    /// The `iat` claim, as Unix seconds. Required: a step-up freshness check
+    /// (RFC 9470's `max_age` pattern) cannot be enforced against a claim that
+    /// might be absent, and a verifier that made it optional would let every
+    /// freshness check silently pass vacuously on a token with no `iat`.
+    pub issued_at: i64,
+    /// The `auth_time` claim, as Unix seconds, when the IdP included it
+    /// (OpenID Connect Core 1.0 §2). Optional because not every IdP or grant
+    /// emits it; a caller that requires proof of a fresh interactive login
+    /// must treat its absence as a rejection, not as "no opinion".
+    pub auth_time: Option<i64>,
+    /// The `jti` claim, when present. Optional because not every IdP issues
+    /// one; a caller enforcing single-use assertions must treat its absence
+    /// as a rejection rather than silently skip the replay check.
+    pub jwt_id: Option<String>,
 }
 
 /// Pull the configured role/group claim out of a token's extra claims.

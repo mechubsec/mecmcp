@@ -289,6 +289,154 @@ pub struct WebApproverArgs {
     pub web_enabled_approver: bool,
 }
 
+/// Step-up approver-identity verification switches (MEC-994 W5).
+///
+/// Standalone, like [`WebApproverArgs`] — **not** flattened into [`Cli`].
+/// Flattening it into the shared `Cli` would put `--require-verified-approver`
+/// on every mecmcp-based server on upgrade, whether or not that server
+/// actually wires a `ChangesetCoordinator` with `with_require_verified_approver`
+/// and an `ApproverIdentity::from_attribution`-derived approver. An operator
+/// who set the flag on a server that does not wire it would get a clean
+/// startup and the old behavior, while `THREAT-MODEL.md` told them otherwise
+/// (MEC-994 Percy review, finding F1). A server opts in explicitly with
+/// `#[command(flatten)]` the same way it opts into `WebApproverArgs`, and
+/// must call [`VerifiedApproverArgs::validate`] itself, since the fields it
+/// cross-checks (`--approval-digest-key-file`, the server's own lab-mode
+/// flag) are not uniform across servers either.
+///
+/// Absent `--oidc-issuer`, a server behaves identically to one with no OIDC
+/// support at all: no verifier is configured, so a presented
+/// `Mecmcp-Approver-Assertion` header is refused with 400 rather than
+/// silently accepted (see
+/// `mecmcp_transport::auth::BearerBoundary::with_approver_assertion`).
+///
+/// This crate depends on neither `mecmcp-oidc`, `mecmcp-transport`, nor
+/// `mecmcp-changeset`, so it cannot itself build a `TokenVerifier`, an
+/// `ApproverAssertionVerifier`, or configure a `ChangesetCoordinator`. It can
+/// build `mecmcp-auth`'s [`ApproverPolicy`](mecmcp_auth::ApproverPolicy),
+/// via [`VerifiedApproverArgs::approver_policy`]; the raw issuer/audience
+/// strings are exposed for a server to build the rest.
+#[derive(Debug, Clone, Default, clap::Args)]
+pub struct VerifiedApproverArgs {
+    /// IdP issuer URL to verify approver assertions against. Required for any
+    /// of the other approver flags to take effect.
+    #[arg(long)]
+    pub oidc_issuer: Option<String>,
+
+    /// Expected `aud` claim on approver assertions. Used, alongside
+    /// `--oidc-issuer`, to build an `mecmcp_oidc::OidcConfig`.
+    #[arg(long)]
+    pub oidc_audience: Option<String>,
+
+    /// Claim name carrying the approver's roles or groups, e.g. `roles` or
+    /// `groups`. Compared against `--approver-role`.
+    #[arg(long, default_value = "roles")]
+    pub oidc_role_claim: String,
+
+    /// The role or group value a verified assertion must carry to approve.
+    #[arg(long, default_value = "approver")]
+    pub approver_role: String,
+
+    /// Maximum age, in seconds, of an approver assertion's `iat` claim,
+    /// per RFC 9470's `max_age` step-up pattern.
+    #[arg(long, default_value_t = 300)]
+    pub approver_max_age_secs: u64,
+
+    /// Require a fresh interactive login (an `auth_time` claim no older than
+    /// `--approver-max-age-secs`) rather than merely a fresh token. Off by
+    /// default: not every IdP or grant type emits `auth_time`.
+    #[arg(long)]
+    pub approver_require_auth_time: bool,
+
+    /// Require every change-set approval to carry a verified approver
+    /// identity, and every proposal to come from an owner with a bound
+    /// `oidc_subject`. Off by default, so a deployment that has not
+    /// configured step-up authentication keeps behaving exactly as it did
+    /// before this flag existed.
+    #[arg(long)]
+    pub require_verified_approver: bool,
+}
+
+impl VerifiedApproverArgs {
+    /// Build the server-side binding policy, or `None` when no issuer was
+    /// configured — "no issuer" and "no OIDC support at all" are the same
+    /// state here.
+    #[must_use]
+    pub fn approver_policy(&self) -> Option<mecmcp_auth::ApproverPolicy> {
+        self.oidc_issuer.as_ref()?;
+        Some(mecmcp_auth::ApproverPolicy {
+            approver_role: self.approver_role.clone(),
+            max_age: std::time::Duration::from_secs(self.approver_max_age_secs),
+            require_auth_time: self.approver_require_auth_time,
+        })
+    }
+
+    /// Cross-check these flags against the two pieces of server-specific
+    /// context this crate cannot see on its own: whether a
+    /// `--approval-digest-key-file` was configured, and whether the
+    /// server's own lab-mode waiver is on.
+    ///
+    /// A server that flattens `VerifiedApproverArgs` must call this (and
+    /// refuse to start on an `Err`) wherever it already validates its own
+    /// CLI, alongside `mecmcp_runtime::cli_validate::validate`.
+    ///
+    /// # Errors
+    /// Returns the specific combination that has no safe interpretation.
+    pub fn validate(
+        &self,
+        digest_key_configured: bool,
+        lab_mode: bool,
+    ) -> Result<(), VerifiedApproverArgsError> {
+        if self.oidc_issuer.is_some() && self.oidc_audience.is_none() {
+            return Err(VerifiedApproverArgsError::IssuerWithoutAudience);
+        }
+        if self.require_verified_approver {
+            if self.oidc_issuer.is_none() {
+                return Err(VerifiedApproverArgsError::RequiresIssuer);
+            }
+            if !digest_key_configured {
+                return Err(VerifiedApproverArgsError::RequiresDigestKey);
+            }
+            if lab_mode {
+                return Err(VerifiedApproverArgsError::IncompatibleWithLabMode);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A `VerifiedApproverArgs` combination with no safe unambiguous
+/// interpretation.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum VerifiedApproverArgsError {
+    /// `--oidc-issuer` was given with no `--oidc-audience`. `OidcConfig`
+    /// requires an audience, so a server building one without this check
+    /// would otherwise have to invent one or silently skip building the
+    /// verifier — either of which is a worse failure than refusing here.
+    #[error("--oidc-issuer requires --oidc-audience")]
+    IssuerWithoutAudience,
+    /// Strict verified-approver mode needs an IdP to verify assertions
+    /// against.
+    #[error("--require-verified-approver requires --oidc-issuer")]
+    RequiresIssuer,
+    /// Strict mode without a keyed approval digest lets the verified-approver
+    /// fields (mechanism/issuer/subject/owner_subject) in a change-set record
+    /// be edited with no detection, which defeats the point of requiring them.
+    #[error(
+        "--require-verified-approver requires --approval-digest-key-file: without a keyed \
+         digest, the verified-approver fields recorded in a change-set are not tamper-evident"
+    )]
+    RequiresDigestKey,
+    /// Lab mode lets an owner waive their own approval outright, which
+    /// bypasses the two-person rule strict mode exists to enforce — the two
+    /// are mutually exclusive, not layered.
+    #[error(
+        "--require-verified-approver is incompatible with lab mode: lab mode lets an owner \
+         waive approval outright, which bypasses the verified-approver gate entirely"
+    )]
+    IncompatibleWithLabMode,
+}
+
 /// SSDF evidence-pipeline switches, defined once and flattened into every
 /// server's CLI.
 ///
@@ -845,6 +993,14 @@ pub enum TokenAction {
         /// Actor type: "human", "agent", or "unknown". Optional.
         #[arg(long)]
         actor_type: Option<String>,
+        /// IdP issuer URL this token is bound to, for verified-approver
+        /// identity (MEC-994). Required if `--oidc-subject` is set.
+        #[arg(long)]
+        oidc_issuer: Option<String>,
+        /// The IdP's `sub` claim identifying the human this token is bound
+        /// to. Required if `--oidc-issuer` is set.
+        #[arg(long)]
+        oidc_subject: Option<String>,
         /// Send SIGHUP to this pid after writing.
         #[arg(long)]
         server_pid: Option<i32>,
@@ -1288,5 +1444,182 @@ mod composition_tests {
         assert_eq!(parsed.cli.approval_timeout_secs, 60);
         assert!(parsed.was_supplied("web_enabled_approver"));
         assert!(parsed.was_supplied("approval_timeout_secs"));
+    }
+
+    #[test]
+    fn verified_approver_args_default_to_off() {
+        let args = VerifiedApproverArgs::default();
+        assert!(args.oidc_issuer.is_none());
+        assert!(!args.require_verified_approver);
+        assert!(args.approver_policy().is_none());
+    }
+
+    /// A server opts into `VerifiedApproverArgs` by flattening it alongside
+    /// `Cli`, exactly like `WebApproverArgs` — it is not part of `Cli` itself
+    /// (MEC-994 Percy review F1).
+    #[derive(Debug, Parser)]
+    struct VerifiedApproverTestCli {
+        #[command(flatten)]
+        shared: Cli,
+        #[command(flatten)]
+        verified_approver: VerifiedApproverArgs,
+    }
+
+    #[test]
+    fn verified_approver_args_no_issuer_means_no_policy_regardless_of_other_flags() {
+        let cli = VerifiedApproverTestCli::parse_from([
+            "test",
+            "--approver-role",
+            "security-approver",
+            "--approver-max-age-secs",
+            "60",
+            "--approver-require-auth-time",
+        ]);
+        assert!(
+            cli.verified_approver.approver_policy().is_none(),
+            "absent --oidc-issuer, a server has no OIDC support at all"
+        );
+    }
+
+    #[test]
+    fn verified_approver_args_build_policy_when_issuer_is_set() {
+        let cli = VerifiedApproverTestCli::parse_from([
+            "test",
+            "--oidc-issuer",
+            "https://idp.example",
+            "--oidc-audience",
+            "mecmcp",
+            "--approver-role",
+            "security-approver",
+            "--approver-max-age-secs",
+            "60",
+            "--approver-require-auth-time",
+        ]);
+        let policy = cli
+            .verified_approver
+            .approver_policy()
+            .expect("issuer configured");
+        assert_eq!(policy.approver_role, "security-approver");
+        assert_eq!(policy.max_age, std::time::Duration::from_secs(60));
+        assert!(policy.require_auth_time);
+        assert_eq!(
+            cli.verified_approver.oidc_audience.as_deref(),
+            Some("mecmcp")
+        );
+    }
+
+    #[test]
+    fn verified_approver_args_defaults() {
+        let cli = VerifiedApproverTestCli::parse_from(["test"]);
+        assert_eq!(cli.verified_approver.oidc_role_claim, "roles");
+        assert_eq!(cli.verified_approver.approver_role, "approver");
+        assert_eq!(cli.verified_approver.approver_max_age_secs, 300);
+        assert!(!cli.verified_approver.approver_require_auth_time);
+        assert!(!cli.verified_approver.require_verified_approver);
+    }
+
+    #[test]
+    fn verified_approver_args_flattens_without_conflict() {
+        #[derive(Debug, Parser)]
+        struct ServerCli {
+            #[command(flatten)]
+            shared: Cli,
+            #[command(flatten)]
+            verified_approver: VerifiedApproverArgs,
+            #[arg(long, default_value_t = 900)]
+            approval_timeout_secs: u64,
+        }
+
+        let parsed: ParsedCli<ServerCli> = try_parse_from(
+            "consumer-mcp",
+            "9.9.9",
+            [
+                "consumer-mcp",
+                "--oidc-issuer",
+                "https://idp.example",
+                "--oidc-audience",
+                "mecmcp",
+                "--require-verified-approver",
+            ],
+        )
+        .expect("VerifiedApproverArgs must flatten without conflict");
+
+        assert_eq!(
+            parsed.cli.verified_approver.oidc_issuer.as_deref(),
+            Some("https://idp.example")
+        );
+        assert!(parsed.cli.verified_approver.require_verified_approver);
+    }
+
+    #[test]
+    fn verified_approver_args_validate_requires_issuer_for_strict_mode() {
+        let args = VerifiedApproverArgs {
+            require_verified_approver: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            args.validate(true, false),
+            Err(VerifiedApproverArgsError::RequiresIssuer)
+        );
+    }
+
+    #[test]
+    fn verified_approver_args_validate_requires_digest_key_for_strict_mode() {
+        let args = VerifiedApproverArgs {
+            oidc_issuer: Some("https://idp.example".to_owned()),
+            oidc_audience: Some("mecmcp".to_owned()),
+            require_verified_approver: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            args.validate(false, false),
+            Err(VerifiedApproverArgsError::RequiresDigestKey)
+        );
+    }
+
+    #[test]
+    fn verified_approver_args_validate_refuses_lab_mode_in_strict_mode() {
+        let args = VerifiedApproverArgs {
+            oidc_issuer: Some("https://idp.example".to_owned()),
+            oidc_audience: Some("mecmcp".to_owned()),
+            require_verified_approver: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            args.validate(true, true),
+            Err(VerifiedApproverArgsError::IncompatibleWithLabMode)
+        );
+    }
+
+    #[test]
+    fn verified_approver_args_validate_requires_audience_with_issuer() {
+        let args = VerifiedApproverArgs {
+            oidc_issuer: Some("https://idp.example".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(
+            args.validate(true, false),
+            Err(VerifiedApproverArgsError::IssuerWithoutAudience)
+        );
+    }
+
+    #[test]
+    fn verified_approver_args_validate_ok_with_issuer_audience_and_digest_key() {
+        let args = VerifiedApproverArgs {
+            oidc_issuer: Some("https://idp.example".to_owned()),
+            oidc_audience: Some("mecmcp".to_owned()),
+            require_verified_approver: true,
+            ..Default::default()
+        };
+        assert!(args.validate(true, false).is_ok());
+    }
+
+    #[test]
+    fn verified_approver_args_validate_ok_with_no_flags_at_all() {
+        assert!(
+            VerifiedApproverArgs::default()
+                .validate(false, false)
+                .is_ok()
+        );
     }
 }

@@ -214,6 +214,7 @@ fn test_attribution(principal: &str) -> Attribution {
         change_ref: Some("CHG0012345".into()),
         request_id: Uuid::new_v4(),
         token_verified_fields: mecmcp_audit::TokenVerifiedFields::none(),
+        verified_approver: None,
         approver: None,
         change_set_id: None,
     }
@@ -380,6 +381,7 @@ async fn finding_1_lock_risk_persisted_before_drift_check() {
             owner.to_string(),
             initial_fp.clone(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .unwrap();
@@ -388,9 +390,11 @@ async fn finding_1_lock_risk_persisted_before_drift_check() {
         .approve_change_set(
             create_output.change_set_id.clone(),
             device.clone(),
-            approver.to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: approver.to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             create_output.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await
         .unwrap();
@@ -497,6 +501,7 @@ async fn finding_2_operation_record_write_failure_returns_handle() {
             owner.to_string(),
             initial_fp.clone(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .unwrap();
@@ -505,9 +510,11 @@ async fn finding_2_operation_record_write_failure_returns_handle() {
         .approve_change_set(
             create_output.change_set_id.clone(),
             device.clone(),
-            approver.to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: approver.to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             create_output.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await
         .unwrap();
@@ -584,6 +591,7 @@ async fn finding_3_staged_converted_to_indeterminate_on_restart() {
             owner.to_string(),
             initial_fp.clone(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .unwrap();
@@ -592,9 +600,11 @@ async fn finding_3_staged_converted_to_indeterminate_on_restart() {
         .approve_change_set(
             create_output.change_set_id.clone(),
             device.clone(),
-            approver.to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: approver.to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             create_output.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await
         .unwrap();

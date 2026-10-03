@@ -92,6 +92,14 @@ pub enum VerificationFailure {
     /// A claim required for verification (`exp`, `iss`, `aud`, or `sub`) was absent.
     #[error("token is missing required claim '{0}'")]
     MissingClaim(String),
+    /// The token has no `iat` claim. Distinct from [`Self::MissingClaim`]
+    /// because `iat` is not one of `jsonwebtoken`'s spec-required claims —
+    /// this crate requires it anyway so freshness (RFC 9470 `max_age`) can
+    /// be enforced, and a caller diagnosing a rejection needs to know this
+    /// is a policy requirement of this verifier, not a base JWT validity
+    /// failure.
+    #[error("token is missing the required 'iat' (issued-at) claim")]
+    MissingIssuedAt,
     /// No usable signing keys were available: the IdP has never been
     /// reachable, or the last known-good keys are older than the configured
     /// maximum age. This is the fail-closed path for an unreachable IdP.
@@ -102,4 +110,27 @@ pub enum VerificationFailure {
         /// The issuer whose keys could not be obtained.
         issuer: String,
     },
+}
+
+impl VerificationFailure {
+    /// A stable, lowercase machine-readable code for this reason, for
+    /// structured audit logging. Separate from the `Display` message, which
+    /// can carry interpolated detail (a key id, an issuer) and is meant for
+    /// humans, not for grouping identical failure classes in a dashboard.
+    #[must_use]
+    pub fn reason_code(&self) -> &'static str {
+        match self {
+            Self::Malformed(_) => "malformed_jwt",
+            Self::UnknownKeyId(_) => "unknown_key_id",
+            Self::UnsupportedAlgorithm => "unsupported_algorithm",
+            Self::InvalidSignature => "invalid_signature",
+            Self::Expired => "expired",
+            Self::NotYetValid => "not_yet_valid",
+            Self::WrongAudience => "wrong_audience",
+            Self::WrongIssuer => "wrong_issuer",
+            Self::MissingClaim(_) => "missing_claim",
+            Self::MissingIssuedAt => "missing_issued_at",
+            Self::KeysUnavailable { .. } => "keys_unavailable",
+        }
+    }
 }

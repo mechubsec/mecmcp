@@ -12,9 +12,9 @@ use mecmcp_changeset::digest::{
 };
 use mecmcp_changeset::persistence::{read_state, write_state_for_test};
 use mecmcp_changeset::{
-    ApprovalRecord, ChangeSetRecord, ChangeSetState, ChangesetCoordinator, ChangesetState,
-    CommitOptions, CommitOutcome, DeviceTransaction, OperationLimits, RollbackOutcome, RollbackRef,
-    WaiverKind, WaiverRecord, validate_state,
+    ApprovalRecord, ApproverIdentity, ChangeSetRecord, ChangeSetState, ChangesetCoordinator,
+    ChangesetState, CommitOptions, CommitOutcome, DeviceTransaction, OperationLimits,
+    RollbackOutcome, RollbackRef, WaiverKind, WaiverRecord, validate_state,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -246,6 +246,9 @@ fn v3_waiver_round_trip_and_version_dependence() {
             digest: waiver_digest.clone(),
             digest_version: 4,
             waived: Some(waiver_record.clone()),
+            mechanism: None,
+            issuer: None,
+            subject: None,
         }),
         expires_at_unix: approved_at + 900,
         operation_id: None,
@@ -254,6 +257,7 @@ fn v3_waiver_round_trip_and_version_dependence() {
         preview: None,
         task_id: None,
         apply_without_handle: false,
+        owner_subject: None,
     };
 
     let mut state = ChangesetState {
@@ -483,6 +487,7 @@ fn test_attribution(principal: &str) -> Attribution {
         request_id: Uuid::new_v4(),
         token_verified_fields: mecmcp_audit::TokenVerifiedFields::none(),
         approver: None,
+        verified_approver: None,
         change_set_id: None,
     }
 }
@@ -536,6 +541,7 @@ async fn planned_change_set_harness() -> PlannedChangeSetHarness {
             owner.clone(),
             fingerprint.clone(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -597,6 +603,9 @@ async fn an_expired_waiver_does_not_authorize_apply() {
         digest: waiver_digest,
         digest_version: 4,
         waived: Some(waiver),
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
 
     write_state_for_test(&state_path, &state, 8 * 1024 * 1024).expect("write state");
@@ -699,6 +708,9 @@ async fn lab_mode_disabled_after_waiver_does_not_authorize_apply() {
         digest: waiver_digest,
         digest_version: 4,
         waived: Some(waiver),
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
 
     write_state_for_test(&state_path, &state, 8 * 1024 * 1024).expect("write state");
@@ -793,6 +805,9 @@ async fn pre_guard_waiver_expiry_check_fails_without_blocking() {
         digest: waiver_digest,
         digest_version: 4,
         waived: Some(waiver),
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
     write_state_for_test(&state_path, &state, 8 * 1024 * 1024).expect("write state");
 
@@ -897,6 +912,9 @@ async fn post_guard_waiver_expiry_check_detects_toctou_rewrite() {
         digest: waiver_digest,
         digest_version: 4,
         waived: Some(waiver.clone()),
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
     write_state_for_test(&state_path, &state, 8 * 1024 * 1024).expect("write state");
 
@@ -999,6 +1017,9 @@ async fn post_guard_waiver_expiry_check_detects_toctou_rewrite() {
         digest: expired_digest,
         digest_version: 4,
         waived: Some(expired_waiver),
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
     coordinator
         .update_change_set(updated_change_set)
@@ -1062,6 +1083,9 @@ async fn waiver_at_exact_expiry_instant_is_expired() {
         digest: waiver_digest,
         digest_version: 4,
         waived: Some(waiver),
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
     write_state_for_test(&state_path, &state, 8 * 1024 * 1024).expect("write state");
 
@@ -1272,4 +1296,106 @@ fn sabotage_defect_1_load_save_cycle_without_migration() {
 
     // Load again — must succeed because migration happened
     read_state(&state_path, 128 * 1024).expect("second load must succeed after migration");
+}
+
+/// MEC-994 Percy review F10: a token-asserted approval recorded before
+/// strict verified-approver mode was turned on must not still authorize an
+/// apply once strict mode is in effect. The approval digest's `mechanism`
+/// field is HMAC-covered (v7), so this check cannot be forged post hoc
+/// without the digest key.
+#[tokio::test]
+async fn strict_mode_refuses_apply_of_a_pre_strict_token_asserted_approval() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let state_path = temp_dir.path().join("state.json");
+    let limits = OperationLimits {
+        max_operations: 1024,
+        max_change_sets: 1024,
+        max_actions_per_set: 64,
+        max_state_bytes: 8 * 1024 * 1024,
+        max_change_set_bytes: 256 * 1024,
+        ..OperationLimits::default()
+    };
+    let approval_ttl = Duration::from_secs(15 * 60);
+    let key: Arc<[u8]> = Arc::from(vec![7u8; 32]);
+
+    // Pre-strict: a keyed v7 approval, but by a `TokenAsserted` (not
+    // `OidcVerified`) approver — the shape strict mode exists to refuse.
+    let coordinator = ChangesetCoordinator::load(Some(&state_path), limits, approval_ttl, true)
+        .expect("coordinator")
+        .with_approval_digest_key(Arc::clone(&key));
+
+    let device = "test-device".to_string();
+    let owner = "alice".to_string();
+    let transaction = MockTransaction::new();
+    let fingerprint = transaction.fingerprint().await.expect("fingerprint");
+    let actions = vec![MockAction {
+        action: MockActionType::Set,
+        path: "/test/path".to_string(),
+        value: Some("test-value".to_string()),
+    }];
+
+    let created = coordinator
+        .create_change_set(
+            device.clone(),
+            actions,
+            owner.clone(),
+            fingerprint.clone(),
+            "policy-sig".to_string(),
+            None,
+        )
+        .await
+        .expect("create");
+
+    coordinator
+        .approve_change_set(
+            created.change_set_id.clone(),
+            device.clone(),
+            &ApproverIdentity::TokenAsserted {
+                principal: "bob".to_string(),
+                actor_type: ActorType::Human,
+            },
+            created.digest.clone(),
+        )
+        .await
+        .expect("approve");
+
+    // Strict mode turned on after the fact, same key. The on-disk record
+    // already carries a v7 (keyed) digest, so the key must be supplied to
+    // `load_with_key` itself, not only via the builder afterward.
+    drop(coordinator);
+    let coordinator = ChangesetCoordinator::load_with_key(
+        Some(&state_path),
+        limits,
+        approval_ttl,
+        true,
+        Some(Arc::clone(&key).into()),
+    )
+    .expect("reload coordinator")
+    .with_require_verified_approver(true);
+
+    let error = coordinator
+        .apply_change_set(
+            created.change_set_id.clone(),
+            device.clone(),
+            "https://test-device.example.com".to_string(),
+            owner.clone(),
+            created.digest.clone(),
+            fingerprint,
+            &transaction,
+            "set",
+            None,
+            None,
+            &test_attribution("alice"),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect_err(
+            "a pre-strict token-asserted approval must not authorize apply under strict mode",
+        );
+
+    let message = format!("{error:?}");
+    assert!(
+        message.contains("strict verified-approver mode"),
+        "the refusal must name strict mode, not report a generic missing approval: {message}"
+    );
 }

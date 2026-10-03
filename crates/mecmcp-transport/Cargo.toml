@@ -25,8 +25,10 @@ http-body-util = "0.1"
 # against it. `serde` feature lets `LimitsConfig` deserialize CIDR strings
 # straight into `IpNet` instead of hand-rolling a `FromStr` wrapper.
 ipnet       = { version = "2", features = ["serde"] }
+chrono      = { workspace = true }
 mecmcp-audit = { version = "0.26.0", path = "../mecmcp-audit" }
 mecmcp-auth = { version = "0.26.0", path = "../mecmcp-auth" }
+mecmcp-oidc = { version = "0.26.0", path = "../mecmcp-oidc" }
 metrics     = { workspace = true }
 # metrics-exporter-prometheus must have default-features = false to avoid
 # pulling in rustls's aws-lc-rs backend via hyper-rustls, which conflicts with
@@ -71,6 +73,13 @@ name = "router_integration"
 required-features = ["test-util"]
 
 [dev-dependencies]
+# Test-only: signs ephemeral RSA JWTs for the approver-assertion integration
+# test, the same way mecmcp-oidc's own test suite does. Never a normal
+# dependency of this crate — only mecmcp-oidc links a JWT/JWKS verifier in
+# production; this crate forwards an already-verified `VerifiedClaims`.
+aws-lc-rs    = "1"
+jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+pem          = "4"
 # Test-only: `test-util` exposes audit capture helpers. It must NOT be enabled
 # on the normal dependency above — that ships test scaffolding in production
 # binaries and widens the attack surface for no runtime benefit. Cargo unifies

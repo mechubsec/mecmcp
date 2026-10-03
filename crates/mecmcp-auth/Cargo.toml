@@ -11,7 +11,13 @@ authors.workspace      = true
 [lints]
 workspace = true
 
+[features]
+# Exposes test-only constructors (e.g. `VerifiedApprover::for_test`) that
+# bypass the normal verification path. Never enable this outside dev-deps.
+test-util = []
+
 [dependencies]
+mecmcp-oidc   = { version = "0.26.0", path = "../mecmcp-oidc" }
 mecmcp-secret = { version = "0.26.0", path = "../mecmcp-secret" }
 arc-swap   = { workspace = true }
 chrono     = { workspace = true }

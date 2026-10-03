@@ -88,6 +88,9 @@ fn defect_4_edited_reason_is_rejected_on_load() {
             digest: waiver_digest,
             digest_version: 4,
             waived: Some(waiver),
+            mechanism: None,
+            issuer: None,
+            subject: None,
         }),
         expires_at_unix: approved_at + 3600,
         operation_id: None,
@@ -96,6 +99,7 @@ fn defect_4_edited_reason_is_rejected_on_load() {
         preview: None,
         task_id: None,
         apply_without_handle: false,
+        owner_subject: None,
     };
 
     let mut change_sets = BTreeMap::new();
@@ -187,6 +191,9 @@ fn defect_5_both_approver_and_waived_is_rejected() {
             digest: approval_digest, // ← valid approver digest
             digest_version: 4,
             waived: Some(waiver), // ← INJECTED waiver
+            mechanism: None,
+            issuer: None,
+            subject: None,
         }),
         expires_at_unix: approved_at + 3600,
         operation_id: None,
@@ -195,6 +202,7 @@ fn defect_5_both_approver_and_waived_is_rejected() {
         preview: None,
         task_id: None,
         apply_without_handle: false,
+        owner_subject: None,
     };
 
     let mut change_sets = BTreeMap::new();

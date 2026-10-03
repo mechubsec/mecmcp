@@ -1,13 +1,14 @@
 //! Change-set lifecycle operations: create, approve, status.
 
 use crate::{
+    approver::ApproverIdentity,
     coordinator::{ChangesetCoordinator, CoordinatorError},
     digest::{
-        change_set_digest, compute_approval_digest_v5, compute_approval_digest_v6,
+        change_set_digest, compute_approval_digest_v5, compute_approval_digest_v7,
         compute_waiver_digest_v3, validate_digest, validate_principal_for_digest,
     },
     lifecycle::ChangeSetState,
-    records::{ApprovalRecord, ChangeSetRecord, WaiverKind, WaiverRecord},
+    records::{ApprovalRecord, ChangeSetRecord, OwnerSubject, WaiverKind, WaiverRecord},
 };
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -112,6 +113,13 @@ impl ChangesetCoordinator {
     /// The digest is the approval target: an independent principal must approve the
     /// exact digest to advance the change set to `Approved`.
     ///
+    /// `owner_subject` is the owner token's bound IdP identity (W2's
+    /// `oidc_subject`), when it has one. Recorded on the change set at
+    /// propose time so a later approval can refuse "the owner approving
+    /// through a second token" without needing to re-look-up the owner's
+    /// token at approval time, when the proposing request's `CallerCtx` is
+    /// long gone.
+    ///
     /// # Errors
     ///
     /// Returns an error if:
@@ -119,6 +127,8 @@ impl ChangesetCoordinator {
     /// - Actions are empty or exceed operational limits
     /// - The principal already has a pending change set on the device
     /// - The change-set store is full after evicting terminal records
+    /// - Strict mode (`require_verified_approver`) is enabled and
+    ///   `owner_subject` is absent
     /// - Persistence fails
     pub async fn create_change_set<A: Serialize>(
         &self,
@@ -127,7 +137,16 @@ impl ChangesetCoordinator {
         owner: String,
         expected_fingerprint: String,
         policy_signature: String,
+        owner_subject: Option<OwnerSubject>,
     ) -> Result<ChangeSetOutput, CoordinatorError> {
+        if self.require_verified_approver() && owner_subject.is_none() {
+            return Err(CoordinatorError::new(
+                "owner_subject",
+                "strict verified-approver mode requires the owner's token to carry an \
+                 oidc_subject binding before a change set can be proposed",
+            ));
+        }
+
         crate::digest::validate_fingerprint(&expected_fingerprint)
             .map_err(|e| CoordinatorError::new("expected_candidate_fingerprint", e.to_string()))?;
 
@@ -170,6 +189,7 @@ impl ChangesetCoordinator {
             // No apply has begun, so there is no vendor task to re-probe.
             task_id: None,
             apply_without_handle: false,
+            owner_subject,
         };
 
         self.insert_change_set(record.clone()).await?;
@@ -188,11 +208,19 @@ impl ChangesetCoordinator {
     /// Approves an unexpired change set with an independent human principal.
     ///
     /// This is the approval gate: the approver must be distinct from the owner,
-    /// must be `mecmcp_audit::ActorType::Human` — the house rule is that a human
-    /// approves, so an agent or unattributed caller cannot stand in as the second
-    /// principal — the change set must be in `Planned` state, the approval window
-    /// must not have expired, and the provided digest must match the stored digest
+    /// must be human — the house rule is that a human approves, so an agent or
+    /// unattributed caller cannot stand in as the second principal — the
+    /// change set must be in `Planned` state, the approval window must not
+    /// have expired, and the provided digest must match the stored digest
     /// exactly.
+    ///
+    /// `approver` carries not just the principal name but how its identity
+    /// was asserted (`ApproverIdentity`, MEC-994 W4). In strict mode
+    /// (`require_verified_approver`), only `ApproverIdentity::OidcVerified`
+    /// is accepted, and an approver whose verified subject equals the
+    /// change set's recorded `owner_subject` is refused — the same human
+    /// cannot satisfy both sides of the two-person rule by holding a second
+    /// token bound to the same IdP identity.
     ///
     /// On success, the change set transitions to `Approved`, the approver is recorded,
     /// and an approval digest is computed over `(change_set_id, plan_digest, owner,
@@ -203,8 +231,10 @@ impl ChangesetCoordinator {
     /// Returns an error if:
     /// - The expected digest format is invalid
     /// - The change set does not exist or belongs to another device
-    /// - The approver is the same as the owner (self-approval denied)
-    /// - `approver_actor_type` is not `Human`
+    /// - The approver is the same principal as the owner (self-approval denied)
+    /// - The approver's verified OIDC subject equals the owner's recorded subject
+    /// - The approver identity is not human
+    /// - Strict mode is enabled and the approver is not `OidcVerified`
     /// - The change set is not in `Planned` state
     /// - The approval window has expired
     /// - The provided digest does not match the stored digest
@@ -213,16 +243,15 @@ impl ChangesetCoordinator {
         &self,
         change_set_id: String,
         device: String,
-        approver: String,
+        approver: &ApproverIdentity,
         expected_digest: String,
-        approver_actor_type: mecmcp_audit::ActorType,
     ) -> Result<ChangeSetOutput, CoordinatorError> {
         validate_digest(&expected_digest, "expected_digest")
             .map_err(|e| CoordinatorError::new("expected_digest", e.to_string()))?;
 
         let mut record = self.change_set(&change_set_id, &device).await?;
 
-        if record.owner == approver {
+        if record.owner == approver.principal() {
             return Err(CoordinatorError::new(
                 "change_set_id",
                 "the change-set owner cannot approve their own plan",
@@ -233,10 +262,65 @@ impl ChangesetCoordinator {
         // gets the more specific "cannot approve their own plan" message. Checked
         // before anything else stateful: this is a fact about the caller, not the
         // record, and must not depend on what state the record happens to be in.
-        if approver_actor_type != mecmcp_audit::ActorType::Human {
+        if !approver.is_human() {
             return Err(CoordinatorError::new(
                 "approver_actor_type",
                 "the change-set approver must be a human principal",
+            ));
+        }
+
+        if self.require_verified_approver() {
+            if !matches!(approver, ApproverIdentity::OidcVerified { .. }) {
+                return Err(CoordinatorError::new(
+                    "approver",
+                    "strict verified-approver mode requires an IdP-verified approver assertion",
+                ));
+            }
+            // Strict mode exists to make the verified-approver fields
+            // (mechanism/issuer/subject/owner_subject) tamper-evident via the
+            // keyed v7 digest. Without a key, `approve_change_set` below
+            // falls back to the unkeyed v5 digest, which silently drops
+            // every one of those fields — the acceptance criterion "editing
+            // mechanism/issuer/subject fails the HMAC check" would then not
+            // apply even though strict mode is on (MEC-994 Percy review F3).
+            if self.approval_digest_key().is_none() {
+                return Err(CoordinatorError::new(
+                    "approval_digest_key",
+                    "strict verified-approver mode requires a keyed approval digest \
+                     (--approval-digest-key-file); without one, the verified-approver \
+                     fields recorded in this approval would not be tamper-evident",
+                ));
+            }
+            // A `Planned` record's `owner_subject` is not itself covered by
+            // any digest until this approval signs it in, so a missing value
+            // here could mean the owner's token genuinely had no binding at
+            // propose time, or that the field was stripped from the state
+            // file after the fact (MEC-994 Percy review F4). Strict mode
+            // cannot tell those apart, so it refuses rather than silently
+            // skipping the self-approval check below.
+            if record.owner_subject.is_none() {
+                return Err(CoordinatorError::new(
+                    "owner_subject",
+                    "strict verified-approver mode requires the change set to carry an \
+                     owner_subject; this one has none, which either means it was proposed \
+                     before strict mode was in effect or that owner_subject was stripped \
+                     from the state file after proposal",
+                ));
+            }
+        }
+
+        // The house rule is two *people*, not two tokens. A verified subject
+        // equal to the owner's recorded subject means the same human proposed
+        // and approved, however many different token names they used to do
+        // it.
+        if let (Some((approver_issuer, approver_subject)), Some(owner_subject)) =
+            (approver.oidc_subject(), record.owner_subject.as_ref())
+            && approver_issuer == owner_subject.issuer
+            && approver_subject == owner_subject.subject
+        {
+            return Err(CoordinatorError::new(
+                "approver",
+                "the verified approver is the same IdP identity as the change-set owner",
             ));
         }
 
@@ -272,7 +356,7 @@ impl ChangesetCoordinator {
         // back by a binary predating #283.
         validate_principal_for_digest("owner", &record.owner)
             .map_err(|msg| CoordinatorError::new("owner", msg))?;
-        validate_principal_for_digest("approver", &approver)
+        validate_principal_for_digest("approver", approver.principal())
             .map_err(|msg| CoordinatorError::new("approver", msg))?;
 
         // v5: the v4 tuple plus the digest of the preview this approver read.
@@ -300,48 +384,69 @@ impl ChangesetCoordinator {
             .as_ref()
             .map(|preview| preview.digest.clone());
 
-        // v6: keyed with an HMAC only this deployment holds, so an approval
-        // digest cannot be forged or replayed by anyone who can merely read or
-        // edit the state file (MEC-457). Falls back to the unkeyed v5 digest
-        // when no key is configured, so a deployment that has not been given
-        // one keeps working exactly as before -- signing is optional, not the
-        // absence of an approval.
-        let (approval_digest, digest_version) = if let Some(key) = self.approval_digest_key() {
-            (
-                compute_approval_digest_v6(
-                    key,
-                    &change_set_id,
-                    &record.digest,
-                    preview_digest.as_deref(),
-                    &record.owner,
-                    &approver,
-                    now,
-                ),
-                6,
-            )
-        } else {
-            (
-                compute_approval_digest_v5(
-                    &change_set_id,
-                    &record.digest,
-                    preview_digest.as_deref(),
-                    &record.owner,
-                    &approver,
-                    now,
-                ),
-                5,
-            )
-        };
+        // v7: keyed with an HMAC only this deployment holds (MEC-457), and
+        // additionally binds the approver's identity mechanism, any verified
+        // OIDC issuer/subject, and the owner's recorded subject (MEC-994 W4)
+        // — a v6 digest authenticated the fields but not how `approver` was
+        // asserted. Falls back to the unkeyed v5 digest when no key is
+        // configured, so a deployment that has not been given one keeps
+        // working exactly as before -- signing is optional, not the absence
+        // of an approval.
+        let approver_principal = approver.principal().to_owned();
+        let approver_oidc = approver.oidc_subject();
+        let owner_subject_pair = record
+            .owner_subject
+            .as_ref()
+            .map(|s| (s.issuer.as_str(), s.subject.as_str()));
+        let (approval_digest, digest_version, mechanism, issuer, subject) =
+            if let Some(key) = self.approval_digest_key() {
+                (
+                    compute_approval_digest_v7(
+                        key,
+                        &change_set_id,
+                        &record.digest,
+                        preview_digest.as_deref(),
+                        &record.owner,
+                        &approver_principal,
+                        now,
+                        approver.mechanism(),
+                        approver_oidc,
+                        owner_subject_pair,
+                    ),
+                    7,
+                    Some(approver.mechanism().to_owned()),
+                    approver_oidc.map(|(issuer, _)| issuer.to_owned()),
+                    approver_oidc.map(|(_, subject)| subject.to_owned()),
+                )
+            } else {
+                (
+                    compute_approval_digest_v5(
+                        &change_set_id,
+                        &record.digest,
+                        preview_digest.as_deref(),
+                        &record.owner,
+                        &approver_principal,
+                        now,
+                    ),
+                    5,
+                    None,
+                    None,
+                    None,
+                )
+            };
 
         let observed = record.state;
         record.state = ChangeSetState::Approved;
-        record.approver = Some(approver.clone());
+        record.approver = Some(approver_principal.clone());
         record.approval = Some(ApprovalRecord {
-            approver: Some(approver.clone()),
+            approver: Some(approver_principal.clone()),
             approved_at_unix: now,
             digest: approval_digest,
             digest_version,
             waived: None,
+            mechanism,
+            issuer,
+            subject,
         });
 
         self.update_change_set_from(observed, record.clone())
@@ -350,7 +455,12 @@ impl ChangesetCoordinator {
         // A human decided. Recorded after the state write, so the trail cannot
         // claim an approval the coordinator failed to persist.
         if let Some(evidence) = self.evidence() {
-            evidence.approval(&change_set_id, &change_set_id, &approver, "approved");
+            evidence.approval(
+                &change_set_id,
+                &change_set_id,
+                &approver_principal,
+                "approved",
+            );
         }
 
         Ok(record.into())
@@ -387,6 +497,24 @@ impl ChangesetCoordinator {
             return Err(CoordinatorError::new(
                 "change_set_id",
                 "approval waiver requires lab mode to be enabled",
+            ));
+        }
+
+        // Lab mode lets the owner approve their own change set outright —
+        // the opposite of what strict verified-approver mode exists to
+        // enforce. The two are mutually exclusive by construction
+        // (`VerifiedApproverArgs::validate` refuses to start a server with
+        // both), but that is a courtesy pre-check on one CLI shape, not a
+        // guarantee about every coordinator built directly against this
+        // crate's API. Refuse here too, so a lab-mode owner cannot waive
+        // their own approval purely because this check was skipped
+        // elsewhere (MEC-994 Percy review F2).
+        if self.require_verified_approver() {
+            return Err(CoordinatorError::new(
+                "change_set_id",
+                "approval waiver is refused under strict verified-approver mode: lab mode \
+                 lets the owner approve their own change set, which strict mode exists to \
+                 prevent",
             ));
         }
 
@@ -454,6 +582,9 @@ impl ChangesetCoordinator {
             // it does not read as an approval version that was chosen.
             digest_version: 4,
             waived: Some(waiver),
+            mechanism: None,
+            issuer: None,
+            subject: None,
         });
 
         self.update_change_set_from(observed, record.clone())
@@ -511,6 +642,19 @@ impl ChangesetCoordinator {
                 "kind",
                 "use waive_approval for a lab-mode waiver; this path records an \
                  operator-granted exception under a control that is still on",
+            ));
+        }
+
+        // An operator waiver is granted in-band by a second principal calling
+        // a tool, with no verified-identity check of its own. Strict mode
+        // exists so a second human, not a second token, approves. Without
+        // this check, the owner can grant themselves an operator waiver and
+        // reach `Approved` with no verified approver at all (MEC-994 Percy
+        // review F10).
+        if self.require_verified_approver() {
+            return Err(CoordinatorError::new(
+                "change_set_id",
+                "approval waiver is refused under strict verified-approver mode",
             ));
         }
 
@@ -588,6 +732,9 @@ impl ChangesetCoordinator {
             // it does not read as an approval version that was chosen.
             digest_version: 4,
             waived: Some(waiver),
+            mechanism: None,
+            issuer: None,
+            subject: None,
         });
 
         self.update_change_set_from(observed, record.clone())

@@ -61,6 +61,9 @@ impl OidcConfig {
 struct RawClaims {
     sub: String,
     exp: i64,
+    iat: Option<i64>,
+    auth_time: Option<i64>,
+    jti: Option<String>,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -119,10 +122,18 @@ impl TokenVerifier {
 
         let roles = extract_roles(&token_data.claims.extra, &self.config.role_claim);
 
+        let issued_at = token_data
+            .claims
+            .iat
+            .ok_or(VerificationFailure::MissingIssuedAt)?;
+
         Ok(VerifiedClaims {
             subject: token_data.claims.sub,
             roles,
             expires_at: token_data.claims.exp,
+            issued_at,
+            auth_time: token_data.claims.auth_time,
+            jwt_id: token_data.claims.jti,
         })
     }
 }
@@ -257,6 +268,7 @@ mod tests {
             "iss": ISSUER,
             "aud": AUDIENCE,
             "exp": now() + 3600,
+            "iat": now() - 60,
             "nbf": now() - 60,
             "groups": ["ops", "pci-approvers"],
         })
@@ -295,7 +307,10 @@ mod tests {
         };
         let verifier = verifier_for(jwks);
 
-        let token = sign_token(&key, &valid_claims(), KID);
+        let mut claims_json = valid_claims();
+        claims_json["auth_time"] = serde_json::json!(now() - 120);
+        claims_json["jti"] = serde_json::json!("assertion-1");
+        let token = sign_token(&key, &claims_json, KID);
         let claims = verifier.verify(&token).await.expect("token must verify");
 
         assert_eq!(claims.subject, "alice@example.com");
@@ -303,6 +318,32 @@ mod tests {
             claims.roles,
             vec!["ops".to_string(), "pci-approvers".to_string()]
         );
+        assert_eq!(claims.issued_at, claims_json["iat"].as_i64().unwrap());
+        assert_eq!(
+            claims.auth_time,
+            Some(claims_json["auth_time"].as_i64().unwrap())
+        );
+        assert_eq!(claims.jwt_id, Some("assertion-1".to_string()));
+    }
+
+    /// W1: `iat` is required by this crate even though `jsonwebtoken` itself
+    /// does not treat it as a spec-required claim — without it, a caller
+    /// enforcing step-up freshness (RFC 9470 `max_age`) has nothing to
+    /// compare `now` against, and would otherwise pass the check vacuously.
+    #[tokio::test]
+    async fn rejects_a_token_missing_iat_distinctly() {
+        let key = generate_test_key(KID);
+        let jwks = JwkSet {
+            keys: vec![key.jwk.clone()],
+        };
+        let verifier = verifier_for(jwks);
+
+        let mut claims = valid_claims();
+        claims.as_object_mut().expect("object").remove("iat");
+        let token = sign_token(&key, &claims, KID);
+
+        let result = verifier.verify(&token).await;
+        assert_eq!(result.unwrap_err(), VerificationFailure::MissingIssuedAt);
     }
 
     #[tokio::test]

@@ -43,6 +43,7 @@ fn record(device: &str, targets: Vec<String>) -> ChangeSetRecord {
         preview: None,
         task_id: None,
         apply_without_handle: false,
+        owner_subject: None,
     }
 }
 
