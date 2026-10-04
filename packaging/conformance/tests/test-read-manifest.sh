@@ -152,6 +152,39 @@ grep -q '^CONF_AUDIT_ENTRYPOINT=packaging/docker/audit-entrypoint.sh$' <<<"$out"
 out="$(python3 "$READER" "$tmp/good.toml")"
 grep -q '^CONF_AUDIT_ENTRYPOINT=$' <<<"$out" \
   || { echo "FAIL - CONF_AUDIT_ENTRYPOINT not emitted empty when audit_entrypoint is absent"; fails=$((fails+1)); }
+grep -q '^CONF_AUDIT_HMAC_FLAG=$' <<<"$out" \
+  || { echo "FAIL - CONF_AUDIT_HMAC_FLAG not emitted empty when audit_hmac_flag is absent"; fails=$((fails+1)); }
+
+# --- MEC-978 (distroless follow-up): audit_hmac_flag is the no-shell
+# alternative to audit_entrypoint -- same false-sentinel shape, plus it must
+# cross-reference must_survive_override (R7 relies on R6 to actually prove the
+# flag reaches argv) and must be mutually exclusive with audit_entrypoint.
+manifest "$tmp/hmac-true.toml" 'audit_hmac_flag = true'
+check_err "audit_hmac_flag = true rejected" 2 "must name the flag" \
+  python3 "$READER" "$tmp/hmac-true.toml"
+
+manifest "$tmp/hmac-empty.toml" 'audit_hmac_flag = ""'
+check_err "audit_hmac_flag = \"\" rejected" 2 "is not a value" \
+  python3 "$READER" "$tmp/hmac-empty.toml"
+
+manifest "$tmp/hmac-not-survived.toml" 'audit_hmac_flag = "--audit-hmac-key-file"'
+check_err "audit_hmac_flag absent from must_survive_override rejected" 2 \
+  "must also appear in must_survive_override" \
+  python3 "$READER" "$tmp/hmac-not-survived.toml"
+
+manifest "$tmp/hmac-both.toml" \
+  'must_survive_override = ["--tokens-file", "--audit-hmac-key-file"]' \
+  'audit_entrypoint = "packaging/docker/audit-entrypoint.sh"' \
+  'audit_hmac_flag = "--audit-hmac-key-file"'
+check_err "audit_entrypoint and audit_hmac_flag together rejected" 2 \
+  "mutually exclusive" python3 "$READER" "$tmp/hmac-both.toml"
+
+manifest "$tmp/hmac-named.toml" \
+  'must_survive_override = ["--tokens-file", "--audit-hmac-key-file"]' \
+  'audit_hmac_flag = "--audit-hmac-key-file"'
+out="$(python3 "$READER" "$tmp/hmac-named.toml")"; check "audit_hmac_flag names a flag" 0 $?
+grep -q '^CONF_AUDIT_HMAC_FLAG=--audit-hmac-key-file$' <<<"$out" \
+  || { echo "FAIL - CONF_AUDIT_HMAC_FLAG not emitted for a named flag"; fails=$((fails+1)); }
 
 # --- I4: a newline in a scalar forges a second shell assignment. -----------
 manifest "$tmp/newline-scalar.toml" 'tokens = "/var/lib/svc/tokens.json\nCONF_BINARY=bin/other"'

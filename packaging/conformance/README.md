@@ -71,6 +71,7 @@ Unknown keys are an error, so a typo cannot silently disable a rule.
 | `skip_build_env` | `false` or a non-empty string | no | Names the environment variable the packager honours to accept a prebuilt binary. |
 | `placeholders` | table of string → string | no | Test values for the `@TOKEN@` placeholders the units carry. |
 | `audit_entrypoint` | `false` or a non-empty string | no | Path **inside the staging dir** to the container's audit-key-generating entrypoint script (see `packaging/docker/audit-entrypoint.sh.tmpl`). `false` means this repo's container image has not been migrated yet. |
+| `audit_hmac_flag` | `false` or a non-empty string | no | The flag (e.g. `--audit-hmac-key-file`) that a **distroless, no-shell** image's `ENTRYPOINT` always passes to a binary that generates its own key. Mutually exclusive with `audit_entrypoint`, and must also appear in `must_survive_override`. |
 
 Rejected values, each with exit 2:
 
@@ -80,6 +81,11 @@ Rejected values, each with exit 2:
 - `audit_entrypoint = true` and `audit_entrypoint = ""`, for the same reason:
   a bare `true` or empty string would satisfy "the key is present" while
   naming no script for R7 to actually check.
+- `audit_hmac_flag = true` and `audit_hmac_flag = ""`, for the same reason.
+  Also rejected: setting it together with `audit_entrypoint` (a repo picks one
+  migration path, not both), and naming a flag that is not also in
+  `must_survive_override` (R7 relies on R6 to prove the flag reaches argv; a
+  flag R6 never checks is a flag R7 cannot actually vouch for).
 - An absolute `binary`, `installer`, or `units` entry. It would be joined onto
   the staging path anyway and report "not found" for a file that exists.
 - Any string containing a newline. The reader emits one value per line and the
@@ -114,7 +120,7 @@ must_survive_override = ["--tokens-file"]
 | R4 | warn | The installer creates `/etc/systemd/system/<service>.service.d`. Mentions inside comments do not count. |
 | R5 | fatal | Every declared unit exists, renders with no `@PLACEHOLDER@` left, and `systemd-analyze verify` reports no defect. |
 | R6 | fatal | Every `must_survive_override` flag is still in the container's argv after an operator override. Needs `--image`. |
-| R7 | warn if `audit_entrypoint = false`, else fatal | The declared entrypoint script exists, is executable, passes `--audit-hmac-key-file`, generates the key from `/dev/urandom` when absent, and ends in `exec ... "$@"`. |
+| R7 | warn if neither `audit_entrypoint` nor `audit_hmac_flag` is set, else fatal | With `audit_entrypoint`: the declared entrypoint script exists, is executable, passes `--audit-hmac-key-file`, generates the key from `/dev/urandom` when absent, and ends in `exec ... "$@"`. With `audit_hmac_flag`: nothing further to check here -- the manifest reader already proved the flag is in `must_survive_override`, so R6 proves it reaches argv; the repo's own tests must cover key generation. |
 
 ### What can make a rule not run
 
@@ -133,10 +139,10 @@ these announces itself.
 - **`build_info = false`** — R3 still reports, as a warning rather than a
   failure. There is no value that makes a package legitimately
   provenance-free.
-- **`audit_entrypoint = false`** — R7 still reports, as a warning naming
-  `#376`, rather than silently passing. This is the transitional state for a
-  repo that has not shipped its entrypoint script yet; once it does, flipping
-  the manifest to the real path promotes the same check to fatal.
+- **`audit_entrypoint = false` and `audit_hmac_flag = false`** — R7 still
+  reports, as a warning naming `#376`, rather than silently passing. This is
+  the transitional state for a repo that has not migrated either way yet;
+  setting either one to a real value promotes the same check to fatal.
 - **An earlier rule already failed** — R1-R5 run in one step and R6 in another,
   and a failing step would normally skip everything after it. Both R6 steps
   therefore carry `!cancelled()`, so a package with a non-executable installer
@@ -185,6 +191,17 @@ running container, because an entrypoint shim's `exec` line is invisible to
 `docker inspect` — R6's own commentary calls this out as something it cannot
 see. Until a repo does this, `audit_entrypoint = false` keeps R7 at a warning
 so the gap stays visible without breaking every image's build in one commit.
+
+**This script-based fix does not apply to a distroless image: there is no
+shell to run the wrapper in.** All five vendor repos this rollout targets
+ship distroless (`gcr.io/distroless/cc-debian*:nonroot`) runtime stages, so
+none of them can ever set `audit_entrypoint` to a real path. Their fix
+instead makes the binary itself generate `audit-hmac.key` on first run when
+absent (the container-image equivalent of `packaging/lxc/install.sh`'s own
+key-generation step) and bakes the flag directly into the Dockerfile's
+`ENTRYPOINT` array. Declare that flag as `audit_hmac_flag` (and list it in
+`must_survive_override`, since that is what lets R6 actually prove it reaches
+the running container's argv) instead of `audit_entrypoint`.
 
 ## The tests
 

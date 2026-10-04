@@ -1,0 +1,12 @@
+binary = "bin/svc"
+installer = "packaging/lxc/install.sh"
+service = "svc"
+config_dir = "/etc/svc"
+tokens = "/var/lib/svc/tokens.json"
+build_info = false
+skip_build_env = false
+units = ["packaging/systemd/svc.service"]
+must_survive_override = ["--tokens-file", "--audit-hmac-key-file"]
+audit_hmac_flag = "--audit-hmac-key-file"
+[placeholders]
+"@BIND_ADDRESS@" = "127.0.0.1:30031"
