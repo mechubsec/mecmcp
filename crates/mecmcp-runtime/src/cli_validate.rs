@@ -518,4 +518,9 @@ mod tests {
              consumer, so the weaker check is itself the defect class in mecmcp#273"
         );
     }
+
+    // `--require-verified-approver` and friends (MEC-994 W5) are no longer
+    // flags on the shared `Cli` at all (see `VerifiedApproverArgs`'s doc
+    // comment for why), so their cross-checks live and are tested on
+    // `VerifiedApproverArgs::validate` in `cli.rs`, not here.
 }

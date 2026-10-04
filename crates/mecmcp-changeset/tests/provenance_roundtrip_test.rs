@@ -65,6 +65,7 @@ fn roundtrip_request_id_composition_and_parsing() {
         change_ref: None,
         request_id: known_request_id,
         token_verified_fields: TokenVerifiedFields::none(),
+        verified_approver: None,
         approver: None,
         change_set_id: None,
     };
@@ -148,6 +149,7 @@ fn roundtrip_provenance_only_no_operator_comment() {
         change_ref: None,
         request_id: known_request_id,
         token_verified_fields: TokenVerifiedFields::none(),
+        verified_approver: None,
         approver: None,
         change_set_id: None,
     };
@@ -251,6 +253,7 @@ fn multiple_commits_in_log() {
         change_ref: None,
         request_id: request_id_1,
         token_verified_fields: TokenVerifiedFields::none(),
+        verified_approver: None,
         approver: None,
         change_set_id: None,
     };
@@ -270,6 +273,7 @@ fn multiple_commits_in_log() {
         change_ref: None,
         request_id: request_id_2,
         token_verified_fields: TokenVerifiedFields::none(),
+        verified_approver: None,
         approver: None,
         change_set_id: None,
     };

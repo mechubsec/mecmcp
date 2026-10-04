@@ -171,6 +171,11 @@ pub struct Attribution {
     /// it was — that is the whole point of mecmcp#52 — so the fact is carried
     /// explicitly from the one place that knows it.
     pub token_verified_fields: TokenVerifiedFields,
+    /// The verified approver identity bound to this request, when a
+    /// `Mecmcp-Approver-Assertion` header passed `bind_approver` (MEC-994
+    /// W3). `None` for every call that carried no assertion — which, before
+    /// W4 lands, is every call: nothing populates this on `CallerCtx` yet.
+    pub verified_approver: Option<mecmcp_auth::VerifiedApprover>,
     /// The second principal who approved, when applied under two-person control.
     ///
     /// Distinct from `change_ref`, which is an external change-control reference
@@ -338,6 +343,7 @@ impl Attribution {
             // Minting per call is what made that correlation impossible.
             request_id: ctx.request_id,
             token_verified_fields,
+            verified_approver: ctx.verified_approver.clone(),
             // A token cannot vouch for who approved a change set, nor identify
             // one. Only a call site holding the record may set these.
             approver: None,
@@ -361,6 +367,7 @@ impl Attribution {
             change_ref: None,
             request_id: Uuid::new_v4(),
             token_verified_fields: TokenVerifiedFields::none(),
+            verified_approver: None,
             // Never derived from a caller: only a change-set record knows these.
             approver: None,
             change_set_id: None,
@@ -424,6 +431,8 @@ mod tests {
             provider_tier: None,
             on_behalf_of: None,
             actor_type: mecmcp_auth::ActorType::Unknown,
+            oidc_subject: None,
+            verified_approver: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -692,6 +701,8 @@ mod tests {
             provider_tier: Some(mecmcp_auth::Tier::Public),
             on_behalf_of: Some("dev@example.com".into()),
             actor_type: mecmcp_auth::ActorType::Agent,
+            oidc_subject: None,
+            verified_approver: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -749,6 +760,8 @@ mod tests {
             provider_tier: None,
             on_behalf_of: Some("alice@example.com".into()),
             actor_type: mecmcp_auth::ActorType::Human,
+            oidc_subject: None,
+            verified_approver: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -779,6 +792,8 @@ mod tests {
             provider_tier: None,
             on_behalf_of: None,
             actor_type: mecmcp_auth::ActorType::Unknown, // defaulted, not explicit
+            oidc_subject: None,
+            verified_approver: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -807,6 +822,8 @@ mod tests {
             provider_tier: None,
             on_behalf_of: None,
             actor_type: mecmcp_auth::ActorType::Agent, // explicit
+            oidc_subject: None,
+            verified_approver: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -837,6 +854,8 @@ mod tests {
             provider_tier: Some(mecmcp_auth::Tier::Public),
             on_behalf_of: None,
             actor_type: mecmcp_auth::ActorType::Agent,
+            oidc_subject: None,
+            verified_approver: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -869,6 +888,8 @@ mod tests {
             provider_tier: None,
             on_behalf_of: Some("alice@example.com".into()),
             actor_type: mecmcp_auth::ActorType::Agent,
+            oidc_subject: None,
+            verified_approver: None,
             client_name: None,
             model_id: None,
             session_id: None,

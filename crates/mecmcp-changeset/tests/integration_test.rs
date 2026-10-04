@@ -98,15 +98,15 @@ fn test_version_rejection() {
     let temp_dir = tempfile::tempdir().unwrap();
     let state_path = temp_dir.path().join("state.json");
 
-    // Version 8 is the first unsupported one: 1-7 are readable. 4 became valid
+    // Version 9 is the first unsupported one: 1-8 are readable. 4 became valid
     // with the unambiguous approval digest (mecmcp#283), 5 with the handleless
     // apply marker, 6 with the approval digest that binds the preview
-    // (rustproxmoxmcp#56), and 7 with the keyed approval digest (MEC-457). The
-    // point of this test is that an *unknown future* version is refused rather
-    // than guessed at, so it tracks the top of the supported range and moves
-    // with it.
+    // (rustproxmoxmcp#56), 7 with the keyed approval digest (MEC-457), and 8
+    // with the verified-approver identity fields (MEC-994). The point of this
+    // test is that an *unknown future* version is refused rather than guessed
+    // at, so it tracks the top of the supported range and moves with it.
     let invalid_version = serde_json::json!({
-        "version": 8,
+        "version": 9,
         "state": {
             "operations": {},
             "change_sets": {}
@@ -129,7 +129,7 @@ fn test_version_rejection() {
     assert!(result.is_err());
     let error_message = result.unwrap_err().to_string();
     assert!(
-        error_message.contains("unsupported changeset state version 8"),
+        error_message.contains("unsupported changeset state version 9"),
         "Expected version error, got: {error_message}"
     );
 }

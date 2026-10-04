@@ -155,6 +155,7 @@ async fn approval_creation_rejects_separator_in_approver() {
             "clean-owner".into(),
             test_fingerprint(),
             "policy-sig".into(),
+            None,
         )
         .await;
     assert!(plan_result.is_ok(), "plan with clean owner must succeed");
@@ -164,9 +165,11 @@ async fn approval_creation_rejects_separator_in_approver() {
         .approve_change_set(
             created.change_set_id.clone(),
             "device1".into(),
-            "bad|approver".into(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "bad|approver".into(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             created.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await;
     assert!(
@@ -197,6 +200,7 @@ async fn approval_creation_rejects_separator_in_owner() {
             "bad|owner".into(),
             test_fingerprint(),
             "policy-sig".into(),
+            None,
         )
         .await;
     assert!(plan_result.is_ok(), "plan can be created");
@@ -206,9 +210,11 @@ async fn approval_creation_rejects_separator_in_owner() {
         .approve_change_set(
             created.change_set_id.clone(),
             "device1".into(),
-            "clean-approver".into(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "clean-approver".into(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             created.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await;
     assert!(
@@ -259,6 +265,7 @@ fn load_rejects_separator_in_approver() {
         preview: None,
         task_id: None,
         apply_without_handle: false,
+        owner_subject: None,
     };
     let digest = compute_approval_digest_legacy(
         &change_set_id,
@@ -273,6 +280,9 @@ fn load_rejects_separator_in_approver() {
         digest,
         digest_version: 4,
         waived: None,
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
 
     let mut change_sets = BTreeMap::new();
@@ -329,6 +339,7 @@ fn load_rejects_separator_in_owner() {
         preview: None,
         task_id: None,
         apply_without_handle: false,
+        owner_subject: None,
     };
     let digest = compute_approval_digest_legacy(
         &change_set_id,
@@ -343,6 +354,9 @@ fn load_rejects_separator_in_owner() {
         digest,
         digest_version: 4,
         waived: None,
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
 
     let mut change_sets = BTreeMap::new();
@@ -456,6 +470,7 @@ fn load_accepts_clean_approval() {
         preview: None,
         task_id: None,
         apply_without_handle: false,
+        owner_subject: None,
     };
     // What a current writer produces. `write_state_for_test` stamps version 4 for any
     // real approval, and v4 files verify under the tuple encoding.
@@ -472,6 +487,9 @@ fn load_accepts_clean_approval() {
         digest,
         digest_version: 4,
         waived: None,
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
 
     let mut change_sets = BTreeMap::new();
@@ -612,6 +630,9 @@ fn a_legacy_approval_migrates_to_v4_and_still_verifies() {
             digest: legacy_digest.clone(),
             digest_version: 4,
             waived: None,
+            mechanism: None,
+            issuer: None,
+            subject: None,
         }),
         operation_id: None,
         policy_signature: String::new(),
@@ -619,6 +640,7 @@ fn a_legacy_approval_migrates_to_v4_and_still_verifies() {
         preview: None,
         task_id: None,
         apply_without_handle: false,
+        owner_subject: None,
     };
 
     let mut change_sets = BTreeMap::new();

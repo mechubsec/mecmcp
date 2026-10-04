@@ -46,6 +46,7 @@ async fn creating_a_change_set_records_a_proposal() {
             "agent:planner".to_string(),
             fingerprint(),
             "sig".to_string(),
+            None,
         )
         .await
         .unwrap();
@@ -75,6 +76,7 @@ async fn approving_records_the_approver_and_the_decision() {
             "agent:planner".to_string(),
             fingerprint(),
             "sig".to_string(),
+            None,
         )
         .await
         .unwrap();
@@ -83,9 +85,11 @@ async fn approving_records_the_approver_and_the_decision() {
         .approve_change_set(
             output.change_set_id.clone(),
             "vsrx-ci".to_string(),
-            "user:alice".to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "user:alice".to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             output.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await
         .unwrap();
@@ -122,6 +126,7 @@ async fn a_coordinator_without_evidence_still_works() {
             "agent:planner".to_string(),
             fingerprint(),
             "sig".to_string(),
+            None,
         )
         .await;
 
@@ -356,6 +361,7 @@ async fn a_lab_mode_waiver_is_recorded_as_a_waiver() {
             "agent:planner".to_string(),
             fingerprint(),
             "sig".to_string(),
+            None,
         )
         .await
         .unwrap();
@@ -630,6 +636,7 @@ async fn an_operator_waiver_records_its_time_box_and_ticket() {
             "agent:planner".to_string(),
             fingerprint(),
             "sig".to_string(),
+            None,
         )
         .await
         .unwrap();

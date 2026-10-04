@@ -43,6 +43,8 @@ fn token_identity_survives_a_devices_drop_policy() {
             provider_tier: None,
             on_behalf_of: None,
             actor_type: None,
+            oidc_issuer: None,
+            oidc_subject: None,
             server_pid: None,
         },
         &["device1".to_owned(), "device2".to_owned()],

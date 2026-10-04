@@ -438,6 +438,97 @@ pub fn verify_approval_digest_v6(
     expected.as_bytes().ct_eq(candidate.as_bytes()).into()
 }
 
+/// The approval digest, extended to bind the approver's identity mechanism
+/// (MEC-994 W4).
+///
+/// v6 binds `(change_set_id, plan_digest, preview_digest, owner, approver,
+/// approved_at)` under a deployment key, which authenticates that the
+/// recorded fields were not edited after the fact — but says nothing about
+/// *how* `approver` was asserted. A token name is just a string; v6 cannot
+/// distinguish "the holder of a token labelled human approved" from "the
+/// holder additionally proved a fresh IdP-verified identity distinct from the
+/// owner's". v7 adds that: `mechanism` (`"token"` or `"oidc"`), the verified
+/// `issuer`/`subject` when present, and the owner's own `owner_subject`
+/// (recorded at propose time) so a record can be checked for "the owner
+/// approved their own change through a second token" without re-deriving it
+/// from anything outside the digest.
+///
+/// The domain marker changes from `"mecmcp-approval-v6"` to
+/// `"mecmcp-approval-v7"` for the same reason it has changed at every prior
+/// version: it keeps a v7 digest structurally unable to equal a same-input
+/// v6 one.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn compute_approval_digest_v7(
+    key: &[u8],
+    change_set_id: &str,
+    plan_digest: &str,
+    preview_digest: Option<&str>,
+    owner: &str,
+    approver: &str,
+    approved_at_unix: u64,
+    mechanism: &str,
+    approver_oidc: Option<(&str, &str)>,
+    owner_subject: Option<(&str, &str)>,
+) -> String {
+    use hmac::{Hmac, KeyInit, Mac};
+
+    let canonical = serde_json::to_vec(&(
+        "mecmcp-approval-v7",
+        change_set_id,
+        plan_digest,
+        preview_digest,
+        owner,
+        approver,
+        approved_at_unix,
+        mechanism,
+        approver_oidc,
+        owner_subject,
+    ))
+    .expect("approval digest inputs are primitives and cannot fail to serialize");
+
+    let mut mac =
+        <Hmac<Sha256>>::new_from_slice(key).expect("HMAC-SHA256 accepts a key of any length");
+    mac.update(&canonical);
+    format!("sha256:{}", bytes_hex(&mac.finalize().into_bytes()))
+}
+
+/// Verifies a v7 approval digest against the deployment's key.
+///
+/// Compares in constant time, for the same reason as
+/// [`verify_approval_digest_v6`].
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn verify_approval_digest_v7(
+    key: &[u8],
+    change_set_id: &str,
+    plan_digest: &str,
+    preview_digest: Option<&str>,
+    owner: &str,
+    approver: &str,
+    approved_at_unix: u64,
+    mechanism: &str,
+    approver_oidc: Option<(&str, &str)>,
+    owner_subject: Option<(&str, &str)>,
+    candidate: &str,
+) -> bool {
+    use subtle::ConstantTimeEq;
+
+    let expected = compute_approval_digest_v7(
+        key,
+        change_set_id,
+        plan_digest,
+        preview_digest,
+        owner,
+        approver,
+        approved_at_unix,
+        mechanism,
+        approver_oidc,
+        owner_subject,
+    );
+    expected.as_bytes().ct_eq(candidate.as_bytes()).into()
+}
+
 /// Validates that a principal identifier does not contain the digest separator.
 ///
 /// `compute_approval_digest` and the legacy `compute_waiver_digest` join their
@@ -474,6 +565,15 @@ pub fn validate_principal_for_digest(field_name: &'static str, value: &str) -> R
 #[cfg(test)]
 mod preview_binding_tests {
     use super::*;
+
+    /// A fresh HMAC key for a single test, generated at runtime rather than
+    /// a committed literal — nothing here is a credential, so there should
+    /// be nothing for a secret scanner to flag.
+    fn random_key() -> [u8; 16] {
+        let mut key = [0u8; 16];
+        getrandom::fill(&mut key).expect("system randomness for a test key");
+        key
+    }
 
     /// The point of v5: the same plan, approver and moment, with a different
     /// preview, must not produce the same signature. Without this the approval
@@ -622,6 +722,164 @@ mod preview_binding_tests {
             1_700_000_000,
         );
         assert_ne!(v5, v6);
+    }
+
+    /// v6 and v7 must never agree, even on the fields they share, so a v6
+    /// digest predating the approver-mechanism fields can never be replayed
+    /// as a v7 one.
+    #[test]
+    fn v6_and_v7_do_not_collide() {
+        let key = random_key();
+        let v6 = compute_approval_digest_v6(
+            &key,
+            "cs1",
+            "sha256:plan",
+            None,
+            "alice",
+            "bob",
+            1_700_000_000,
+        );
+        let v7 = compute_approval_digest_v7(
+            &key,
+            "cs1",
+            "sha256:plan",
+            None,
+            "alice",
+            "bob",
+            1_700_000_000,
+            "token",
+            None,
+            None,
+        );
+        assert_ne!(v6, v7);
+    }
+
+    /// The point of v7: a different mechanism, issuer, subject, or
+    /// owner-subject each move the digest, so none of them can be edited on
+    /// disk after signing without the record going tamper-evident.
+    #[test]
+    fn v7_binds_mechanism_and_oidc_identity() {
+        let key = random_key();
+        let base = compute_approval_digest_v7(
+            &key,
+            "cs1",
+            "sha256:plan",
+            None,
+            "alice",
+            "bob",
+            1_700_000_000,
+            "oidc",
+            Some(("https://idp.example", "bob-sub")),
+            None,
+        );
+        let different_mechanism = compute_approval_digest_v7(
+            &key,
+            "cs1",
+            "sha256:plan",
+            None,
+            "alice",
+            "bob",
+            1_700_000_000,
+            "token",
+            None,
+            None,
+        );
+        let different_subject = compute_approval_digest_v7(
+            &key,
+            "cs1",
+            "sha256:plan",
+            None,
+            "alice",
+            "bob",
+            1_700_000_000,
+            "oidc",
+            Some(("https://idp.example", "someone-else")),
+            None,
+        );
+        let with_owner_subject = compute_approval_digest_v7(
+            &key,
+            "cs1",
+            "sha256:plan",
+            None,
+            "alice",
+            "bob",
+            1_700_000_000,
+            "oidc",
+            Some(("https://idp.example", "bob-sub")),
+            Some(("https://idp.example", "alice-sub")),
+        );
+        assert_ne!(base, different_mechanism);
+        assert_ne!(base, different_subject);
+        assert_ne!(base, with_owner_subject);
+    }
+
+    /// `approver_oidc` is serialized as a tuple, not joined into a single
+    /// delimited string, so a character shared between the issuer and
+    /// subject fields cannot move the boundary between them.
+    #[test]
+    fn v7_keeps_issuer_and_subject_as_distinct_fields() {
+        let key = random_key();
+        let args = |approver_oidc: (&str, &str)| {
+            compute_approval_digest_v7(
+                &key,
+                "cs1",
+                "sha256:plan",
+                None,
+                "alice",
+                "bob",
+                1_700_000_000,
+                "oidc",
+                Some(approver_oidc),
+                None,
+            )
+        };
+        assert_ne!(args(("a|b", "c")), args(("a", "b|c")));
+    }
+
+    /// Mirrors [`verification_fails_without_the_correct_key`] for v7: the key
+    /// is still what verification depends on, not just the visible fields.
+    #[test]
+    fn v7_verification_fails_without_the_correct_key() {
+        let real_key = random_key();
+        let forged_key = random_key();
+        let digest = compute_approval_digest_v7(
+            &real_key,
+            "cs1",
+            "sha256:plan",
+            Some("sha256:preview"),
+            "alice",
+            "bob",
+            1_700_000_000,
+            "oidc",
+            Some(("https://idp.example", "bob-sub")),
+            None,
+        );
+        assert!(verify_approval_digest_v7(
+            &real_key,
+            "cs1",
+            "sha256:plan",
+            Some("sha256:preview"),
+            "alice",
+            "bob",
+            1_700_000_000,
+            "oidc",
+            Some(("https://idp.example", "bob-sub")),
+            None,
+            &digest,
+        ));
+        assert!(!verify_approval_digest_v7(
+            &forged_key,
+            "cs1",
+            "sha256:plan",
+            Some("sha256:preview"),
+            "alice",
+            "bob",
+            1_700_000_000,
+            "oidc",
+            Some(("https://idp.example", "bob-sub")),
+            None,
+            &digest,
+        ));
     }
 
     /// Every field still moves the digest — the preview is an addition, not a

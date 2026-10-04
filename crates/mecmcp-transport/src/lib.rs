@@ -5,6 +5,7 @@
 //! Every consumer-owned choice — metric names, target argument keys, realm,
 //! server label — is passed as a parameter rather than baked in.
 
+mod approver_assertion;
 mod auth;
 mod caller;
 mod client_info;
@@ -37,6 +38,9 @@ pub mod test_client;
 pub mod test_harness;
 pub mod tls;
 
+pub use approver_assertion::{
+    APPROVER_ASSERTION_HEADER, ApproverAssertionError, ApproverAssertionVerifier,
+};
 pub use auth::{
     BearerAuthError, BearerAuthenticator, BearerBoundary, BearerResponseProfile,
     BearerResponseStyle, BoundaryAccounting, apply_bearer_boundary,

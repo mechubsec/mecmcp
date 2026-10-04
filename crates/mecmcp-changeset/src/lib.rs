@@ -8,6 +8,7 @@
 #![warn(missing_docs)]
 
 pub mod apply;
+pub mod approver;
 pub mod changeset;
 pub mod commit_metadata;
 pub mod coordinator;
@@ -22,6 +23,7 @@ pub mod transaction;
 pub mod types;
 
 pub use apply::ApplyOutput;
+pub use approver::ApproverIdentity;
 pub use changeset::ChangeSetOutput;
 pub use commit_metadata::{
     AttachOutcome, CommitMetaError, CommitMetadataSink, apply_commit_metadata,
@@ -39,10 +41,11 @@ pub use persistence::{
     validate_state_with_key,
 };
 pub use records::{
-    ApprovalRecord, ChangeSetRecord, OperationRecord, PreviewError, PreviewRecord, RecordError,
-    TargetError, WaiverKind, WaiverRecord, change_set_digest, change_set_digest_with_targets,
-    mutation_policy_signature, preview_digest, require_operation_fingerprint,
-    require_operation_policy, validate_change_set_actions, validate_targets,
+    ApprovalRecord, ChangeSetRecord, OperationRecord, OwnerSubject, PreviewError, PreviewRecord,
+    RecordError, TargetError, WaiverKind, WaiverRecord, change_set_digest,
+    change_set_digest_with_targets, mutation_policy_signature, preview_digest,
+    require_operation_fingerprint, require_operation_policy, validate_change_set_actions,
+    validate_targets,
 };
 pub use recovery::{RecoveryDisposition, ResolvedOperationOutput, resolve_persisted_operation};
 pub use transaction::{

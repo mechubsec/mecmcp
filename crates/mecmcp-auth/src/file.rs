@@ -312,7 +312,7 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
         known: &KnownNames<'_>,
     ) -> Result<TokenSecret, FileError> {
         Self::add_with_options(
-            path, name, devices, tools, None, None, None, None, None, None, known,
+            path, name, devices, tools, None, None, None, None, None, None, None, known,
         )
     }
 
@@ -333,6 +333,7 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
         provider_tier: Option<crate::Tier>,
         on_behalf_of: Option<String>,
         actor_type: Option<crate::ActorType>,
+        oidc_subject: Option<crate::entry::OidcSubject>,
         known: &KnownNames<'_>,
     ) -> Result<TokenSecret, FileError> {
         use crate::token::TokenSecret;
@@ -368,6 +369,7 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
             provider_tier,
             on_behalf_of,
             actor_type: actor_type.unwrap_or(crate::ActorType::Unknown),
+            oidc_subject,
         });
 
         let updated = TokenStore::try_new(entries).map_err(|source| FileError::Store {
@@ -450,6 +452,7 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
                         provider_tier: entry.provider_tier,
                         on_behalf_of: entry.on_behalf_of.clone(),
                         actor_type: entry.actor_type,
+                        oidc_subject: entry.oidc_subject.clone(),
                     }
                 } else {
                     entry.clone()
@@ -525,6 +528,7 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
                         provider_tier: entry.provider_tier,
                         on_behalf_of: entry.on_behalf_of.clone(),
                         actor_type: entry.actor_type,
+                        oidc_subject: entry.oidc_subject.clone(),
                     }
                 } else {
                     entry.clone()
@@ -623,6 +627,7 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
                         provider_tier,
                         on_behalf_of: on_behalf_of.clone(),
                         actor_type: actor_type.unwrap_or_default(),
+                        oidc_subject: entry.oidc_subject.clone(),
                     }
                 } else {
                     entry.clone()
@@ -1442,6 +1447,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &known,
         )
         .expect("add");
@@ -1752,6 +1758,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &known,
         )
         .expect("add");
@@ -2054,6 +2061,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &known,
         )
         .expect("add");
@@ -2143,6 +2151,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &known,
         );
 
@@ -2176,6 +2185,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &known,
         )
         .expect("scopes that agree must mint");
@@ -2196,6 +2206,7 @@ mod tests {
             ScopeSet::Wildcard,
             None,
             Some(org_grant()),
+            None,
             None,
             None,
             None,
@@ -2242,6 +2253,7 @@ mod tests {
                     provider_tier: None,
                     on_behalf_of: None,
                     actor_type: crate::ActorType::Human,
+                    oidc_subject: None,
                 }
             })
             .collect();
@@ -2265,6 +2277,7 @@ mod tests {
             ScopeSet::Wildcard,
             None,
             Some(org_grant()),
+            None,
             None,
             None,
             None,
@@ -2344,6 +2357,7 @@ mod tests {
             ScopeSet::Wildcard,
             None,
             Some(grant.clone()),
+            None,
             None,
             None,
             None,
@@ -2612,6 +2626,7 @@ mod tests {
             provider_tier: None,
             on_behalf_of: None,
             actor_type: crate::ActorType::Human,
+            oidc_subject: None,
         };
         let entries = vec![entry];
 

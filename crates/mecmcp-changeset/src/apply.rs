@@ -286,6 +286,22 @@ impl ChangesetCoordinator {
                     "change set was approved by a lab-mode waiver, but lab mode is not enabled on this deployment",
                 ));
             }
+            // Strict verified-approver mode exists so a second verified
+            // human, not a waiver or a token-asserted approver, signs off.
+            // `mechanism` is HMAC-covered by the approval digest (v7), so it
+            // cannot be forged post hoc without the digest key. This also
+            // closes a transition gap: a token-asserted approval recorded
+            // before strict mode was turned on would otherwise still apply
+            // once it is (MEC-994 Percy review F10).
+            if self.require_verified_approver()
+                && (approval.waived.is_some() || approval.mechanism.as_deref() != Some("oidc"))
+            {
+                return Err(CoordinatorError::new(
+                    "change_set_id",
+                    "approval is refused under strict verified-approver mode: the change set \
+                     was not approved by a verified human approver",
+                ));
+            }
         } else {
             // Legacy approval: must have an approver in the top-level field
             if change_set.approver.is_none() {
@@ -300,6 +316,17 @@ impl ChangesetCoordinator {
                 return Err(CoordinatorError::new(
                     "change_set_id",
                     "change set was approved by its own owner; refusing to apply",
+                ));
+            }
+            // Legacy records predate the approval-digest feature entirely,
+            // so there is no `mechanism` to check; under strict mode none of
+            // them can be a verified human approval (MEC-994 Percy review
+            // F10).
+            if self.require_verified_approver() {
+                return Err(CoordinatorError::new(
+                    "change_set_id",
+                    "approval is refused under strict verified-approver mode: the change set \
+                     was not approved by a verified human approver",
                 ));
             }
         }
@@ -761,12 +788,16 @@ mod tests {
                 digest: "c".repeat(64),
                 digest_version: 4,
                 waived: Some(waiver),
+                mechanism: None,
+                issuer: None,
+                subject: None,
             }),
             policy_signature: "test".to_owned(),
             targets: vec![],
             preview: None,
             task_id: None,
             apply_without_handle: false,
+            owner_subject: None,
         };
 
         // One second before expiry: still valid

@@ -32,6 +32,15 @@ fn test_fingerprint() -> String {
     "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string()
 }
 
+/// A fresh HMAC key for a single test, generated at runtime rather than a
+/// committed literal — nothing here is a credential, so there is nothing
+/// for a secret scanner to flag.
+fn random_key() -> Vec<u8> {
+    let mut key = [0u8; 16];
+    getrandom::fill(&mut key).expect("system randomness for a test key");
+    key.to_vec()
+}
+
 fn limits() -> OperationLimits {
     OperationLimits {
         max_operations: 1024,
@@ -77,6 +86,7 @@ async fn create_and_approve(
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -85,37 +95,35 @@ async fn create_and_approve(
         .approve_change_set(
             created.change_set_id.clone(),
             "device-a".to_string(),
-            "bob".to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "bob".to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             created.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await
         .expect("approve")
 }
 
-/// Approving through a keyed coordinator produces a v6 digest, not v5.
+/// Approving through a keyed coordinator produces a v7 digest, not v5.
 #[tokio::test]
-async fn approving_with_a_key_produces_a_v6_digest() {
-    let (_dir, state_path, coordinator) =
-        setup_keyed_coordinator(Arc::from(b"the-deployment-key".as_slice())).await;
+async fn approving_with_a_key_produces_a_v7_digest() {
+    let key = random_key();
+    let (_dir, state_path, coordinator) = setup_keyed_coordinator(Arc::from(key.as_slice())).await;
 
     let approved = create_and_approve(&coordinator).await;
     assert_eq!(approved.state, ChangeSetState::Approved);
 
-    let state = read_state_with_key(
-        &state_path,
-        limits().max_state_bytes,
-        Some(b"the-deployment-key"),
-    )
-    .expect("read with the correct key");
+    let state = read_state_with_key(&state_path, limits().max_state_bytes, Some(&key))
+        .expect("read with the correct key");
     let record = state
         .change_sets
         .get(&approved.change_set_id)
         .expect("change set");
     let approval = record.approval.as_ref().expect("approval");
     assert_eq!(
-        approval.digest_version, 6,
-        "a configured key must produce a v6 (keyed) digest"
+        approval.digest_version, 7,
+        "a configured key must produce a v7 (keyed) digest"
     );
 }
 
@@ -145,8 +153,10 @@ async fn approving_without_a_key_still_produces_a_v5_digest() {
 /// that signed it, even though every plaintext field is exactly as written.
 #[tokio::test]
 async fn reloading_a_v6_file_without_the_key_is_rejected() {
+    let real_key = random_key();
+    let guessed_key = random_key();
     let (_dir, state_path, coordinator) =
-        setup_keyed_coordinator(Arc::from(b"the-real-key".as_slice())).await;
+        setup_keyed_coordinator(Arc::from(real_key.as_slice())).await;
     create_and_approve(&coordinator).await;
     drop(coordinator);
 
@@ -162,11 +172,7 @@ async fn reloading_a_v6_file_without_the_key_is_rejected() {
             .contains("no approval digest key was supplied")
     );
 
-    let wrong_key = read_state_with_key(
-        &state_path,
-        limits().max_state_bytes,
-        Some(b"a-guessed-key"),
-    );
+    let wrong_key = read_state_with_key(&state_path, limits().max_state_bytes, Some(&guessed_key));
     assert!(
         wrong_key.is_err(),
         "a v6 digest must not verify under the wrong key"
@@ -190,7 +196,7 @@ async fn reloading_a_v6_file_without_the_key_is_rejected() {
 /// Reloading with the correct key succeeds and the approval is intact.
 #[tokio::test]
 async fn reloading_a_v6_file_with_the_correct_key_succeeds() {
-    let key: Arc<[u8]> = Arc::from(b"the-real-key".as_slice());
+    let key: Arc<[u8]> = Arc::from(random_key().as_slice());
     let (_dir, state_path, coordinator) = setup_keyed_coordinator(Arc::clone(&key)).await;
     let approved = create_and_approve(&coordinator).await;
     drop(coordinator);
@@ -214,13 +220,13 @@ async fn reloading_a_v6_file_with_the_correct_key_succeeds() {
 /// Percy's review (MEC-457, finding 1): a keyed deployment must not accept an
 /// approval that was forged by downgrading `digest_version` to 5 (or 4, or the
 /// legacy encoding). Those digests are unkeyed — anyone who can write the
-/// state file can recompute them without ever holding the key. Only a v6
+/// state file can recompute them without ever holding the key. Only a v6/v7
 /// digest is bound to the key, so once a key is configured, any approver-
-/// bearing approval that isn't v6 must be rejected outright, not verified
+/// bearing approval that isn't v6/v7 must be rejected outright, not verified
 /// under its own claimed rule.
 #[tokio::test]
 async fn downgrade_to_v5_is_rejected_when_a_key_is_configured() {
-    let key: Arc<[u8]> = Arc::from(b"the-deployment-key".as_slice());
+    let key: Arc<[u8]> = Arc::from(random_key().as_slice());
     let (_dir, state_path, coordinator) = setup_keyed_coordinator(Arc::clone(&key)).await;
     let approved = create_and_approve(&coordinator).await;
     drop(coordinator);
@@ -242,6 +248,13 @@ async fn downgrade_to_v5_is_rejected_when_a_key_is_configured() {
         let approval = record.approval.as_mut().expect("approval");
         approval.approver = Some("mallory".to_string());
         approval.digest_version = 5;
+        // A genuine v5 approval never carries these — they are v7-only
+        // (MEC-994). Cleared here so this forgery is caught by the
+        // keyed-version gate this test means to exercise, not by the
+        // separate "v7 fields on a non-v7 record" check.
+        approval.mechanism = None;
+        approval.issuer = None;
+        approval.subject = None;
         approval.digest = mecmcp_changeset::digest::compute_approval_digest_v5(
             &id,
             &plan,
@@ -263,7 +276,7 @@ async fn downgrade_to_v5_is_rejected_when_a_key_is_configured() {
         reloaded
             .unwrap_err()
             .to_string()
-            .contains("requires keyed (v6) approvals")
+            .contains("requires keyed (v6/v7) approvals")
     );
 
     assert!(
@@ -285,7 +298,7 @@ async fn downgrade_to_v5_is_rejected_when_a_key_is_configured() {
 /// assertion failure. `ApprovalDigestKey` must redact instead.
 #[tokio::test]
 async fn debug_output_never_contains_the_approval_digest_key() {
-    let key: Arc<[u8]> = Arc::from(b"super-secret-deployment-key".as_slice());
+    let key: Arc<[u8]> = Arc::from(random_key().as_slice());
     // `Arc<[u8]>`'s own (undesired) `Debug` prints the bytes as a numeric
     // array, not ASCII text -- so the leak-detecting assertion has to look
     // for that shape, not the plaintext key.
@@ -304,7 +317,7 @@ async fn debug_output_never_contains_the_approval_digest_key() {
 /// holding the key — must be caught on reload, exactly as it is for v4/v5.
 #[tokio::test]
 async fn a_tampered_approver_is_rejected_even_with_the_correct_key() {
-    let key: Arc<[u8]> = Arc::from(b"the-real-key".as_slice());
+    let key: Arc<[u8]> = Arc::from(random_key().as_slice());
     let (_dir, state_path, coordinator) = setup_keyed_coordinator(Arc::clone(&key)).await;
     let approved = create_and_approve(&coordinator).await;
     drop(coordinator);
