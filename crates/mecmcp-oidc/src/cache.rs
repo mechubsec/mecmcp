@@ -205,6 +205,11 @@ mod tests {
             Ok(DiscoveryDocument {
                 issuer: issuer.to_owned(),
                 jwks_uri: format!("{issuer}/jwks"),
+                authorization_endpoint: None,
+                token_endpoint: None,
+                end_session_endpoint: None,
+                code_challenge_methods_supported: vec![],
+                id_token_signing_alg_values_supported: vec![],
             })
         }
 
@@ -368,6 +373,11 @@ mod tests {
             Ok(DiscoveryDocument {
                 issuer: "https://evil.example.org".to_owned(),
                 jwks_uri: "https://elsewhere.example.net/jwks".to_owned(),
+                authorization_endpoint: None,
+                token_endpoint: None,
+                end_session_endpoint: None,
+                code_challenge_methods_supported: vec![],
+                id_token_signing_alg_values_supported: vec![],
             })
         }
 

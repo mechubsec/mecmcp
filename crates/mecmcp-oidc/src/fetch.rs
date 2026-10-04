@@ -79,10 +79,14 @@ impl KeySource for HttpKeySource {
     async fn fetch_discovery(&self, issuer: &str) -> Result<DiscoveryDocument, FetchError> {
         let url = discovery_url(issuer);
         let body = self.get_json_bytes(&url, "OIDC discovery document").await?;
-        serde_json::from_slice(&body).map_err(|error| FetchError::InvalidResponse {
-            what: "OIDC discovery document",
-            detail: error.to_string(),
-        })
+        let doc: DiscoveryDocument =
+            serde_json::from_slice(&body).map_err(|error| FetchError::InvalidResponse {
+                what: "OIDC discovery document",
+                detail: error.to_string(),
+            })?;
+        // Validate endpoint URLs before accepting the document
+        doc.validate()?;
+        Ok(doc)
     }
 
     async fn fetch_jwks(&self, jwks_uri: &str) -> Result<JwkSet, FetchError> {
