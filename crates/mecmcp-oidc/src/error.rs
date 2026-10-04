@@ -102,4 +102,18 @@ pub enum VerificationFailure {
         /// The issuer whose keys could not be obtained.
         issuer: String,
     },
+    /// The token's `nonce` claim was expected but is missing.
+    ///
+    /// For browser-login relying parties, `nonce` binds the token to the
+    /// authorization request and MUST be verified per OIDC Core §3.1.3.2.
+    /// Resource servers that never initiate authorization leave
+    /// `expected_nonce` as `None` and never hit this variant.
+    #[error("token is missing the required 'nonce' claim")]
+    NonceMissing,
+    /// The token's `nonce` claim does not match the expected value.
+    ///
+    /// Constant-time comparison per OIDC Core §3.1.3.2 — a timing leak in
+    /// nonce comparison is a session fixation oracle.
+    #[error("token nonce does not match the expected value")]
+    NonceMismatch,
 }

@@ -70,4 +70,4 @@ pub use claims::VerifiedClaims;
 pub use discovery::DiscoveryDocument;
 pub use error::{FetchError, VerificationFailure};
 pub use fetch::{HttpKeySource, KeySource};
-pub use verify::{OidcConfig, TokenVerifier};
+pub use verify::{OidcConfig, TokenVerifier, VerifyOptions};

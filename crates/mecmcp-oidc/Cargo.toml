@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 mecmcp-http = { version = "0.26.1", path = "../mecmcp-http", features = ["absolute-url"] }
 async-trait = { workspace = true }
+subtle      = { workspace = true }
 # Widely-used, actively maintained JWT crate (>200M downloads) with a built-in
 # `jwk` module for JSON Web Key parsing. Chosen over hand-rolled JWT parsing
 # per the dependency-surface-is-attack-surface lens: signature verification,
@@ -36,6 +37,10 @@ serde_json   = { workspace = true }
 thiserror    = { workspace = true }
 tokio        = { version = "1", features = ["sync", "time"] }
 tracing      = { workspace = true }
+# URL validation for discovery document endpoints (authorization_endpoint,
+# token_endpoint, end_session_endpoint). Validates that RP endpoints are
+# HTTPS, have a host, and contain no userinfo, per mecmcp-http's requirements.
+url          = "2"
 
 [dev-dependencies]
 # Already resolved transitively via jsonwebtoken's "aws_lc_rs" feature; named
