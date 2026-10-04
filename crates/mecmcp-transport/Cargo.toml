@@ -28,7 +28,13 @@ ipnet       = { version = "2", features = ["serde"] }
 chrono      = { workspace = true }
 mecmcp-audit = { version = "0.26.1", path = "../mecmcp-audit" }
 mecmcp-auth = { version = "0.26.1", path = "../mecmcp-auth" }
-mecmcp-oidc = { version = "0.26.1", path = "../mecmcp-oidc" }
+# Optional: only the `verified-approver` feature needs a JWT/JWKS verifier.
+# Every server links this crate, so a normal dependency here would put
+# `mecmcp-oidc`'s `reqwest`-based HTTP client (and the rustls build it
+# selects) into every build, including servers that never install the
+# `approver_assertion` step-up path. See the `verified-approver` feature
+# below (MEC-994 Percy review B2).
+mecmcp-oidc = { version = "0.26.1", path = "../mecmcp-oidc", optional = true }
 metrics     = { workspace = true }
 # metrics-exporter-prometheus must have default-features = false to avoid
 # pulling in rustls's aws-lc-rs backend via hyper-rustls, which conflicts with
@@ -66,11 +72,28 @@ zeroize     = "1"
 # release build ships the test client and the loopback-serving harness.
 test-util = ["dep:ureq"]
 
+# Gates the `Mecmcp-Approver-Assertion` step-up verification path
+# (`approver_assertion.rs`, `BearerBoundary::with_approver_assertion`) and its
+# `mecmcp-oidc` dependency. Off by default: every server links this crate,
+# and `mecmcp-oidc` feature-unifies in a `reqwest`-based HTTP client whose
+# rustls build needs a process-default `CryptoProvider` installed — exactly
+# the setup an `otel`-exporting server was never required to do, and broke
+# when this edge was a normal dependency (MEC-994 Percy review B2). With the
+# feature off, a presented assertion header still gets a fail-closed 400
+# (`approver_assertion_not_configured`); only the verifier itself goes away.
+verified-approver = ["dep:mecmcp-oidc"]
+
 # `router_integration.rs` drives the router through `test_client::McpClient`,
 # which only exists behind `test-util`.
 [[test]]
 name = "router_integration"
 required-features = ["test-util"]
+
+# `approver_assertion.rs` exercises `ApproverAssertionVerifier`, which only
+# exists behind `verified-approver`.
+[[test]]
+name = "approver_assertion"
+required-features = ["verified-approver"]
 
 [dev-dependencies]
 # Test-only: signs ephemeral RSA JWTs for the approver-assertion integration

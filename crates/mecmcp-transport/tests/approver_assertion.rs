@@ -421,18 +421,20 @@ async fn a_reused_jti_is_refused_on_the_second_call() {
 /// window, so the first call succeeds); the replay guard must still refuse
 /// the second call rather than having forgotten the assertion's `jti`
 /// before `verify` itself would stop accepting it.
-#[tokio::test]
-async fn a_reused_jti_is_refused_even_inside_the_verifiers_leeway_window() {
+#[test]
+fn a_reused_jti_is_refused_even_inside_the_verifiers_leeway_window() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
     let key = generate_test_key(KID);
     let mut claims = valid_claims("alice", "jti-leeway-replay");
     claims["exp"] = json!(now() - 5);
     let token = sign_token(&key, &claims, KID);
     let app = app(&key, Some(bound_subject()), true);
 
-    let first = app
-        .clone()
-        .oneshot(request(Some(&token)))
-        .await
+    let first = runtime
+        .block_on(app.clone().oneshot(request(Some(&token))))
         .expect("first response");
     assert_eq!(
         first.status(),
@@ -440,14 +442,24 @@ async fn a_reused_jti_is_refused_even_inside_the_verifiers_leeway_window() {
         "exp - 5s must still verify under the default 60s leeway"
     );
 
-    let second = app
-        .oneshot(request(Some(&token)))
-        .await
-        .expect("second response");
-    assert_eq!(
-        second.status(),
-        StatusCode::UNAUTHORIZED,
-        "the replay guard must hold the jti at least until exp + leeway, not just exp"
+    // Not just a bare 401: without also asserting `reason=replayed_jti`,
+    // this test would not notice the second call failing for some other
+    // reason (a verifier re-check of the now-expired `exp`, say) while the
+    // replay guard itself did nothing.
+    let captured = mecmcp_audit::testutil::run_with_capture(|| {
+        let second = runtime
+            .block_on(app.oneshot(request(Some(&token))))
+            .expect("second response");
+        assert_eq!(
+            second.status(),
+            StatusCode::UNAUTHORIZED,
+            "the replay guard must hold the jti at least until exp + leeway, not just exp"
+        );
+    });
+    assert!(
+        captured.contains("reason=\"replayed_jti\""),
+        "the second call must be refused specifically as a replay, not some \
+         other rejection reason: {captured}"
     );
 }
 

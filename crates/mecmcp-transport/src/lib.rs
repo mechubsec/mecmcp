@@ -38,9 +38,9 @@ pub mod test_client;
 pub mod test_harness;
 pub mod tls;
 
-pub use approver_assertion::{
-    APPROVER_ASSERTION_HEADER, ApproverAssertionError, ApproverAssertionVerifier,
-};
+pub use approver_assertion::APPROVER_ASSERTION_HEADER;
+#[cfg(feature = "verified-approver")]
+pub use approver_assertion::{ApproverAssertionError, ApproverAssertionVerifier};
 pub use auth::{
     BearerAuthError, BearerAuthenticator, BearerBoundary, BearerResponseProfile,
     BearerResponseStyle, BoundaryAccounting, apply_bearer_boundary,

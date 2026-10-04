@@ -8,15 +8,19 @@
 //! subject (`mecmcp_auth::VerifiedApprover`, deliberately minimal — "no raw
 //! claims, the spec requires the JWT itself never be retained past
 //! verification"). This test drives a real approval through to disk and
-//! greps the persisted state file for a stand-in "raw assertion" value that
-//! was never passed to any `mecmcp-changeset` API, proving the on-disk
-//! record carries only the derived issuer/subject, not the token a real
-//! caller would have presented over HTTP.
+//! checks two things about the persisted state file: that it does not
+//! contain a stand-in "raw assertion" value never passed to any
+//! `mecmcp-changeset` API, and — since a plain substring search cannot fail
+//! if a *new* field were added later to carry claims — that the persisted
+//! approval object's key set is exactly the allowlist of fields
+//! `ApprovalRecord` is documented to carry. A field added to that struct
+//! without updating this allowlist makes this test fail.
 
 #![allow(clippy::unwrap_used)]
 
 use mecmcp_audit::{ActorType, Attribution, Principal, TokenVerifiedFields};
 use mecmcp_changeset::{ApproverIdentity, ChangesetCoordinator, OperationLimits};
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 /// A JWT-shaped value standing in for the raw assertion a real caller would
@@ -25,6 +29,22 @@ use std::time::Duration;
 /// and the fact that it must never appear on disk matter here.
 const RAW_ASSERTION_JWT: &str = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhbGljZSIsImlzcyI6Imh0dHBzOi8vaWRwLmV4YW1wbGUuY29tIn0.\
      fake-signature-never-should-reach-the-state-file";
+
+/// The complete set of keys `ApprovalRecord` (`records.rs`) is allowed to
+/// serialize for an OIDC-verified approval. `#[serde(deny_unknown_fields)]`
+/// on `ApprovalRecord` already stops an *unrecognized* on-disk key from
+/// loading; this allowlist instead stops a *recognized* field — one added to
+/// the struct to carry more of the verified claims than issuer/subject —
+/// from silently starting to persist here.
+const EXPECTED_APPROVAL_KEYS: &[&str] = &[
+    "approver",
+    "approved_at_unix",
+    "digest",
+    "digest_version",
+    "mechanism",
+    "issuer",
+    "subject",
+];
 
 const APPROVER_ISSUER: &str = "https://idp.example.com";
 const APPROVER_SUBJECT: &str = "alice";
@@ -133,5 +153,20 @@ async fn an_approved_change_sets_state_file_never_carries_the_raw_assertion() {
     assert!(
         on_disk.contains(APPROVER_SUBJECT),
         "the verified subject is expected to be persisted: {on_disk}"
+    );
+
+    let on_disk_json: serde_json::Value =
+        serde_json::from_str(&on_disk).expect("state file is valid JSON");
+    let approval = on_disk_json["state"]["change_sets"][&created.change_set_id]["approval"]
+        .as_object()
+        .expect("approved change set has an approval object");
+    let actual_keys: BTreeSet<&str> = approval.keys().map(String::as_str).collect();
+    let expected_keys: BTreeSet<&str> = EXPECTED_APPROVAL_KEYS.iter().copied().collect();
+    assert_eq!(
+        actual_keys, expected_keys,
+        "the persisted approval record carries a field outside the allowlist \
+         (or is missing one); if this is a deliberate new verified-approver \
+         claim, update EXPECTED_APPROVAL_KEYS and confirm the new field is \
+         safe to persist: {on_disk}"
     );
 }
