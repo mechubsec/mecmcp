@@ -11,9 +11,9 @@ authors.workspace    = true
 anyhow      = "1"
 clap        = { version = "4", features = ["derive"] }
 getrandom   = { workspace = true }
-mecmcp-audit = { version = "0.26.0", path = "../mecmcp-audit" }
-mecmcp-auth = { version = "0.26.0", path = "../mecmcp-auth" }
-mecmcp-secret = { version = "0.26.0", path = "../mecmcp-secret" }
+mecmcp-audit = { version = "0.26.1", path = "../mecmcp-audit" }
+mecmcp-auth = { version = "0.26.1", path = "../mecmcp-auth" }
+mecmcp-secret = { version = "0.26.1", path = "../mecmcp-secret" }
 rustix      = { workspace = true, features = ["process", "fs"] }
 thiserror   = { workspace = true }
 tokio       = { version = "1", features = ["rt", "signal", "sync"] }
@@ -31,7 +31,7 @@ tokio    = { version = "1", features = ["macros", "rt", "time"] }
 # Test-only: `test-util` exposes the audit capture helper used to assert on
 # `token set-scopes`/`set-provenance` audit events. It must NOT be enabled by
 # default — the library dependency above stays plain.
-mecmcp-audit = { version = "0.26.0", path = "../mecmcp-audit", features = ["test-util"] }
+mecmcp-audit = { version = "0.26.1", path = "../mecmcp-audit", features = ["test-util"] }
 
 [lints]
 workspace = true

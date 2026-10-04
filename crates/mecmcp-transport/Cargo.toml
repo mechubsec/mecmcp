@@ -25,8 +25,8 @@ http-body-util = "0.1"
 # against it. `serde` feature lets `LimitsConfig` deserialize CIDR strings
 # straight into `IpNet` instead of hand-rolling a `FromStr` wrapper.
 ipnet       = { version = "2", features = ["serde"] }
-mecmcp-audit = { version = "0.26.0", path = "../mecmcp-audit" }
-mecmcp-auth = { version = "0.26.0", path = "../mecmcp-auth" }
+mecmcp-audit = { version = "0.26.1", path = "../mecmcp-audit" }
+mecmcp-auth = { version = "0.26.1", path = "../mecmcp-auth" }
 metrics     = { workspace = true }
 # metrics-exporter-prometheus must have default-features = false to avoid
 # pulling in rustls's aws-lc-rs backend via hyper-rustls, which conflicts with
@@ -75,13 +75,13 @@ required-features = ["test-util"]
 # on the normal dependency above — that ships test scaffolding in production
 # binaries and widens the attack surface for no runtime benefit. Cargo unifies
 # features per build, so `cargo test` gets it and `cargo build` does not.
-mecmcp-audit = { version = "0.26.0", path = "../mecmcp-audit", features = ["test-util"] }
+mecmcp-audit = { version = "0.26.1", path = "../mecmcp-audit", features = ["test-util"] }
 # Test-only: proves that `mecmcp-secret`'s `AuthFailureTracker::probe` — built
 # with no dependency on this crate, by closure shape alone — actually flips
 # `/readyz` when registered as a `ReadinessCheck`. Not a normal dependency:
 # `mecmcp-transport` must not depend on `mecmcp-secret` for anything but this
 # integration test (MEC-539).
-mecmcp-secret = { version = "0.26.0", path = "../mecmcp-secret" }
+mecmcp-secret = { version = "0.26.1", path = "../mecmcp-secret" }
 # Test-only: rmcp's `EventStore` is an `#[async_trait]` trait, so the fake store
 # that proves `LimitedSessionManager` forwards `event_store()` needs the macro.
 async-trait = { workspace = true }

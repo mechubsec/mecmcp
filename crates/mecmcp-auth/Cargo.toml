@@ -12,7 +12,7 @@ authors.workspace      = true
 workspace = true
 
 [dependencies]
-mecmcp-secret = { version = "0.26.0", path = "../mecmcp-secret" }
+mecmcp-secret = { version = "0.26.1", path = "../mecmcp-secret" }
 arc-swap   = { workspace = true }
 chrono     = { workspace = true }
 getrandom  = { workspace = true }
