@@ -21,7 +21,7 @@
 /// Always available, regardless of the `verified-approver` feature: even a
 /// build with no verifier compiled in must recognize this header by name, so
 /// `auth.rs` can fail it closed with `approver_assertion_not_configured`
-/// instead of letting it through unchecked (MEC-994 Percy review B2).
+/// instead of letting it through unchecked.
 pub const APPROVER_ASSERTION_HEADER: &str = "Mecmcp-Approver-Assertion";
 
 #[cfg(feature = "verified-approver")]

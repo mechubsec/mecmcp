@@ -209,6 +209,14 @@ server to do this (MEC-994 W8); the commands below use it as the running
 example of what that integration will look like, not something it supports
 today.
 
+`mecmcp-transport`'s verifier sits behind its `verified-approver` feature
+(off by default, so a server that never configures this path does not link
+`mecmcp-oidc`'s `reqwest`/rustls HTTP client). A server that enables it
+alongside `otel` must install a process-wide rustls `CryptoProvider` at
+startup itself — the workspace deliberately ships no default provider (see
+`docs/CRATE-MAP.md`'s decision D4) — or the two features' independently
+selected rustls backends conflict.
+
 **1. Register an app in your IdP.** Any OIDC provider that can issue a JWT
 *access* token (not an ID token — the server verifies it as a bearer
 assertion, not an OIDC login flow) works. Note the issuer URL and, if your IdP

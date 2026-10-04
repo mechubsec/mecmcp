@@ -33,7 +33,7 @@ mecmcp-auth = { version = "0.26.1", path = "../mecmcp-auth" }
 # `mecmcp-oidc`'s `reqwest`-based HTTP client (and the rustls build it
 # selects) into every build, including servers that never install the
 # `approver_assertion` step-up path. See the `verified-approver` feature
-# below (MEC-994 Percy review B2).
+# below.
 mecmcp-oidc = { version = "0.26.1", path = "../mecmcp-oidc", optional = true }
 metrics     = { workspace = true }
 # metrics-exporter-prometheus must have default-features = false to avoid
@@ -78,7 +78,7 @@ test-util = ["dep:ureq"]
 # and `mecmcp-oidc` feature-unifies in a `reqwest`-based HTTP client whose
 # rustls build needs a process-default `CryptoProvider` installed — exactly
 # the setup an `otel`-exporting server was never required to do, and broke
-# when this edge was a normal dependency (MEC-994 Percy review B2). With the
+# when this edge was a normal dependency. With the
 # feature off, a presented assertion header still gets a fail-closed 400
 # (`approver_assertion_not_configured`); only the verifier itself goes away.
 verified-approver = ["dep:mecmcp-oidc"]
