@@ -16,7 +16,16 @@ OPTIONAL = {
     "skip_build_env": (str, bool),
     "placeholders": dict,
     "audit_entrypoint": (str, bool),
+    "audit_hmac_flag": (str, bool),
 }
+
+# audit_hmac_flag only proves anything because R6 checks it reaches the real
+# container's argv -- R7 itself has nothing left to verify once the name is
+# right. A typo'd or unrelated flag (e.g. "--tokens-file") would still pass
+# this cross-reference against must_survive_override and let R7 go green
+# without ever touching audit keying, so the name itself must be pinned to
+# the one flag the binary's own HMAC-key code reads.
+ALLOWED_AUDIT_HMAC_FLAGS = {"--audit-hmac-key-file"}
 
 # Keys whose value is resolved against the package staging directory by
 # verify-package.sh. An absolute value is silently joined onto $STAGING there,
@@ -154,7 +163,54 @@ def validate(data):
                 f"directory, not an absolute path: {audit_entrypoint}"
             )
 
-    return skip_build, audit_entrypoint
+    # audit_hmac_flag is the no-shell alternative to audit_entrypoint: a
+    # distroless image has no shell to run a key-generating wrapper in (R7's
+    # original design), so the binary generates its own key and the flag that
+    # proves it (e.g. --audit-hmac-key-file) is baked directly into the
+    # image's ENTRYPOINT array instead. Same false-sentinel shape as the other
+    # two optional strings, for the same reason.
+    audit_hmac_flag = data.get("audit_hmac_flag", False)
+    if audit_hmac_flag is True:
+        die(
+            "audit_hmac_flag = true is not a value. It must name the flag "
+            "(e.g. \"--audit-hmac-key-file\") that the image's ENTRYPOINT "
+            "always passes to the binary, or be false when this repo's "
+            "container image has not been migrated yet (R7 warns instead of "
+            "failing until it has, see #376)."
+        )
+    if isinstance(audit_hmac_flag, str):
+        if not audit_hmac_flag:
+            die(
+                'audit_hmac_flag = "" is not a value. Name the flag, or use '
+                "false."
+            )
+        check_framing("audit_hmac_flag", audit_hmac_flag)
+        if audit_hmac_flag not in ALLOWED_AUDIT_HMAC_FLAGS:
+            die(
+                f"audit_hmac_flag = {audit_hmac_flag!r} is not a recognized "
+                "flag. It must be \"--audit-hmac-key-file\" -- the flag the "
+                "binary's own audit-HMAC key generation reads. R7 has "
+                "nothing left to check once the name is right other than "
+                "R6 proving it reaches argv, so an unrecognized name would "
+                "let R7 pass without verifying audit keying at all."
+            )
+        if audit_entrypoint:
+            die(
+                "audit_entrypoint and audit_hmac_flag are mutually exclusive "
+                "-- a repo either ships a key-generating entrypoint script "
+                "(audit_entrypoint) or bakes a self-generating binary's flag "
+                "straight into ENTRYPOINT (audit_hmac_flag), never both."
+            )
+        if audit_hmac_flag not in data["must_survive_override"]:
+            die(
+                f"audit_hmac_flag = {audit_hmac_flag!r} must also appear in "
+                "must_survive_override. R7 does not re-verify the flag "
+                "reaches the container's argv by itself -- it relies on R6 "
+                "doing that, which only checks flags must_survive_override "
+                "names."
+            )
+
+    return skip_build, audit_entrypoint, audit_hmac_flag
 
 
 def main():
@@ -168,7 +224,7 @@ def main():
     except tomllib.TOMLDecodeError as error:
         die(f"not valid TOML: {error}")
 
-    skip_build, audit_entrypoint = validate(data)
+    skip_build, audit_entrypoint, audit_hmac_flag = validate(data)
 
     if len(sys.argv) == 4:
         name = sys.argv[3]
@@ -192,6 +248,7 @@ def main():
         f"CONF_BUILD_INFO={'true' if data['build_info'] else 'false'}",
         f"CONF_SKIP_BUILD_ENV={skip_build if isinstance(skip_build, str) else ''}",
         f"CONF_AUDIT_ENTRYPOINT={audit_entrypoint if isinstance(audit_entrypoint, str) else ''}",
+        f"CONF_AUDIT_HMAC_FLAG={audit_hmac_flag if isinstance(audit_hmac_flag, str) else ''}",
     ]))
 
 

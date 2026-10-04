@@ -59,7 +59,20 @@ fi
 # not migrated yet says so explicitly via `audit_entrypoint = false`, which
 # WARNs rather than fails -- promoted to fatal in each repo once its image
 # ships a real entrypoint, the same rollout R4 used for its own dropin gap.
-if [[ -z "$CONF_AUDIT_ENTRYPOINT" ]]; then
+#
+# A distroless image has no shell, so it cannot run a key-generating
+# entrypoint SCRIPT at all -- the five vendor images this rule exists for are
+# all distroless. Their binaries generate the key themselves and the image
+# bakes the flag directly into ENTRYPOINT instead of a wrapper. audit_hmac_flag
+# declares that pattern: read-manifest.py already proved the flag is also in
+# must_survive_override, so R6 (run separately, against the real image) proves
+# it always reaches argv. R7 has nothing further to check statically here --
+# "does the binary actually generate the key when absent" is verified by that
+# repo's own Rust tests, the same split R5 uses for "the unit parses" (static)
+# versus "the seccomp posture works" (not verified by this tool at all).
+if [[ -n "$CONF_AUDIT_HMAC_FLAG" ]]; then
+  echo "note: R7 passed via audit_hmac_flag ($CONF_AUDIT_HMAC_FLAG) -- a distroless, no-shell image whose binary self-generates the key; R6 verifies the flag survives an operator override, and the repo's own tests must cover key generation"
+elif [[ -z "$CONF_AUDIT_ENTRYPOINT" ]]; then
   warn R7 "audit_entrypoint not set; this repo's container image ships unkeyed, unredacted audit unless the operator supplies --audit-hmac-key-file by hand (see #376)"
 else
   entrypoint_path="$STAGING/$CONF_AUDIT_ENTRYPOINT"

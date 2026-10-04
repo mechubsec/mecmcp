@@ -1,0 +1,7 @@
+[Unit]
+Description=svc
+[Service]
+ExecStart=/bin/true --host @BIND_ADDRESS@
+SystemCallErrorNumber=EPERM
+[Install]
+WantedBy=multi-user.target
