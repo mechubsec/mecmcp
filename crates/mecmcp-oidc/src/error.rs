@@ -116,4 +116,11 @@ pub enum VerificationFailure {
     /// nonce comparison is a session fixation oracle.
     #[error("token nonce does not match the expected value")]
     NonceMismatch,
+    /// The token's `azp` (authorized party) claim validation failed.
+    ///
+    /// Per OIDC Core §3.1.3.7, when the ID Token contains multiple audiences,
+    /// the `azp` claim MUST be present and match the client ID. When `azp` is
+    /// present in a single-audience token, it must also match.
+    #[error("token authorized party claim validation failed")]
+    AuthorizedPartyMismatch,
 }
