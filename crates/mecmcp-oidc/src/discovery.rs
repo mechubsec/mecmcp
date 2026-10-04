@@ -272,7 +272,8 @@ mod tests {
     fn validate_rejects_url_with_userinfo() {
         // Construct URL with userinfo to test rejection (avoiding literal
         // credential patterns that trigger gstack-redact-prepush)
-        let url_with_userinfo = format!("https://{}:{}@idp.example.com/authorize", "alice", "secret");
+        let url_with_userinfo =
+            format!("https://{}:{}@idp.example.com/authorize", "alice", "secret");
         let doc = DiscoveryDocument {
             issuer: "https://idp.example.com".to_string(),
             jwks_uri: "https://idp.example.com/jwks".to_string(),
