@@ -50,7 +50,7 @@ pub struct ApproverClaims {
 #[derive(Debug, Clone)]
 pub struct ApproverPolicy {
     /// The role or group claim value a verified assertion must carry to be
-    /// accepted as an approver. Compared against [`VerifiedClaims::roles`].
+    /// accepted as an approver. Compared against `mecmcp_oidc::VerifiedClaims::roles`.
     pub approver_role: String,
     /// Maximum age of the assertion's `iat` claim, per RFC 9470's `max_age`
     /// step-up pattern. An assertion older than this is stale, however valid
@@ -145,7 +145,7 @@ pub enum BindingFailure {
 impl BindingFailure {
     /// A stable, lowercase machine-readable code for this reason, for
     /// structured audit logging. See
-    /// [`mecmcp_oidc::VerificationFailure::reason_code`] for the sibling
+    /// `mecmcp_oidc::VerificationFailure::reason_code` for the sibling
     /// used upstream of this one.
     #[must_use]
     pub fn reason_code(&self) -> &'static str {
