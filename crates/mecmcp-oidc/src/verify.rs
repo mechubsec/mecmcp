@@ -7,11 +7,35 @@ use jsonwebtoken::Algorithm;
 use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::jwk::{AlgorithmParameters, Jwk};
 use serde::Deserialize;
+use subtle::ConstantTimeEq;
 
 use crate::cache::{CacheConfig, KeyCache};
-use crate::claims::{VerifiedClaims, extract_roles};
+use crate::claims::{VerifiedClaims, extract_display_name, extract_roles};
 use crate::error::VerificationFailure;
 use crate::fetch::KeySource;
+
+/// Per-call verification options, additive to the static [`OidcConfig`].
+///
+/// Passed to [`TokenVerifier::verify_with`]. Browser-login relying parties
+/// use `expected_nonce` to bind the token to the authorization request;
+/// resource servers that never initiate authorization leave it `None`.
+#[derive(Debug, Clone, Default)]
+pub struct VerifyOptions<'a> {
+    /// The nonce this verifier expects to find in the token's `nonce` claim.
+    ///
+    /// When `Some`, the token MUST carry a `nonce` claim whose value equals
+    /// this string (constant-time comparison). When `None`, nonce is not
+    /// checked — the existing resource-server behaviour, unchanged.
+    pub expected_nonce: Option<&'a str>,
+    /// The authorized party (client ID) this verifier expects in the token's `azp` claim.
+    ///
+    /// When `Some`, per OIDC Core §3.1.3.7:
+    /// - If the token has an `azp` claim, it MUST equal this value.
+    /// - If the token's `aud` contains multiple audiences, `azp` MUST be present and equal this value.
+    ///
+    /// When `None`, `azp` is not checked — unchanged resource-server behaviour.
+    pub expected_azp: Option<&'a str>,
+}
 
 /// Static configuration for one issuer's resource-server verification.
 #[derive(Debug, Clone)]
@@ -29,6 +53,11 @@ pub struct OidcConfig {
     pub leeway: Duration,
     /// JWKS cache tuning. See [`CacheConfig`] for what each field bounds.
     pub cache: CacheConfig,
+    /// Whether to extract and return `display_name` from `preferred_username`
+    /// or `name`. Defaults to `false` — resource servers that never show a
+    /// human's name in a UI leave it off. Browser-login relying parties that
+    /// need a greeting ("Welcome, Alice") opt in by setting this to `true`.
+    pub include_display_name: bool,
 }
 
 impl OidcConfig {
@@ -45,6 +74,7 @@ impl OidcConfig {
             role_claim: role_claim.into(),
             leeway: Duration::from_secs(60),
             cache: CacheConfig::default(),
+            include_display_name: false,
         }
     }
 }
@@ -94,7 +124,11 @@ impl TokenVerifier {
         self.config.leeway
     }
 
-    /// Verify `token` and, on success, return its minimal typed claim set.
+    /// Verify `token` with default options (no nonce check).
+    ///
+    /// This is the existing resource-server verification: signature, issuer,
+    /// audience, exp, and nbf. For browser-login relying parties that need
+    /// nonce verification, use [`Self::verify_with`].
     ///
     /// # Errors
     /// Returns the specific [`VerificationFailure`] variant describing why
@@ -103,6 +137,26 @@ impl TokenVerifier {
     /// expired, wrong audience, and wrong issuer are each distinguishable by
     /// variant.
     pub async fn verify(&self, token: &str) -> Result<VerifiedClaims, VerificationFailure> {
+        self.verify_with(token, &VerifyOptions::default()).await
+    }
+
+    /// Verify `token` with the given per-call options.
+    ///
+    /// When `options.expected_nonce` is `Some`, the token's `nonce` claim is
+    /// verified (constant-time comparison). When `options.expected_azp` is
+    /// `Some`, the token's `azp` claim is verified per OIDC Core §3.1.3.7.
+    /// Otherwise behaves identically to [`Self::verify`].
+    ///
+    /// # Errors
+    /// All the same [`VerificationFailure`] variants as [`Self::verify`], plus
+    /// [`VerificationFailure::NonceMissing`] and
+    /// [`VerificationFailure::NonceMismatch`] when a nonce was expected, and
+    /// [`VerificationFailure::AuthorizedPartyMismatch`] when azp validation fails.
+    pub async fn verify_with(
+        &self,
+        token: &str,
+        options: &VerifyOptions<'_>,
+    ) -> Result<VerifiedClaims, VerificationFailure> {
         let header = jsonwebtoken::decode_header(token)
             .map_err(|error| VerificationFailure::Malformed(error.to_string()))?;
 
@@ -132,12 +186,27 @@ impl TokenVerifier {
         let token_data = jsonwebtoken::decode::<RawClaims>(token, &decoding_key, &validation)
             .map_err(|error| map_decode_error(error.into_kind()))?;
 
+        // Nonce verification, if expected
+        if let Some(expected) = options.expected_nonce {
+            verify_nonce(&token_data.claims.extra, expected)?;
+        }
+
+        // Authorized party verification, if expected
+        if let Some(expected) = options.expected_azp {
+            verify_azp(&token_data.claims.extra, expected)?;
+        }
+
         let roles = extract_roles(&token_data.claims.extra, &self.config.role_claim);
 
         let issued_at = token_data
             .claims
             .iat
             .ok_or(VerificationFailure::MissingIssuedAt)?;
+        let display_name = if self.config.include_display_name {
+            extract_display_name(&token_data.claims.extra)
+        } else {
+            None
+        };
 
         Ok(VerifiedClaims {
             subject: token_data.claims.sub,
@@ -146,6 +215,7 @@ impl TokenVerifier {
             issued_at,
             auth_time: token_data.claims.auth_time,
             jwt_id: token_data.claims.jti,
+            display_name,
         })
     }
 }
@@ -213,6 +283,76 @@ fn map_decode_error(kind: ErrorKind) -> VerificationFailure {
         ErrorKind::InvalidAlgorithm => VerificationFailure::UnsupportedAlgorithm,
         ErrorKind::MissingRequiredClaim(claim) => VerificationFailure::MissingClaim(claim),
         other => VerificationFailure::Malformed(format!("{other:?}")),
+    }
+}
+
+/// Verify the token's `nonce` claim matches the expected value.
+///
+/// Per OIDC Core §3.1.3.2, nonce binds the token to the authorization request
+/// and MUST be verified. Uses constant-time comparison via `subtle::ConstantTimeEq`
+/// to prevent a timing oracle on the nonce value — a session-fixation vector.
+fn verify_nonce(
+    extra: &serde_json::Map<String, serde_json::Value>,
+    expected: &str,
+) -> Result<(), VerificationFailure> {
+    let actual = extra
+        .get("nonce")
+        .and_then(|v| v.as_str())
+        .ok_or(VerificationFailure::NonceMissing)?;
+
+    // Constant-time comparison of the byte slices
+    if actual.as_bytes().ct_eq(expected.as_bytes()).into() {
+        Ok(())
+    } else {
+        Err(VerificationFailure::NonceMismatch)
+    }
+}
+
+/// Verify the token's `azp` (authorized party) claim per OIDC Core §3.1.3.7.
+///
+/// When `expected_azp` is set:
+/// - If the token has an `azp` claim, it MUST equal the expected value.
+/// - If the token's `aud` contains multiple audiences, `azp` MUST be present
+///   and equal the expected value.
+/// - If the token has a single audience and no `azp` claim, that's acceptable.
+///
+/// Unlike nonce verification, `azp` comparison uses plain equality rather than
+/// constant-time — the client ID is public information (sent in the clear in
+/// OAuth2 flows), so there's no timing oracle risk to defend against.
+fn verify_azp(
+    extra: &serde_json::Map<String, serde_json::Value>,
+    expected: &str,
+) -> Result<(), VerificationFailure> {
+    // Read aud as either a string or an array
+    let aud = extra.get("aud");
+    let is_multi_audience = match aud {
+        Some(serde_json::Value::Array(arr)) => arr.len() > 1,
+        Some(serde_json::Value::String(_)) => false,
+        _ => false, // Missing or malformed aud handled by jsonwebtoken validation
+    };
+
+    let azp_claim = extra.get("azp").and_then(|v| v.as_str());
+
+    if is_multi_audience {
+        // Multi-audience: azp MUST be present and match
+        let actual = azp_claim.ok_or(VerificationFailure::AuthorizedPartyMismatch)?;
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(VerificationFailure::AuthorizedPartyMismatch)
+        }
+    } else {
+        // Single audience: if azp is present, it must match; if absent, that's ok
+        match azp_claim {
+            Some(actual) => {
+                if actual == expected {
+                    Ok(())
+                } else {
+                    Err(VerificationFailure::AuthorizedPartyMismatch)
+                }
+            }
+            None => Ok(()),
+        }
     }
 }
 
@@ -298,6 +438,11 @@ mod tests {
             Ok(DiscoveryDocument {
                 issuer: issuer.to_owned(),
                 jwks_uri: format!("{issuer}/jwks"),
+                authorization_endpoint: None,
+                token_endpoint: None,
+                end_session_endpoint: None,
+                code_challenge_methods_supported: vec![],
+                id_token_signing_alg_values_supported: vec![],
             })
         }
 
@@ -509,6 +654,11 @@ mod tests {
                 Ok(DiscoveryDocument {
                     issuer: issuer.to_owned(),
                     jwks_uri: format!("{issuer}/jwks"),
+                    authorization_endpoint: None,
+                    token_endpoint: None,
+                    end_session_endpoint: None,
+                    code_challenge_methods_supported: vec![],
+                    id_token_signing_alg_values_supported: vec![],
                 })
             }
 
@@ -601,5 +751,276 @@ mod tests {
             result,
             Err(VerificationFailure::KeysUnavailable { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn nonce_match_succeeds() {
+        let key = generate_test_key(KID);
+        let jwks = JwkSet {
+            keys: vec![key.jwk.clone()],
+        };
+        let verifier = verifier_for(jwks);
+
+        let mut claims = valid_claims();
+        claims["nonce"] = serde_json::json!("test-nonce-value");
+        let token = sign_token(&key, &claims, KID);
+
+        let options = VerifyOptions {
+            expected_nonce: Some("test-nonce-value"),
+            expected_azp: None,
+        };
+        let result = verifier.verify_with(&token, &options).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn nonce_mismatch_fails() {
+        let key = generate_test_key(KID);
+        let jwks = JwkSet {
+            keys: vec![key.jwk.clone()],
+        };
+        let verifier = verifier_for(jwks);
+
+        let mut claims = valid_claims();
+        claims["nonce"] = serde_json::json!("actual-nonce");
+        let token = sign_token(&key, &claims, KID);
+
+        let options = VerifyOptions {
+            expected_nonce: Some("expected-nonce"),
+            expected_azp: None,
+        };
+        let result = verifier.verify_with(&token, &options).await;
+        assert_eq!(result.unwrap_err(), VerificationFailure::NonceMismatch);
+    }
+
+    #[tokio::test]
+    async fn nonce_missing_when_expected_fails() {
+        let key = generate_test_key(KID);
+        let jwks = JwkSet {
+            keys: vec![key.jwk.clone()],
+        };
+        let verifier = verifier_for(jwks);
+
+        let claims = valid_claims(); // No nonce claim
+        let token = sign_token(&key, &claims, KID);
+
+        let options = VerifyOptions {
+            expected_nonce: Some("expected-nonce"),
+            expected_azp: None,
+        };
+        let result = verifier.verify_with(&token, &options).await;
+        assert_eq!(result.unwrap_err(), VerificationFailure::NonceMissing);
+    }
+
+    #[tokio::test]
+    async fn nonce_not_requested_is_unchanged_behaviour() {
+        let key = generate_test_key(KID);
+        let jwks = JwkSet {
+            keys: vec![key.jwk.clone()],
+        };
+        let verifier = verifier_for(jwks);
+
+        // Token with nonce, but verifier doesn't care
+        let mut claims = valid_claims();
+        claims["nonce"] = serde_json::json!("some-nonce");
+        let token = sign_token(&key, &claims, KID);
+
+        // Default options: no nonce check
+        let result = verifier.verify(&token).await;
+        assert!(result.is_ok());
+
+        // Explicit None: same behaviour
+        let options = VerifyOptions {
+            expected_nonce: None,
+            expected_azp: None,
+        };
+        let result = verifier.verify_with(&token, &options).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn display_name_is_none_by_default() {
+        let key = generate_test_key(KID);
+        let jwks = JwkSet {
+            keys: vec![key.jwk.clone()],
+        };
+        let verifier = verifier_for(jwks); // include_display_name defaults to false
+
+        let mut claims = valid_claims();
+        claims["preferred_username"] = serde_json::json!("alice");
+        claims["name"] = serde_json::json!("Alice Anderson");
+        let token = sign_token(&key, &claims, KID);
+
+        let result = verifier.verify(&token).await.expect("valid token");
+        assert_eq!(result.display_name, None);
+    }
+
+    #[tokio::test]
+    async fn display_name_extracted_when_opted_in() {
+        let key = generate_test_key(KID);
+        let jwks = JwkSet {
+            keys: vec![key.jwk.clone()],
+        };
+
+        let mut config = OidcConfig::new(ISSUER, AUDIENCE, "groups");
+        config.include_display_name = true;
+        let verifier = TokenVerifier::new(config, Arc::new(FixtureSource { jwks }));
+
+        let mut claims = valid_claims();
+        claims["preferred_username"] = serde_json::json!("alice");
+        let token = sign_token(&key, &claims, KID);
+
+        let result = verifier.verify(&token).await.expect("valid token");
+        assert_eq!(result.display_name, Some("alice".to_string()));
+    }
+
+    #[tokio::test]
+    async fn display_name_falls_back_to_name_when_preferred_username_absent() {
+        let key = generate_test_key(KID);
+        let jwks = JwkSet {
+            keys: vec![key.jwk.clone()],
+        };
+
+        let mut config = OidcConfig::new(ISSUER, AUDIENCE, "groups");
+        config.include_display_name = true;
+        let verifier = TokenVerifier::new(config, Arc::new(FixtureSource { jwks }));
+
+        let mut claims = valid_claims();
+        claims["name"] = serde_json::json!("Alice Anderson");
+        let token = sign_token(&key, &claims, KID);
+
+        let result = verifier.verify(&token).await.expect("valid token");
+        assert_eq!(result.display_name, Some("Alice Anderson".to_string()));
+    }
+
+    #[tokio::test]
+    async fn display_name_is_capped_at_128_scalar_values() {
+        let key = generate_test_key(KID);
+        let jwks = JwkSet {
+            keys: vec![key.jwk.clone()],
+        };
+
+        let mut config = OidcConfig::new(ISSUER, AUDIENCE, "groups");
+        config.include_display_name = true;
+        let verifier = TokenVerifier::new(config, Arc::new(FixtureSource { jwks }));
+
+        let mut claims = valid_claims();
+        claims["name"] = serde_json::json!("a".repeat(200));
+        let token = sign_token(&key, &claims, KID);
+
+        let result = verifier.verify(&token).await.expect("valid token");
+        let display_name = result.display_name.expect("should have display_name");
+        assert_eq!(display_name.chars().count(), 128);
+    }
+
+    #[tokio::test]
+    async fn azp_matches_expected_value() {
+        let key = generate_test_key(KID);
+        let jwks = JwkSet {
+            keys: vec![key.jwk.clone()],
+        };
+        let verifier = verifier_for(jwks);
+
+        let mut claims = valid_claims();
+        claims["azp"] = serde_json::json!("my-client-id");
+        let token = sign_token(&key, &claims, KID);
+
+        let options = VerifyOptions {
+            expected_nonce: None,
+            expected_azp: Some("my-client-id"),
+        };
+        let result = verifier.verify_with(&token, &options).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn azp_mismatch_fails() {
+        let key = generate_test_key(KID);
+        let jwks = JwkSet {
+            keys: vec![key.jwk.clone()],
+        };
+        let verifier = verifier_for(jwks);
+
+        let mut claims = valid_claims();
+        claims["azp"] = serde_json::json!("other-client-id");
+        let token = sign_token(&key, &claims, KID);
+
+        let options = VerifyOptions {
+            expected_nonce: None,
+            expected_azp: Some("my-client-id"),
+        };
+        let result = verifier.verify_with(&token, &options).await;
+        assert_eq!(
+            result.unwrap_err(),
+            VerificationFailure::AuthorizedPartyMismatch
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_audience_without_azp_fails() {
+        let key = generate_test_key(KID);
+        let jwks = JwkSet {
+            keys: vec![key.jwk.clone()],
+        };
+        let verifier = verifier_for(jwks);
+
+        let mut claims = valid_claims();
+        claims["aud"] = serde_json::json!([AUDIENCE, "other-audience"]);
+        let token = sign_token(&key, &claims, KID);
+
+        let options = VerifyOptions {
+            expected_nonce: None,
+            expected_azp: Some("my-client-id"),
+        };
+        let result = verifier.verify_with(&token, &options).await;
+        assert_eq!(
+            result.unwrap_err(),
+            VerificationFailure::AuthorizedPartyMismatch
+        );
+    }
+
+    #[tokio::test]
+    async fn single_audience_without_azp_succeeds() {
+        let key = generate_test_key(KID);
+        let jwks = JwkSet {
+            keys: vec![key.jwk.clone()],
+        };
+        let verifier = verifier_for(jwks);
+
+        let claims = valid_claims(); // Single audience, no azp
+        let token = sign_token(&key, &claims, KID);
+
+        let options = VerifyOptions {
+            expected_nonce: None,
+            expected_azp: Some("my-client-id"),
+        };
+        let result = verifier.verify_with(&token, &options).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn azp_not_requested_is_unchanged_behaviour() {
+        let key = generate_test_key(KID);
+        let jwks = JwkSet {
+            keys: vec![key.jwk.clone()],
+        };
+        let verifier = verifier_for(jwks);
+
+        // Token with azp for a different client
+        let mut claims = valid_claims();
+        claims["azp"] = serde_json::json!("some-other-client");
+        let token = sign_token(&key, &claims, KID);
+
+        // Default options: no azp check
+        let result = verifier.verify(&token).await;
+        assert!(result.is_ok());
+
+        // Explicit None: same behaviour
+        let options = VerifyOptions {
+            expected_nonce: None,
+            expected_azp: None,
+        };
+        let result = verifier.verify_with(&token, &options).await;
+        assert!(result.is_ok());
     }
 }
