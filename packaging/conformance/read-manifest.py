@@ -19,6 +19,14 @@ OPTIONAL = {
     "audit_hmac_flag": (str, bool),
 }
 
+# audit_hmac_flag only proves anything because R6 checks it reaches the real
+# container's argv -- R7 itself has nothing left to verify once the name is
+# right. A typo'd or unrelated flag (e.g. "--tokens-file") would still pass
+# this cross-reference against must_survive_override and let R7 go green
+# without ever touching audit keying, so the name itself must be pinned to
+# the one flag the binary's own HMAC-key code reads.
+ALLOWED_AUDIT_HMAC_FLAGS = {"--audit-hmac-key-file"}
+
 # Keys whose value is resolved against the package staging directory by
 # verify-package.sh. An absolute value is silently joined onto $STAGING there,
 # which reports "not found" for a path that exists -- so reject it here with a
@@ -177,6 +185,15 @@ def validate(data):
                 "false."
             )
         check_framing("audit_hmac_flag", audit_hmac_flag)
+        if audit_hmac_flag not in ALLOWED_AUDIT_HMAC_FLAGS:
+            die(
+                f"audit_hmac_flag = {audit_hmac_flag!r} is not a recognized "
+                "flag. It must be \"--audit-hmac-key-file\" -- the flag the "
+                "binary's own audit-HMAC key generation reads. R7 has "
+                "nothing left to check once the name is right other than "
+                "R6 proving it reaches argv, so an unrecognized name would "
+                "let R7 pass without verifying audit keying at all."
+            )
         if audit_entrypoint:
             die(
                 "audit_entrypoint and audit_hmac_flag are mutually exclusive "

@@ -71,7 +71,7 @@ Unknown keys are an error, so a typo cannot silently disable a rule.
 | `skip_build_env` | `false` or a non-empty string | no | Names the environment variable the packager honours to accept a prebuilt binary. |
 | `placeholders` | table of string → string | no | Test values for the `@TOKEN@` placeholders the units carry. |
 | `audit_entrypoint` | `false` or a non-empty string | no | Path **inside the staging dir** to the container's audit-key-generating entrypoint script (see `packaging/docker/audit-entrypoint.sh.tmpl`). `false` means this repo's container image has not been migrated yet. |
-| `audit_hmac_flag` | `false` or a non-empty string | no | The flag (e.g. `--audit-hmac-key-file`) that a **distroless, no-shell** image's `ENTRYPOINT` always passes to a binary that generates its own key. Mutually exclusive with `audit_entrypoint`, and must also appear in `must_survive_override`. |
+| `audit_hmac_flag` | `false` or `"--audit-hmac-key-file"` | no | Declares that a **distroless, no-shell** image's `ENTRYPOINT` always passes `--audit-hmac-key-file` to a binary that generates its own key. The only accepted non-`false` value is that exact flag. Mutually exclusive with `audit_entrypoint`, and must also appear in `must_survive_override`. |
 
 Rejected values, each with exit 2:
 
@@ -82,8 +82,11 @@ Rejected values, each with exit 2:
   a bare `true` or empty string would satisfy "the key is present" while
   naming no script for R7 to actually check.
 - `audit_hmac_flag = true` and `audit_hmac_flag = ""`, for the same reason.
-  Also rejected: setting it together with `audit_entrypoint` (a repo picks one
-  migration path, not both), and naming a flag that is not also in
+  Also rejected: any value other than `"--audit-hmac-key-file"` (R7 has
+  nothing left to check once the name is right other than R6 proving it
+  reaches argv, so an unrecognized name would let R7 pass without verifying
+  audit keying at all); setting it together with `audit_entrypoint` (a repo
+  picks one migration path, not both); and naming a flag that is not also in
   `must_survive_override` (R7 relies on R6 to prove the flag reaches argv; a
   flag R6 never checks is a flag R7 cannot actually vouch for).
 - An absolute `binary`, `installer`, or `units` entry. It would be joined onto
@@ -131,7 +134,11 @@ these announces itself.
 - **`must_survive_override = []`** — R6 prints
   `note: must_survive_override is empty; R6 has nothing to check`.
 - **No `image` input** — the action prints that R6 did not run and how to
-  enable it.
+  enable it. If the manifest sets `audit_hmac_flag`, that note is itself a
+  `FAIL[R7]`: R7's own verdict for that key is only a placeholder pass
+  deferred entirely to R6 (see R7's row above), so skipping R6 while
+  `audit_hmac_flag` is set means the fatal rule it names has verified
+  nothing. Pass `image: <tag>` to actually verify it.
 - **R3 clause 3 without `--prebuilt`** — when `build_info = true` and
   `skip_build_env` names a variable but the caller did not pass `--prebuilt`,
   R3 warns that clause 3 did not run. Pass `--prebuilt` (action input

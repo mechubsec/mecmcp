@@ -70,7 +70,19 @@ runs:
     - name: Note that R6 did not run
       if: ${{ !cancelled() && inputs.image == '' }}
       shell: bash
+      env:
+        CONF_MANIFEST: ${{ inputs.manifest }}
       run: |
         echo "note: R6 (image argv) did NOT run: no 'image' input was given, so"
         echo "note: nothing checked that must_survive_override flags survive an"
         echo "note: operator override. Pass image: <tag> to enable it."
+        # audit_hmac_flag's whole proof is R6 showing the flag reaches the
+        # real container's argv -- verify-package.sh's R7 note for it says
+        # "passed" unconditionally because it has nothing further to check
+        # itself. Without this, an adopter who sets audit_hmac_flag and
+        # omits `image` gets a "passed", fatal-rule R7 with nothing verified.
+        hmac_flag="$(python3 "$GITHUB_ACTION_PATH/read-manifest.py" "$CONF_MANIFEST" | sed -n 's/^CONF_AUDIT_HMAC_FLAG=//p')"
+        if [[ -n "$hmac_flag" ]]; then
+          echo "FAIL[R7] audit_hmac_flag ($hmac_flag) is only proven by R6, which did not run (no 'image' input). Pass image: <tag> to verify it reaches the container's argv, or unset audit_hmac_flag."
+          exit 1
+        fi

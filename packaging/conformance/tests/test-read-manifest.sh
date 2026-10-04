@@ -172,6 +172,17 @@ check_err "audit_hmac_flag absent from must_survive_override rejected" 2 \
   "must also appear in must_survive_override" \
   python3 "$READER" "$tmp/hmac-not-survived.toml"
 
+# audit_hmac_flag is only safe because the name is pinned -- cross-referencing
+# must_survive_override alone would let any flag through, including one that
+# has nothing to do with audit keying, as long as the same (wrong) name is
+# listed in both places.
+manifest "$tmp/hmac-unrecognized.toml" \
+  'must_survive_override = ["--tokens-file"]' \
+  'audit_hmac_flag = "--tokens-file"'
+check_err "audit_hmac_flag naming an unrecognized flag rejected" 2 \
+  "is not a recognized flag" \
+  python3 "$READER" "$tmp/hmac-unrecognized.toml"
+
 manifest "$tmp/hmac-both.toml" \
   'must_survive_override = ["--tokens-file", "--audit-hmac-key-file"]' \
   'audit_entrypoint = "packaging/docker/audit-entrypoint.sh"' \
