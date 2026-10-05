@@ -240,6 +240,7 @@ async fn test_commit_cancellation_after_guard() {
         request_id: uuid::Uuid::new_v4(),
         agent: None,
         token_verified_fields: mecmcp_audit::TokenVerifiedFields::none(),
+        verified_approver: None,
         approver: None,
         change_set_id: None,
     };
@@ -556,6 +557,7 @@ async fn test_principal_variant_persisted() {
         request_id: uuid::Uuid::new_v4(),
         agent: None,
         token_verified_fields: mecmcp_audit::TokenVerifiedFields::none(),
+        verified_approver: None,
         approver: None,
         change_set_id: None,
     };
@@ -635,6 +637,7 @@ async fn test_principal_variant_persisted() {
         request_id: uuid::Uuid::new_v4(),
         agent: None,
         token_verified_fields: mecmcp_audit::TokenVerifiedFields::none(),
+        verified_approver: None,
         approver: None,
         change_set_id: None,
     };

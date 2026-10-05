@@ -124,6 +124,15 @@ pub struct CallerCtx<G: Grant = NoGrant> {
     pub on_behalf_of: Option<String>,
     /// Server-verified actor type from the token entry.
     pub actor_type: crate::ActorType,
+    /// The IdP subject this token is bound to, when the token entry declares
+    /// one (MEC-994). Copied straight from [`TokenEntry::oidc_subject`].
+    pub oidc_subject: Option<crate::entry::OidcSubject>,
+    /// The verified approver identity bound to this request, when a
+    /// `Mecmcp-Approver-Assertion` header passed [`crate::approver::bind_approver`]
+    /// (MEC-994 W3). `None` for every request that carried no assertion, or
+    /// carried one that was not yet checked at the point `CallerCtx` was
+    /// built. Set by the bearer preflight middleware, never by a token entry.
+    pub verified_approver: Option<crate::approver::VerifiedApprover>,
     /// Client-asserted MCP client name from `initialize` request.
     ///
     /// Captured from the MCP session identified by `Mcp-Session-Id` header.
@@ -171,6 +180,8 @@ impl<G: Grant> From<&TokenEntry<G>> for CallerCtx<G> {
             provider_tier: entry.provider_tier,
             on_behalf_of: entry.on_behalf_of.clone(),
             actor_type: entry.effective_actor_type(),
+            oidc_subject: entry.oidc_subject.clone(),
+            verified_approver: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -247,6 +258,7 @@ mod tests {
             provider_tier: None,
             on_behalf_of: None,
             actor_type: crate::ActorType::Human,
+            oidc_subject: None,
         };
         (plaintext, entry)
     }
@@ -321,6 +333,8 @@ mod tests {
             provider_tier: None,
             on_behalf_of: None,
             actor_type: crate::ActorType::Human,
+            oidc_subject: None,
+            verified_approver: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -342,6 +356,8 @@ mod tests {
             provider_tier: None,
             on_behalf_of: None,
             actor_type: crate::ActorType::Human,
+            oidc_subject: None,
+            verified_approver: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -377,6 +393,8 @@ mod tests {
             provider_tier: None,
             on_behalf_of: None,
             actor_type: crate::ActorType::Human,
+            oidc_subject: None,
+            verified_approver: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -399,6 +417,8 @@ mod tests {
             provider_tier: None,
             on_behalf_of: None,
             actor_type: crate::ActorType::Human,
+            oidc_subject: None,
+            verified_approver: None,
             client_name: None,
             model_id: None,
             session_id: None,

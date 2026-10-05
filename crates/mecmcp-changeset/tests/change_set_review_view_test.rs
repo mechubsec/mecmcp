@@ -66,6 +66,7 @@ async fn test_status_without_actions_field_absent() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -111,6 +112,7 @@ async fn test_status_with_actions_returns_stored_actions() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -161,6 +163,7 @@ async fn test_cancelled_change_set_with_actions() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -216,6 +219,7 @@ async fn test_applied_change_set_with_actions() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -227,9 +231,11 @@ async fn test_applied_change_set_with_actions() {
         .approve_change_set(
             created.change_set_id.clone(),
             "device-a".to_string(),
-            "bob".to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "bob".to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             created.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await
         .expect("approve");

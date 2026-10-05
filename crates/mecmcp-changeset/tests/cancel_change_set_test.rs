@@ -66,9 +66,11 @@ async fn drive_to(
         .approve_change_set(
             id.to_owned(),
             device.to_owned(),
-            "bob".to_owned(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "bob".to_owned(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             digest.to_owned(),
-            mecmcp_audit::ActorType::Human,
         )
         .await
         .expect("approve");
@@ -108,6 +110,7 @@ async fn test_owner_can_cancel_planned_change_set() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -145,6 +148,7 @@ async fn test_approver_can_cancel_approved_change_set() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -154,9 +158,11 @@ async fn test_approver_can_cancel_approved_change_set() {
         .approve_change_set(
             created.change_set_id.clone(),
             "device-a".to_string(),
-            "bob".to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "bob".to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             created.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await
         .expect("approve");
@@ -194,6 +200,7 @@ async fn test_non_owner_non_approver_cannot_cancel() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -230,6 +237,7 @@ async fn test_cannot_cancel_applied_change_set() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -277,6 +285,7 @@ async fn test_cannot_cancel_applying_change_set() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -324,6 +333,7 @@ async fn test_cancel_is_idempotent() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -370,6 +380,7 @@ async fn test_cancelled_change_set_frees_pending_slot() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -382,6 +393,7 @@ async fn test_cancelled_change_set_frees_pending_slot() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await;
 
@@ -407,6 +419,7 @@ async fn test_cancelled_change_set_frees_pending_slot() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create after cancel");
@@ -448,6 +461,7 @@ async fn test_cancelled_change_sets_are_evicted_at_capacity() {
                 format!("user{i}"),
                 test_fingerprint(),
                 "policy-sig".to_string(),
+                None,
             )
             .await
             .expect("create");
@@ -470,6 +484,7 @@ async fn test_cancelled_change_sets_are_evicted_at_capacity() {
             "user3".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create third");
@@ -484,6 +499,7 @@ async fn test_cancelled_change_sets_are_evicted_at_capacity() {
             "user4".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create fourth - should evict cancelled");
@@ -512,6 +528,7 @@ async fn test_owner_can_cancel_expired_change_set() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -554,6 +571,7 @@ async fn test_owner_can_cancel_failed_change_set() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");

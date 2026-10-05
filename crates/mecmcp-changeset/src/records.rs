@@ -88,6 +88,21 @@ pub struct OperationRecord {
     pub config_authority: Option<String>,
 }
 
+/// An IdP identity bound to a principal's token (MEC-994 W2/W4).
+///
+/// Durable projection of `mecmcp_auth::OidcSubject`: just enough to detect
+/// "the approver is the owner wearing a second token" (issuer+subject equal)
+/// without ever carrying anything that could identify a human by name or
+/// email.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OwnerSubject {
+    /// The IdP issuer that signed the owner token's bound assertion.
+    pub issuer: String,
+    /// The IdP's `sub` claim for the owner.
+    pub subject: String,
+}
+
 /// The attribution fields worth keeping in the state file.
 ///
 /// [`mecmcp_audit::Attribution`] is a live request object holding types that are
@@ -291,6 +306,21 @@ pub struct ChangeSetRecord {
     /// sets it stays readable by one that predates it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub apply_without_handle: bool,
+    /// The owner's IdP identity, recorded at propose time (MEC-994 W4).
+    ///
+    /// Copied from the owner token's `oidc_subject` (W2) when present. This is
+    /// what lets a later approval refuse "the owner approving their own change
+    /// through a second token": if the approver's verified subject equals this
+    /// one, it is the same human regardless of which token name signed which
+    /// side. Absent when the owner's token has no `oidc_subject` configured,
+    /// which strict mode (`require_verified_approver`) refuses to propose for.
+    ///
+    /// Absent by default for the same forward-compatibility reason as
+    /// `targets`, `preview` and `task_id`: this type is `deny_unknown_fields`,
+    /// so a binary predating this field rejects the whole state file if it
+    /// appears.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_subject: Option<OwnerSubject>,
 }
 
 /// A preview of what a change set will do, bound to a digest.
@@ -547,6 +577,20 @@ pub struct ApprovalRecord {
     /// by an operator-granted exception. See [`WaiverKind`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waived: Option<WaiverRecord>,
+    /// How the approver's identity was asserted: `"token"` or `"oidc"`
+    /// (MEC-994 W4). Signed into the v7 digest; absent on every record
+    /// written under v4/v5/v6, which predate the distinction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mechanism: Option<String>,
+    /// The IdP issuer that signed the approver's verified assertion, when
+    /// `mechanism` is `"oidc"`. Signed into the v7 digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    /// The IdP's `sub` claim for the approver, when `mechanism` is `"oidc"`.
+    /// Signed into the v7 digest. Never an email or display name — see
+    /// `mecmcp-oidc`'s claim extraction, which never reads one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
 }
 
 /// The default [`ApprovalRecord::digest_version`] — see that field.

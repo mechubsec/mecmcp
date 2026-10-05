@@ -251,6 +251,15 @@ pub struct ChangesetCoordinator {
     /// time; `load_with_recovery_and_key` reads it at load time, because a
     /// v6-signed record already on disk cannot be verified without it (MEC-457).
     approval_digest_key: Option<ApprovalDigestKey>,
+    /// Strict mode for verified-approver identity (MEC-994 W4).
+    ///
+    /// When set, `approve_change_set` refuses any approver that is not
+    /// `ApproverIdentity::OidcVerified`, and `create_change_set` refuses to
+    /// propose for an owner with no `oidc_subject` on their token. `false` by
+    /// default so a deployment that has not configured step-up
+    /// authentication keeps behaving exactly as it did before this field
+    /// existed.
+    require_verified_approver: bool,
 }
 
 impl ChangesetCoordinator {
@@ -293,6 +302,22 @@ impl ChangesetCoordinator {
     pub(crate) fn approval_digest_key(&self) -> Option<&[u8]> {
         self.approval_digest_key.as_deref()
     }
+
+    /// Require a verified (IdP step-up) approver identity on every approval,
+    /// and an owner `oidc_subject` on every proposal (MEC-994 W4).
+    ///
+    /// Only affects calls made through this instance from here on; it does
+    /// not retroactively judge records already on disk.
+    #[must_use]
+    pub fn with_require_verified_approver(mut self, value: bool) -> Self {
+        self.require_verified_approver = value;
+        self
+    }
+
+    /// Whether strict verified-approver mode is enabled.
+    pub(crate) fn require_verified_approver(&self) -> bool {
+        self.require_verified_approver
+    }
 }
 
 impl Default for ChangesetCoordinator {
@@ -306,6 +331,7 @@ impl Default for ChangesetCoordinator {
             evidence: None,
             lab_mode: false,
             approval_digest_key: None,
+            require_verified_approver: false,
             _owner_lock: None,
         }
     }
@@ -449,6 +475,7 @@ impl ChangesetCoordinator {
                 lab_mode,
                 evidence: None,
                 approval_digest_key,
+                require_verified_approver: false,
                 _owner_lock: None,
             });
         };
@@ -592,6 +619,7 @@ impl ChangesetCoordinator {
             approval_ttl,
             lab_mode,
             approval_digest_key,
+            require_verified_approver: false,
             _owner_lock: Some(owner_lock),
         })
     }

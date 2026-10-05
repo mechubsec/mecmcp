@@ -41,6 +41,7 @@ fn applying_record(task_id: Option<&str>) -> ChangeSetRecord {
         preview: None,
         task_id: task_id.map(ToOwned::to_owned),
         apply_without_handle: false,
+        owner_subject: None,
     }
 }
 

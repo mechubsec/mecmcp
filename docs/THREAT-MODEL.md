@@ -25,6 +25,10 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
                          (3)  │ │ (4)
                               ▼ │
                 SSDF / journald / file      operator: tokens, inventory, flags
+                              │
+                         (5)  │
+                              ▼
+                     IdP (JWKS, step-up assertions)
 ```
 
 1. **Client → server.** Everything the model sends is untrusted, *even with a valid token*.
@@ -36,6 +40,17 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
    is off unless configured.
 4. **Operator → server.** The operator is trusted. They set flags, tokens and inventory
    at startup. No MCP call can change the security posture.
+5. **Server → IdP.** Opt-in ([#400](https://github.com/mechubsec/mecmcp/issues/400)): the core crates
+   (`mecmcp-oidc`, `mecmcp-auth`, `mecmcp-changeset`, `mecmcp-transport`) can verify a
+   `Mecmcp-Approver-Assertion` step-up header, fetching JWKS from the IdP to do it, but
+   **no server in this repository wires that in yet** — a server must flatten
+   `VerifiedApproverArgs` into its own CLI, build an `ApproverAssertionVerifier`, and
+   construct its `ApproverIdentity` via `ApproverIdentity::from_attribution` for any of
+   this to run (`mecmcp-runtime#994 W8`, a pilot server, is the first one planned). Where
+   wired, no approver JWT, no raw claims and no IdP response ever flow back to the model
+   or into a tool result — verification happens once at the bearer boundary, and only
+   issuer+subject survive it. JWKS unreachable fails closed: approvals are refused, but
+   reads and proposals on existing bearer tokens are unaffected.
 
 ## Threats and mitigations
 
@@ -59,9 +74,36 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
 - **Prompt injection is unsolved (T1).** Controls limit *what* a hijacked model can do
   (scopes, two-person approval). They cannot stop it trying. Give read-only
   tokens to any client that reads untrusted text.
-- **"Two-person" means two tokens, not two humans.** One person holding two tokens can
-  approve their own change, and `--lab-mode` waives approval outright. The audit
-  record shows `approval_waiver: "lab-mode"`, but the change is not blocked.
+- **"Two-person" means two tokens, not two humans, on every server shipped today
+  ([#400](https://github.com/mechubsec/mecmcp/issues/400)).** By default, one person
+  holding two tokens can still approve their own change, and lab mode waives approval
+  outright (the audit record shows `approval_waiver: "lab-mode"`, but the change is not
+  blocked). The core crates now support a strict mode (`ChangesetCoordinator`'s
+  `with_require_verified_approver`, surfaced to a CLI as `--require-verified-approver`)
+  where the approve call must additionally carry a fresh IdP-issued assertion bound to a
+  distinct IdP subject from the proposer's — see trust boundary (5) above — and refuses a
+  lab-mode waiver, an operator waiver, and applying any pre-existing (non-`oidc`) approval
+  outright rather than letting any of them bypass the check. `VerifiedApprover` itself is
+  sealed (`#[non_exhaustive]`, no public constructor): the only way to produce one is
+  `bind_approver` succeeding at the bearer boundary, so a server cannot build one from a
+  tool argument. **This is a library
+  capability, not yet a deployed one**: no server in this repository flattens
+  `VerifiedApproverArgs` into its CLI or wires a `ChangesetCoordinator` built with it, so
+  every server shipped today still has the two-tokens gap this paragraph opened with. That
+  assertion, once a server wires it, only covers *who approved*; it does not scope *what*
+  they may approve beyond the token's existing tool/device scopes, and selector-scoped
+  approver roles (cluster/node/pool/tag/controller/site) are not yet built (tracked
+  separately, see #400).
+- **The `jti` replay guard is in-memory only.** A server restart inside
+  `--approver-max-age-secs` (300s default) forgets which assertions have already been
+  used, so a captured-but-not-yet-expired assertion could be replayed exactly once across
+  a restart. Accepted for this phase; a durable replay store would need its own
+  consistency story this phase does not need yet.
+- **`owner_subject` is token-asserted, not IdP-verified.** The owner's bound
+  `oidc_subject` (set via `token add --oidc-issuer/--oidc-subject`) is whatever the
+  operator who ran that command typed in, not something the IdP vouches for at propose
+  time. Strict mode refuses to approve a change set whose `owner_subject` went missing
+  after proposal (MEC-994 W4), but it cannot detect one that was wrong from the start.
 - **The host operator is trusted.** Root on the host can read credentials and rewrite
   local audit. Only the off-host SSDF copy survives that.
 - **Hosted model providers see tool output.** Even with T8 fixed, free text such as
@@ -72,7 +114,9 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
 
 - Compromise of the managed device itself.
 - The MCP client's own security.
-- OAuth or identity-provider integration.
+- OIDC/OAuth as the MCP bearer credential, session or token exchange, and retiring
+  `actor_type: human` tokens outright — step-up OIDC ([#400](https://github.com/mechubsec/mecmcp/issues/400)) only verifies identity
+  at approval time; the bearer token stays the transport credential.
 - Physical access.
 
 ## Per-server delta

@@ -12,9 +12,9 @@
 #![allow(clippy::unwrap_used)]
 
 use mecmcp_changeset::{
-    ApprovalRecord, ChangeSetRecord, ChangeSetState, ChangesetCoordinator, OperationLimits,
-    change_set_digest,
-    persistence::{read_state, write_state_for_test},
+    ApprovalRecord, ApproverIdentity, ChangeSetRecord, ChangeSetState, ChangesetCoordinator,
+    OperationLimits, OwnerSubject, WaiverKind, change_set_digest,
+    persistence::{read_state, read_state_with_key, write_state_for_test},
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -24,6 +24,26 @@ use std::time::Duration;
 struct TestAction {
     action: String,
     target: String,
+}
+
+/// Build an `OidcVerified` approver identity the way a real server would:
+/// through `ApproverIdentity::from_attribution`, never by naming the
+/// variant's (crate-private) payload directly. `ApproverIdentity` is opaque
+/// to this test crate on purpose (MEC-994 F1) — this is the only door.
+fn oidc_verified_approver(principal: &str, issuer: &str, subject: &str) -> ApproverIdentity {
+    let attribution = mecmcp_audit::Attribution {
+        principal: mecmcp_audit::Principal::Token(principal.to_owned()),
+        actor_type: mecmcp_audit::ActorType::Human,
+        agent: None,
+        on_behalf_of: None,
+        change_ref: None,
+        request_id: uuid::Uuid::nil(),
+        token_verified_fields: mecmcp_audit::TokenVerifiedFields::default(),
+        verified_approver: Some(mecmcp_auth::VerifiedApprover::for_test(issuer, subject)),
+        approver: None,
+        change_set_id: None,
+    };
+    ApproverIdentity::from_attribution(&attribution)
 }
 
 /// Sets up a temporary coordinator with a clean state file.
@@ -45,6 +65,45 @@ fn setup_coordinator() -> (tempfile::TempDir, ChangesetCoordinator) {
         .expect("coordinator");
 
     (dir, coordinator)
+}
+
+/// A fresh HMAC key for a single test, generated at runtime rather than a
+/// committed literal — nothing here is a credential, so there is nothing
+/// for a secret scanner to flag.
+fn random_key() -> std::sync::Arc<[u8]> {
+    let mut key = [0u8; 16];
+    getrandom::fill(&mut key).expect("system randomness for a test key");
+    std::sync::Arc::from(key.as_slice())
+}
+
+/// Sets up a coordinator in MEC-994 strict (verified-approver) mode, keyed so
+/// genuine approvals sign under v7. Returns the key too, for tests that need
+/// to reload the state file themselves.
+fn setup_strict_coordinator() -> (
+    tempfile::TempDir,
+    ChangesetCoordinator,
+    std::sync::Arc<[u8]>,
+) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state_path = dir.path().join("state.json");
+
+    let limits = OperationLimits {
+        max_operations: 1024,
+        max_change_sets: 1024,
+        max_actions_per_set: 64,
+        max_state_bytes: 8 * 1024 * 1024,
+        max_change_set_bytes: 256 * 1024,
+        ..OperationLimits::default()
+    };
+    let approval_ttl = Duration::from_secs(15 * 60);
+    let key = random_key();
+
+    let coordinator = ChangesetCoordinator::load(Some(&state_path), limits, approval_ttl, false)
+        .expect("coordinator")
+        .with_approval_digest_key(std::sync::Arc::clone(&key))
+        .with_require_verified_approver(true);
+
+    (dir, coordinator, key)
 }
 
 /// Generates a test fingerprint.
@@ -69,6 +128,7 @@ async fn test_create_then_approve_as_owner_is_denied() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -81,9 +141,11 @@ async fn test_create_then_approve_as_owner_is_denied() {
         .approve_change_set(
             created.change_set_id.clone(),
             "device-a".to_string(),
-            "alice".to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "alice".to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             created.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await;
 
@@ -113,6 +175,7 @@ async fn test_create_then_approve_as_distinct_principal_succeeds() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -124,9 +187,11 @@ async fn test_create_then_approve_as_distinct_principal_succeeds() {
         .approve_change_set(
             created.change_set_id.clone(),
             "device-a".to_string(),
-            "bob".to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "bob".to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             created.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await
         .expect("approve");
@@ -155,6 +220,7 @@ async fn test_approve_by_agent_actor_is_denied() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -163,9 +229,11 @@ async fn test_approve_by_agent_actor_is_denied() {
         .approve_change_set(
             created.change_set_id.clone(),
             "device-a".to_string(),
-            "bob".to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "bob".to_string(),
+                actor_type: mecmcp_audit::ActorType::Agent,
+            },
             created.digest.clone(),
-            mecmcp_audit::ActorType::Agent,
         )
         .await;
 
@@ -202,6 +270,7 @@ async fn test_approve_by_unknown_actor_is_denied() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -210,9 +279,11 @@ async fn test_approve_by_unknown_actor_is_denied() {
         .approve_change_set(
             created.change_set_id.clone(),
             "device-a".to_string(),
-            "bob".to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "bob".to_string(),
+                actor_type: mecmcp_audit::ActorType::Unknown,
+            },
             created.digest.clone(),
-            mecmcp_audit::ActorType::Unknown,
         )
         .await;
 
@@ -241,6 +312,7 @@ async fn test_owner_approving_own_plan_as_agent_gets_self_approval_error() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -249,9 +321,11 @@ async fn test_owner_approving_own_plan_as_agent_gets_self_approval_error() {
         .approve_change_set(
             created.change_set_id.clone(),
             "device-a".to_string(),
-            "alice".to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "alice".to_string(),
+                actor_type: mecmcp_audit::ActorType::Agent,
+            },
             created.digest.clone(),
-            mecmcp_audit::ActorType::Agent,
         )
         .await;
 
@@ -281,6 +355,7 @@ async fn test_second_approval_is_denied() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -290,9 +365,11 @@ async fn test_second_approval_is_denied() {
         .approve_change_set(
             created.change_set_id.clone(),
             "device-a".to_string(),
-            "bob".to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "bob".to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             created.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await
         .expect("approve");
@@ -304,9 +381,11 @@ async fn test_second_approval_is_denied() {
         .approve_change_set(
             created.change_set_id.clone(),
             "device-a".to_string(),
-            "charlie".to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "charlie".to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             created.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await;
 
@@ -349,6 +428,7 @@ async fn test_expired_change_set_transitions_on_status_poll() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -445,6 +525,7 @@ async fn test_approval_digest_tamper_detection_swap_approver() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -454,9 +535,11 @@ async fn test_approval_digest_tamper_detection_swap_approver() {
         .approve_change_set(
             created.change_set_id.clone(),
             "device-a".to_string(),
-            "bob".to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "bob".to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             created.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await
         .expect("approve");
@@ -526,6 +609,7 @@ async fn test_self_consistent_forged_self_approval_digest_is_still_rejected() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -534,9 +618,11 @@ async fn test_self_consistent_forged_self_approval_digest_is_still_rejected() {
         .approve_change_set(
             created.change_set_id.clone(),
             "device-a".to_string(),
-            "bob".to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "bob".to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             created.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await
         .expect("approve");
@@ -595,6 +681,7 @@ async fn test_self_approval_via_direct_update_is_denied() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -624,6 +711,9 @@ async fn test_self_approval_via_direct_update_is_denied() {
         ),
         digest_version: 5,
         waived: None,
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
 
     let result = coordinator
@@ -669,6 +759,7 @@ async fn test_owner_rewrite_is_refused_even_though_neither_write_self_approves()
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -750,12 +841,16 @@ async fn test_insert_refuses_a_record_that_already_carries_approval() {
             ),
             digest_version: 5,
             waived: None,
+            mechanism: None,
+            issuer: None,
+            subject: None,
         }),
         policy_signature: "policy-sig".to_owned(),
         targets: Vec::new(),
         preview: None,
         task_id: None,
         apply_without_handle: false,
+        owner_subject: None,
     };
 
     let result = coordinator.insert_change_set(record).await;
@@ -801,6 +896,7 @@ async fn test_new_approval_has_approval_digest() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -810,9 +906,11 @@ async fn test_new_approval_has_approval_digest() {
         .approve_change_set(
             created.change_set_id.clone(),
             "device-a".to_string(),
-            "bob".to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "bob".to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             created.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await
         .expect("approve");
@@ -826,4 +924,497 @@ async fn test_new_approval_has_approval_digest() {
     assert_eq!(approval.approver, Some("bob".to_string()));
     assert!(approval.digest.starts_with("sha256:"));
     assert_eq!(approval.digest.len(), "sha256:".len() + 64);
+}
+
+/// MEC-994 W4: in strict mode, a `TokenAsserted` approver — even a genuinely
+/// distinct, human principal — is refused. Only a verified IdP assertion
+/// satisfies the two-person rule once strict mode is on.
+#[tokio::test]
+async fn strict_mode_refuses_a_token_asserted_approver() {
+    let (_dir, coordinator, _key) = setup_strict_coordinator();
+
+    let actions = vec![TestAction {
+        action: "set".to_string(),
+        target: "/test/path".to_string(),
+    }];
+
+    let created = coordinator
+        .create_change_set(
+            "device-a".to_string(),
+            actions,
+            "alice".to_string(),
+            test_fingerprint(),
+            "policy-sig".to_string(),
+            Some(OwnerSubject {
+                issuer: "https://idp.example".to_string(),
+                subject: "alice-sub".to_string(),
+            }),
+        )
+        .await
+        .expect("create");
+
+    let result = coordinator
+        .approve_change_set(
+            created.change_set_id.clone(),
+            "device-a".to_string(),
+            &ApproverIdentity::TokenAsserted {
+                principal: "bob".to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
+            created.digest.clone(),
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("strict verified-approver mode")
+    );
+}
+
+/// MEC-994 W4: strict mode accepts an `OidcVerified` approver distinct from
+/// the owner, and the stored record carries the mechanism and digest version
+/// that prove it.
+#[tokio::test]
+async fn strict_mode_accepts_an_oidc_verified_approver() {
+    let (dir, coordinator, key) = setup_strict_coordinator();
+    let state_path = dir.path().join("state.json");
+
+    let actions = vec![TestAction {
+        action: "set".to_string(),
+        target: "/test/path".to_string(),
+    }];
+
+    let created = coordinator
+        .create_change_set(
+            "device-a".to_string(),
+            actions,
+            "alice".to_string(),
+            test_fingerprint(),
+            "policy-sig".to_string(),
+            Some(OwnerSubject {
+                issuer: "https://idp.example".to_string(),
+                subject: "alice-sub".to_string(),
+            }),
+        )
+        .await
+        .expect("create");
+
+    let approved = coordinator
+        .approve_change_set(
+            created.change_set_id.clone(),
+            "device-a".to_string(),
+            &oidc_verified_approver("bob", "https://idp.example", "bob-sub"),
+            created.digest.clone(),
+        )
+        .await
+        .expect("approve");
+
+    assert_eq!(approved.state, ChangeSetState::Approved);
+
+    let state = read_state_with_key(&state_path, 8 * 1024 * 1024, Some(&key)).expect("read state");
+    let record = state.change_sets.get(&created.change_set_id).unwrap();
+    let approval = record.approval.as_ref().expect("approval");
+    assert_eq!(approval.digest_version, 7);
+    assert_eq!(approval.mechanism.as_deref(), Some("oidc"));
+    assert_eq!(approval.issuer.as_deref(), Some("https://idp.example"));
+    assert_eq!(approval.subject.as_deref(), Some("bob-sub"));
+}
+
+/// MEC-994 W4: the owner cannot satisfy the two-person rule by approving
+/// through a second token bound to the same verified IdP subject.
+#[tokio::test]
+async fn an_approver_sharing_the_owners_verified_subject_is_refused() {
+    let (_dir, coordinator, _key) = setup_strict_coordinator();
+
+    let actions = vec![TestAction {
+        action: "set".to_string(),
+        target: "/test/path".to_string(),
+    }];
+
+    let created = coordinator
+        .create_change_set(
+            "device-a".to_string(),
+            actions,
+            "alice".to_string(),
+            test_fingerprint(),
+            "policy-sig".to_string(),
+            Some(OwnerSubject {
+                issuer: "https://idp.example".to_string(),
+                subject: "alice-sub".to_string(),
+            }),
+        )
+        .await
+        .expect("create");
+
+    // "alice-second-token" is a distinct principal name, but its verified
+    // subject is the owner's own — the same human holding two tokens.
+    let result = coordinator
+        .approve_change_set(
+            created.change_set_id.clone(),
+            "device-a".to_string(),
+            &oidc_verified_approver("alice-second-token", "https://idp.example", "alice-sub"),
+            created.digest.clone(),
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("same IdP identity as the change-set owner")
+    );
+}
+
+/// MEC-994 W4: strict mode refuses to propose a change set for an owner whose
+/// token carries no `oidc_subject` binding.
+#[tokio::test]
+async fn strict_mode_refuses_to_propose_without_an_owner_subject() {
+    let (_dir, coordinator, _key) = setup_strict_coordinator();
+
+    let actions = vec![TestAction {
+        action: "set".to_string(),
+        target: "/test/path".to_string(),
+    }];
+
+    let result = coordinator
+        .create_change_set(
+            "device-a".to_string(),
+            actions,
+            "alice".to_string(),
+            test_fingerprint(),
+            "policy-sig".to_string(),
+            None,
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("oidc_subject binding")
+    );
+}
+
+/// MEC-994 W4: editing `mechanism`/`issuer`/`subject` onto a non-v7 approval
+/// record invalidates it on load, even though those fields are not what a
+/// v4/v5/v6 digest binds.
+#[tokio::test]
+async fn v7_only_fields_on_a_non_v7_record_are_rejected_on_load() {
+    let (dir, coordinator) = setup_coordinator();
+    let state_path = dir.path().join("state.json");
+
+    let actions = vec![TestAction {
+        action: "set".to_string(),
+        target: "/test/path".to_string(),
+    }];
+
+    let created = coordinator
+        .create_change_set(
+            "device-a".to_string(),
+            actions,
+            "alice".to_string(),
+            test_fingerprint(),
+            "policy-sig".to_string(),
+            None,
+        )
+        .await
+        .expect("create");
+
+    coordinator
+        .approve_change_set(
+            created.change_set_id.clone(),
+            "device-a".to_string(),
+            &ApproverIdentity::TokenAsserted {
+                principal: "bob".to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
+            created.digest.clone(),
+        )
+        .await
+        .expect("approve");
+
+    let mut state = read_state(&state_path, 8 * 1024 * 1024).expect("read state");
+    {
+        let record = state.change_sets.get_mut(&created.change_set_id).unwrap();
+        let approval = record.approval.as_mut().unwrap();
+        assert_eq!(approval.digest_version, 5, "no key configured, so v5");
+        approval.mechanism = Some("oidc".to_string());
+        approval.issuer = Some("https://evil.example".to_string());
+        approval.subject = Some("forged".to_string());
+    }
+    write_state_for_test(&state_path, &state, 8 * 1024 * 1024).expect("write forged state");
+
+    let reloaded = read_state(&state_path, 8 * 1024 * 1024);
+    assert!(reloaded.is_err());
+    assert!(
+        reloaded
+            .unwrap_err()
+            .to_string()
+            .contains("only a v7 digest binds")
+    );
+}
+
+/// MEC-994 Percy review F2: strict mode must refuse a lab-mode waiver
+/// outright, not just reject a non-`OidcVerified` approval. Before this fix,
+/// `waive_approval` checked only `lab_mode()`, so a coordinator built with
+/// both `with_require_verified_approver(true)` and lab mode on let the owner
+/// waive their own approval — bypassing strict mode entirely rather than
+/// being gated by it.
+#[tokio::test]
+async fn strict_mode_refuses_a_lab_mode_waiver() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state_path = dir.path().join("state.json");
+    let limits = OperationLimits {
+        max_operations: 1024,
+        max_change_sets: 1024,
+        max_actions_per_set: 64,
+        max_state_bytes: 8 * 1024 * 1024,
+        max_change_set_bytes: 256 * 1024,
+        ..OperationLimits::default()
+    };
+    // lab_mode = true alongside strict mode — the combination
+    // `VerifiedApproverArgs::validate` refuses at CLI startup, but this
+    // coordinator is built directly, bypassing that courtesy pre-check, to
+    // prove the library itself still refuses.
+    let coordinator = ChangesetCoordinator::load(
+        Some(&state_path),
+        limits,
+        Duration::from_secs(15 * 60),
+        true,
+    )
+    .expect("coordinator")
+    .with_approval_digest_key(random_key())
+    .with_require_verified_approver(true);
+
+    let actions = vec![TestAction {
+        action: "set".to_string(),
+        target: "/test/path".to_string(),
+    }];
+    let created = coordinator
+        .create_change_set(
+            "device-a".to_string(),
+            actions,
+            "alice".to_string(),
+            test_fingerprint(),
+            "policy-sig".to_string(),
+            Some(OwnerSubject {
+                issuer: "https://idp.example".to_string(),
+                subject: "alice-sub".to_string(),
+            }),
+        )
+        .await
+        .expect("create");
+
+    let result = coordinator
+        .waive_approval(
+            created.change_set_id.clone(),
+            "device-a".to_string(),
+            "alice".to_string(),
+            created.digest.clone(),
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("refused under strict verified-approver mode")
+    );
+}
+
+/// MEC-994 Percy review F3: strict mode without a keyed approval digest must
+/// refuse to approve, not silently fall back to an unkeyed v5 approval that
+/// drops the mechanism/issuer/subject fields strict mode exists to make
+/// tamper-evident.
+#[tokio::test]
+async fn strict_mode_without_a_digest_key_refuses_to_approve() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state_path = dir.path().join("state.json");
+    let limits = OperationLimits {
+        max_operations: 1024,
+        max_change_sets: 1024,
+        max_actions_per_set: 64,
+        max_state_bytes: 8 * 1024 * 1024,
+        max_change_set_bytes: 256 * 1024,
+        ..OperationLimits::default()
+    };
+    // Strict mode, deliberately with no `with_approval_digest_key` call.
+    let coordinator = ChangesetCoordinator::load(
+        Some(&state_path),
+        limits,
+        Duration::from_secs(15 * 60),
+        false,
+    )
+    .expect("coordinator")
+    .with_require_verified_approver(true);
+
+    let actions = vec![TestAction {
+        action: "set".to_string(),
+        target: "/test/path".to_string(),
+    }];
+    let created = coordinator
+        .create_change_set(
+            "device-a".to_string(),
+            actions,
+            "alice".to_string(),
+            test_fingerprint(),
+            "policy-sig".to_string(),
+            Some(OwnerSubject {
+                issuer: "https://idp.example".to_string(),
+                subject: "alice-sub".to_string(),
+            }),
+        )
+        .await
+        .expect("create");
+
+    let result = coordinator
+        .approve_change_set(
+            created.change_set_id.clone(),
+            "device-a".to_string(),
+            &oidc_verified_approver("bob", "https://idp.example", "bob-sub"),
+            created.digest.clone(),
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("requires a keyed approval digest")
+    );
+}
+
+/// MEC-994 Percy review F4: strict mode must refuse to approve a change set
+/// whose `owner_subject` is absent, even though that field is not itself
+/// covered by any digest on a `Planned` record and so could have been
+/// stripped from the state file after proposal rather than genuinely never
+/// set. Without this check, stripping `owner_subject` from a pending change
+/// set would silently disable the self-approval check for it.
+#[tokio::test]
+async fn strict_mode_refuses_to_approve_when_owner_subject_is_missing() {
+    let (dir, coordinator, key) = setup_strict_coordinator();
+    let state_path = dir.path().join("state.json");
+
+    let actions = vec![TestAction {
+        action: "set".to_string(),
+        target: "/test/path".to_string(),
+    }];
+    let created = coordinator
+        .create_change_set(
+            "device-a".to_string(),
+            actions,
+            "alice".to_string(),
+            test_fingerprint(),
+            "policy-sig".to_string(),
+            Some(OwnerSubject {
+                issuer: "https://idp.example".to_string(),
+                subject: "alice-sub".to_string(),
+            }),
+        )
+        .await
+        .expect("create");
+
+    // Simulate `owner_subject` having been stripped from the state file
+    // after proposal — not reachable through the public API, which is the
+    // point: this field is not itself tamper-evident on a `Planned` record.
+    drop(coordinator);
+    let mut state = read_state(&state_path, 8 * 1024 * 1024).expect("read state");
+    state
+        .change_sets
+        .get_mut(&created.change_set_id)
+        .unwrap()
+        .owner_subject = None;
+    write_state_for_test(&state_path, &state, 8 * 1024 * 1024).expect("write state");
+
+    let coordinator = ChangesetCoordinator::load(
+        Some(&state_path),
+        OperationLimits {
+            max_operations: 1024,
+            max_change_sets: 1024,
+            max_actions_per_set: 64,
+            max_state_bytes: 8 * 1024 * 1024,
+            max_change_set_bytes: 256 * 1024,
+            ..OperationLimits::default()
+        },
+        Duration::from_secs(15 * 60),
+        false,
+    )
+    .expect("coordinator")
+    .with_approval_digest_key(std::sync::Arc::clone(&key))
+    .with_require_verified_approver(true);
+
+    let result = coordinator
+        .approve_change_set(
+            created.change_set_id.clone(),
+            "device-a".to_string(),
+            &oidc_verified_approver("bob", "https://idp.example", "bob-sub"),
+            created.digest.clone(),
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("requires the change set to carry an owner_subject")
+    );
+}
+
+/// MEC-994 Percy review F10: an operator waiver (`waive_approval_operator`)
+/// has no verified-identity check of its own, so without this guard an
+/// owner could grant themselves an operator waiver under strict mode and
+/// reach `Approved` with no verified second human at all — exactly the
+/// property strict mode exists to prevent.
+#[tokio::test]
+async fn strict_mode_refuses_an_operator_waiver() {
+    let (dir, coordinator, _key) = setup_strict_coordinator();
+    let _ = &dir;
+
+    let actions = vec![TestAction {
+        action: "set".to_string(),
+        target: "/test/path".to_string(),
+    }];
+    let created = coordinator
+        .create_change_set(
+            "device-a".to_string(),
+            actions,
+            "alice".to_string(),
+            test_fingerprint(),
+            "policy-sig".to_string(),
+            Some(OwnerSubject {
+                issuer: "https://idp.example".to_string(),
+                subject: "alice-sub".to_string(),
+            }),
+        )
+        .await
+        .expect("create");
+
+    let result = coordinator
+        .waive_approval_operator(
+            created.change_set_id.clone(),
+            "device-a".to_string(),
+            "alice".to_string(),
+            created.digest.clone(),
+            WaiverKind::OperatorTool,
+            "authorised exception".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("refused under strict verified-approver mode")
+    );
 }

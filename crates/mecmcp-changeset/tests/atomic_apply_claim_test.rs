@@ -42,6 +42,7 @@ fn planned(id: &str) -> ChangeSetRecord {
         preview: None,
         task_id: None,
         apply_without_handle: false,
+        owner_subject: None,
     }
 }
 
@@ -58,9 +59,11 @@ async fn seed_approved(coord: &ChangesetCoordinator, id: &str) {
         .approve_change_set(
             id.to_owned(),
             "vsrx-ci".to_owned(),
-            "approver".to_owned(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "approver".to_owned(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             digest,
-            mecmcp_audit::ActorType::Human,
         )
         .await
         .expect("approve");

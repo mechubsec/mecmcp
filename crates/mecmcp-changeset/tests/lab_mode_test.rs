@@ -68,6 +68,7 @@ async fn test_waive_approval_refused_when_lab_mode_disabled() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -107,6 +108,7 @@ async fn test_waive_approval_succeeds_with_lab_mode() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -182,6 +184,7 @@ async fn test_waived_record_is_distinguishable_from_genuine_approval() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -207,6 +210,7 @@ async fn test_waived_record_is_distinguishable_from_genuine_approval() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -215,9 +219,11 @@ async fn test_waived_record_is_distinguishable_from_genuine_approval() {
         .approve_change_set(
             approved_cs.change_set_id.clone(),
             "device-b".to_string(),
-            "bob".to_string(),
+            &mecmcp_changeset::ApproverIdentity::TokenAsserted {
+                principal: "bob".to_string(),
+                actor_type: mecmcp_audit::ActorType::Human,
+            },
             approved_cs.digest.clone(),
-            mecmcp_audit::ActorType::Human,
         )
         .await
         .expect("approve");
@@ -293,6 +299,7 @@ async fn test_waived_record_round_trips() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -356,6 +363,7 @@ async fn test_tampering_waived_record_by_inserting_approver_is_rejected() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -411,6 +419,7 @@ async fn test_only_owner_can_waive() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -448,6 +457,7 @@ async fn test_waiving_non_planned_change_set_is_refused() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -511,6 +521,7 @@ async fn test_waiving_after_ttl_expires_is_refused() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");
@@ -565,6 +576,7 @@ async fn a_waived_change_set_reports_the_waiver_reason() {
             "alice".to_string(),
             test_fingerprint(),
             "policy-sig".to_string(),
+            None,
         )
         .await
         .expect("create");

@@ -547,6 +547,7 @@ fn test_attribution() -> Attribution {
         // Hand-built rather than derived from a token entry, so the model,
         // provider and delegated user here are claims, not verified facts.
         token_verified_fields: TokenVerifiedFields::none(),
+        verified_approver: None,
         approver: None,
         change_set_id: None,
     }
@@ -561,6 +562,7 @@ fn test_human_attribution() -> Attribution {
         change_ref: Some("CHG0099999".into()),
         request_id: Uuid::new_v4(),
         token_verified_fields: TokenVerifiedFields::none(),
+        verified_approver: None,
         approver: None,
         change_set_id: None,
     }

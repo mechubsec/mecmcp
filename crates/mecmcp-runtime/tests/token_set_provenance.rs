@@ -51,6 +51,8 @@ fn add_token(
             provider_tier: provider_tier.map(str::to_owned),
             on_behalf_of: on_behalf_of.map(str::to_owned),
             actor_type: actor_type.map(str::to_owned),
+            oidc_issuer: None,
+            oidc_subject: None,
             server_pid: None,
         },
         &[],

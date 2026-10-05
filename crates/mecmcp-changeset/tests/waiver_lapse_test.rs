@@ -81,6 +81,9 @@ fn waived_record(
             digest: approval_digest,
             digest_version: 4,
             waived: Some(waiver),
+            mechanism: None,
+            issuer: None,
+            subject: None,
         }),
         expires_at_unix: now() + 86_400,
         operation_id: None,
@@ -89,6 +92,7 @@ fn waived_record(
         preview: None,
         task_id: None,
         apply_without_handle: false,
+        owner_subject: None,
     }
 }
 

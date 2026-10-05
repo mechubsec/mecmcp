@@ -49,6 +49,7 @@ fn record_with_preview(preview: Option<&str>) -> ChangeSetRecord {
         }),
         task_id: None,
         apply_without_handle: false,
+        owner_subject: None,
     }
 }
 
@@ -83,6 +84,9 @@ fn a_v5_approval_round_trips() {
         ),
         digest_version: 5,
         waived: None,
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
     let state = round_trip(record).expect("a v5 approval must load");
     let loaded = state.change_sets.values().next().unwrap();
@@ -108,6 +112,9 @@ fn editing_the_preview_invalidates_the_approval() {
         ),
         digest_version: 5,
         waived: None,
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
 
     // Swap the preview for different text, keeping its own digest self-consistent
@@ -144,6 +151,9 @@ fn a_v4_approval_is_never_promoted() {
         ),
         digest_version: 4,
         waived: None,
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
     let state = round_trip(record).expect("a v4 approval must still load");
     let loaded = state.change_sets.values().next().unwrap();
@@ -172,6 +182,9 @@ fn a_v4_approval_still_tolerates_a_preview_swap() {
         ),
         digest_version: 4,
         waived: None,
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
     let replacement = "RESIZE lxc/617 disk on pve3";
     record.preview = Some(PreviewRecord {
@@ -199,6 +212,9 @@ fn a_previewless_v5_approval_binds_the_absence() {
         ),
         digest_version: 5,
         waived: None,
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
     round_trip(record.clone()).expect("a previewless v5 approval must load");
 
@@ -231,6 +247,9 @@ fn an_unknown_digest_version_is_refused() {
         ),
         digest_version: 99,
         waived: None,
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
     let error = round_trip(record).expect_err("an unknown version must be refused");
     assert!(
@@ -277,6 +296,9 @@ async fn a_bound_preview_cannot_be_changed_in_process() {
         ),
         digest_version: 5,
         waived: None,
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
     coord.update_change_set(approved.clone()).await.unwrap();
 
@@ -342,6 +364,9 @@ async fn a_bound_preview_cannot_have_its_text_rewritten_under_its_own_digest() {
         ),
         digest_version: 5,
         waived: None,
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
     coord.update_change_set(approved.clone()).await.unwrap();
 
@@ -400,6 +425,9 @@ async fn a_granted_approval_cannot_be_downgraded_to_free_the_preview() {
         ),
         digest_version: 5,
         waived: None,
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
     coord.update_change_set(approved.clone()).await.unwrap();
 
@@ -417,6 +445,9 @@ async fn a_granted_approval_cannot_be_downgraded_to_free_the_preview() {
         ),
         digest_version: 4,
         waived: None,
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
     let error = coord
         .update_change_set(downgraded)
@@ -504,6 +535,9 @@ async fn a_granted_approval_cannot_be_removed_to_free_the_preview() {
         ),
         digest_version: 5,
         waived: None,
+        mechanism: None,
+        issuer: None,
+        subject: None,
     });
     coord.update_change_set(approved.clone()).await.unwrap();
 
