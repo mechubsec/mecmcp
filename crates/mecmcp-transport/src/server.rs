@@ -648,13 +648,11 @@ async fn host_origin_validation_middleware(
             }
         };
 
-        // Handle "Origin: null" explicitly (file://, sandboxed iframe, etc.)
-        if origin_str == "null" {
-            // Reject null origins unless explicitly allowed
-            if !allowed_origins.contains(&"null".to_owned()) {
-                return (StatusCode::FORBIDDEN, "Origin 'null' is not allowed").into_response();
-            }
-        } else if !origin_is_allowed_exact(origin_str, allowed_origins) {
+        // The opaque `Origin: null` (file://, sandboxed iframe, etc.) is never allowed:
+        // it cannot be placed in `allowed_origins` (cli_validate refuses it as an
+        // unparseable allowlist entry), so it always falls through to this check
+        // and `origin_is_allowed_exact` rejects it as a malformed origin.
+        if !origin_is_allowed_exact(origin_str, allowed_origins) {
             return (
                 StatusCode::FORBIDDEN,
                 format!("Origin '{}' is not allowed", origin_str),
@@ -1203,15 +1201,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn origin_validation_handles_null_explicitly() {
-        // Origin: null from sandboxed iframe, file://, etc.
+    async fn origin_validation_rejects_null_even_if_listed() {
+        // Origin: null from sandboxed iframe, file://, etc. is never allowed, even if an
+        // allowlist somehow contains the literal "null" entry (cli_validate now refuses
+        // "null" as an unparseable --allowed-origin value before this policy is ever
+        // built, so this also covers a policy constructed directly, bypassing the CLI).
         let config = HttpTransportConfig::<NoGrant>::unauthenticated(
             TransportIdentity::new("testmcp", "test", "test", ["device"]),
             LimitsConfig::default(),
-            HostOriginPolicy::enforced(
-                Vec::<String>::new(),
-                vec!["null".to_owned()], // Explicitly allow null
-            ),
+            HostOriginPolicy::enforced(Vec::<String>::new(), vec!["null".to_owned()]),
             CancellationToken::new(),
             NoAuthAcknowledgement::operator_allowed_no_auth(),
         );
@@ -1232,10 +1230,10 @@ mod tests {
             .await
             .expect("response");
 
-        assert_ne!(
+        assert_eq!(
             response.status(),
             StatusCode::FORBIDDEN,
-            "Origin: null should be accepted when explicitly allowed"
+            "Origin: null should always be rejected"
         );
     }
 

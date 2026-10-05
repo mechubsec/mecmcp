@@ -10,28 +10,13 @@
 //! of an open port. Do not reintroduce the assumption that calling this is what
 //! makes a deployment safe.
 //!
-//! # Convergence with rustpanosmcp's fork (mecmcp#358)
+//! # Rule coverage
 //!
-//! rustpanosmcp carries its own copy of this module with six extra rules this
-//! one lacked: `AuthConflict`, `NonNumericHost`, `InvalidAllowedHost`/
-//! `InvalidAllowedOrigin`, `AbsolutePathRequired`, and bounded `BodyLimit`/
-//! `RateLimit` settings. This revision promotes the first four — they read
-//! only fields already on the shared [`Cli`] and tighten behaviour that was
-//! already inert or already a silent footgun on every consumer, not just
-//! panos (see each variant's doc comment for the specific case).
-//!
-//! `AbsolutePathRequired` and the rate/body-limit rules are deliberately
-//! **not** promoted here:
-//! - `AbsolutePathRequired` would refuse a relative `--tokens-file`/
-//!   `--tls-cert`/`--tls-key` that currently starts successfully on the other
-//!   five consumers, which is a compatibility break, not a tightening.
-//! - `BodyLimit`/`RateLimit` validate CLI fields (`request_body_limit`,
-//!   `*_rate_per_minute`) that only exist on rustpanosmcp's own `Cli` — there
-//!   is nothing to validate upstream without first adding those flags to the
-//!   shared surface, which is a CLI-surface change for every consumer, not a
-//!   validation fix.
-//!
-//! Both are a separate, larger scope decision than this change makes.
+//! This module validates every rule that can be expressed purely in terms of
+//! fields already on the shared [`Cli`]: `AuthConflict`, `NonNumericHost`, and
+//! `InvalidAllowedHost`/`InvalidAllowedOrigin` (see each variant's doc comment
+//! for the specific case each one closes). Extending coverage further is a
+//! separate, larger scope decision tracked outside this module.
 
 use crate::cli::{Cli, Transport};
 use std::net::IpAddr;
@@ -223,9 +208,10 @@ pub fn validate(cli: &Cli) -> Result<(), CliRefusal> {
 
 /// Whether one `--allowed-host` entry could ever match a Host header.
 ///
-/// Mirrors the parse `mecmcp_transport::server::normalize_host_authority`
-/// performs at request time, so a value this rejects is a value that server
-/// would also silently never match.
+/// Is at least as strict as the parse
+/// `mecmcp_transport::server::normalize_host_authority` performs at request
+/// time, so a value this rejects is a value that server would also silently
+/// never match.
 fn validate_allowed_host(value: &str) -> Result<(), CliRefusal> {
     let usable =
         value.len() <= 255 && !value.contains('@') && http::uri::Authority::try_from(value).is_ok();
@@ -240,9 +226,12 @@ fn validate_allowed_host(value: &str) -> Result<(), CliRefusal> {
 
 /// Whether one `--allowed-origin` entry could ever match a browser Origin.
 ///
-/// Mirrors the parse `mecmcp_transport::server::parse_and_normalize_origin`
-/// performs at request time: a scheme of `http`/`https`, an authority with no
-/// userinfo, and no query or non-root path (an Origin header carries neither).
+/// Is at least as strict as the parse
+/// `mecmcp_transport::server::parse_and_normalize_origin` performs at request
+/// time: requires a scheme of `http`/`https`, an authority with no userinfo,
+/// and no query or non-root path (an Origin header carries neither), and also
+/// refuses the opaque `null` origin outright (the transport never treats any
+/// allowlist entry as matching it — see `mecmcp-transport/src/server.rs`).
 fn validate_allowed_origin(value: &str) -> Result<(), CliRefusal> {
     let valid = value.len() <= 2048
         && value
@@ -757,6 +746,29 @@ mod tests {
                 "expected a refusal for {bad}, got {r:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_opaque_null_origin_is_refused() {
+        // The transport never matches "null" against any allowlist entry (see
+        // mecmcp-transport/src/server.rs), so the allowlist must not accept it either.
+        let r = validate(&parse(&[
+            "-t",
+            "streamable-http",
+            "--tokens-file",
+            "/tmp/t.json",
+            "-H",
+            "0.0.0.0",
+            "--allow-insecure-bind",
+            "--allowed-host",
+            "server.example.org",
+            "--allowed-origin",
+            "null",
+        ]));
+        assert!(
+            matches!(r, Err(CliRefusal::InvalidAllowedOrigin { .. })),
+            "got {r:?}"
+        );
     }
 
     #[test]
