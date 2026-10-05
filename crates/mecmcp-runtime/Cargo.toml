@@ -7,6 +7,15 @@ license.workspace    = true
 repository.workspace = true
 authors.workspace    = true
 
+[features]
+# Exposes `cli_validate::testing`, the shared refusal-fixture and exact-
+# stderr helper consumers use to pin their own binary's output against the
+# messages this crate promises (mirrors mecmcp-redact's and mecmcp-audit's
+# `test-util` -> `testing`/`testutil` pattern). Must NOT be enabled by
+# default; it only exists for other crates' dev-dependencies and integration
+# tests.
+test-util = []
+
 [dependencies]
 anyhow      = "1"
 clap        = { version = "4", features = ["derive"] }
