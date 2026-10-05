@@ -227,9 +227,8 @@ pub fn validate(cli: &Cli) -> Result<(), CliRefusal> {
 /// performs at request time, so a value this rejects is a value that server
 /// would also silently never match.
 fn validate_allowed_host(value: &str) -> Result<(), CliRefusal> {
-    let usable = value.len() <= 255
-        && !value.contains('@')
-        && http::uri::Authority::try_from(value).is_ok();
+    let usable =
+        value.len() <= 255 && !value.contains('@') && http::uri::Authority::try_from(value).is_ok();
     if usable {
         Ok(())
     } else {
@@ -570,7 +569,10 @@ mod tests {
             "server.example.org",
             "--allow-insecure-bind",
         ]));
-        assert!(matches!(r, Err(CliRefusal::NonNumericHost { .. })), "got {r:?}");
+        assert!(
+            matches!(r, Err(CliRefusal::NonNumericHost { .. })),
+            "got {r:?}"
+        );
     }
 
     /// Loopback stays exempt — requiring the flags there would break every
@@ -672,15 +674,17 @@ mod tests {
     /// A numeric loopback address is unaffected by the new `--host` check.
     #[test]
     fn numeric_loopback_host_is_not_a_non_numeric_refusal() {
-        assert!(validate(&parse(&[
-            "-t",
-            "streamable-http",
-            "--tokens-file",
-            "/tmp/t.json",
-            "-H",
-            "127.0.0.1",
-        ]))
-        .is_ok());
+        assert!(
+            validate(&parse(&[
+                "-t",
+                "streamable-http",
+                "--tokens-file",
+                "/tmp/t.json",
+                "-H",
+                "127.0.0.1",
+            ]))
+            .is_ok()
+        );
     }
 
     /// Promoted from rustpanosmcp's fork (mecmcp#358): an allowlist entry
@@ -731,7 +735,10 @@ mod tests {
 
     #[test]
     fn an_allowed_origin_with_a_path_or_query_is_refused() {
-        for bad in ["https://server.example.org/some/path", "https://server.example.org?x=1"] {
+        for bad in [
+            "https://server.example.org/some/path",
+            "https://server.example.org?x=1",
+        ] {
             let r = validate(&parse(&[
                 "-t",
                 "streamable-http",
