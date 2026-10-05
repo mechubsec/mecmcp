@@ -9,6 +9,14 @@
 //! the transport concepts — but skipping it now costs a startup refusal instead
 //! of an open port. Do not reintroduce the assumption that calling this is what
 //! makes a deployment safe.
+//!
+//! # Rule coverage
+//!
+//! This module validates every rule that can be expressed purely in terms of
+//! fields already on the shared [`Cli`]: `AuthConflict`, `NonNumericHost`, and
+//! `InvalidAllowedHost`/`InvalidAllowedOrigin` (see each variant's doc comment
+//! for the specific case each one closes). Extending coverage further is a
+//! separate, larger scope decision tracked outside this module.
 
 use crate::cli::{Cli, Transport};
 use std::net::IpAddr;
@@ -19,6 +27,9 @@ pub enum CliRefusal {
     /// Remote transport needs authentication.
     #[error("--transport streamable-http requires --tokens-file (or --allow-no-auth on loopback)")]
     AuthRequired,
+    /// Auth may not be both configured and disabled.
+    #[error("--tokens-file and --allow-no-auth are mutually exclusive")]
+    AuthConflict,
     /// No-auth listeners are loopback-only.
     #[error("--allow-no-auth refuses to bind off-loopback (host '{host}' is not 127.0.0.1 or ::1)")]
     NoAuthOffLoopback {
@@ -65,6 +76,39 @@ pub enum CliRefusal {
         /// Whether key was set.
         key: bool,
     },
+    /// Bind address must not involve DNS resolution.
+    ///
+    /// `--host` ultimately feeds a `SocketAddr`, which a hostname never
+    /// parses into — the bind fails downstream with an opaque error instead.
+    /// This gives the same outcome a clear, named cause before anything else
+    /// is constructed.
+    #[error("--host must be a numeric IPv4 or IPv6 address, got '{host}'")]
+    NonNumericHost {
+        /// Refused bind value.
+        host: String,
+    },
+    /// One Host allowlist entry is not a usable authority.
+    ///
+    /// An entry that does not parse as an authority never matches the Host
+    /// header comparison in `mecmcp_transport::server`, so it is not a
+    /// weaker policy than a well-formed one — it is silently inert. Refusing
+    /// it at startup turns a policy the operator believes exists but does
+    /// not into a startup error instead of a runtime no-op.
+    #[error("invalid --allowed-host authority '{value}'")]
+    InvalidAllowedHost {
+        /// Refused value.
+        value: String,
+    },
+    /// One Origin allowlist entry is not a usable HTTP(S) origin.
+    ///
+    /// Same reasoning as `InvalidAllowedHost`: an entry that does not parse
+    /// never matches in `origin_is_allowed_exact`, so it is a silently inert
+    /// policy entry rather than a weaker one.
+    #[error("invalid --allowed-origin URL '{value}'")]
+    InvalidAllowedOrigin {
+        /// Refused value.
+        value: String,
+    },
 }
 
 /// Validate all serve arguments before inventory, secrets, sockets, or TLS load.
@@ -89,13 +133,25 @@ pub fn validate(cli: &Cli) -> Result<(), CliRefusal> {
         (cert, key) => return Err(CliRefusal::TlsPairIncomplete { cert, key }),
     };
 
-    // Determine if host is loopback.
-    let host_is_loopback = match cli.host.parse::<IpAddr>() {
-        Ok(ip) => ip.is_loopback(),
-        Err(_) => false, // hostnames are treated as non-loopback
-    };
+    // The bind address must be a literal IP: it feeds a `SocketAddr` with no
+    // DNS resolution step, so a hostname never reaches a socket either way.
+    // Refusing it here names the cause instead of letting it surface as an
+    // opaque parse error after everything else has already loaded.
+    let host_ip: IpAddr = cli.host.parse().map_err(|_| CliRefusal::NonNumericHost {
+        host: cli.host.clone(),
+    })?;
+    let host_is_loopback = host_ip.is_loopback();
 
-    // Auth requirement.
+    // Auth requirement. `--tokens-file` and `--allow-no-auth` are mutually
+    // exclusive, not a precedence rule — every consumer currently builds its
+    // token store with `tokens_file` taking priority and `allow_no_auth`
+    // silently dropped, which lets an operator believe no-auth is in effect
+    // when auth is actually enforced (or vice versa, depending on which flag
+    // they meant). Refusing the combination surfaces the mistake instead of
+    // guessing which flag the operator meant.
+    if cli.tokens_file.is_some() && cli.allow_no_auth {
+        return Err(CliRefusal::AuthConflict);
+    }
     if cli.tokens_file.is_none() && !cli.allow_no_auth {
         return Err(CliRefusal::AuthRequired);
     }
@@ -135,7 +191,67 @@ pub fn validate(cli: &Cli) -> Result<(), CliRefusal> {
         });
     }
 
+    // Every entry must actually be able to match something. An entry that
+    // fails to parse here also fails to parse in the runtime comparison
+    // (`mecmcp_transport::server::normalize_host_authority` /
+    // `parse_and_normalize_origin`), so it was never a weaker policy — it was
+    // a policy entry that silently matched nothing.
+    for value in &cli.allowed_host {
+        validate_allowed_host(value)?;
+    }
+    for value in &cli.allowed_origin {
+        validate_allowed_origin(value)?;
+    }
+
     Ok(())
+}
+
+/// Whether one `--allowed-host` entry could ever match a Host header.
+///
+/// Is at least as strict as the parse
+/// `mecmcp_transport::server::normalize_host_authority` performs at request
+/// time, so a value this rejects is a value that server would also silently
+/// never match.
+fn validate_allowed_host(value: &str) -> Result<(), CliRefusal> {
+    let usable =
+        value.len() <= 255 && !value.contains('@') && http::uri::Authority::try_from(value).is_ok();
+    if usable {
+        Ok(())
+    } else {
+        Err(CliRefusal::InvalidAllowedHost {
+            value: value.to_owned(),
+        })
+    }
+}
+
+/// Whether one `--allowed-origin` entry could ever match a browser Origin.
+///
+/// Is at least as strict as the parse
+/// `mecmcp_transport::server::parse_and_normalize_origin` performs at request
+/// time: requires a scheme of `http`/`https`, an authority with no userinfo,
+/// and no query or non-root path (an Origin header carries neither), and also
+/// refuses the opaque `null` origin outright (the transport never treats any
+/// allowlist entry as matching it — see `mecmcp-transport/src/server.rs`).
+fn validate_allowed_origin(value: &str) -> Result<(), CliRefusal> {
+    let valid = value.len() <= 2048
+        && value
+            .parse::<http::Uri>()
+            .ok()
+            .filter(|uri| matches!(uri.scheme_str(), Some("http" | "https")))
+            .filter(|uri| {
+                uri.authority()
+                    .is_some_and(|authority| !authority.as_str().contains('@'))
+            })
+            .is_some_and(|uri| {
+                uri.query().is_none() && (uri.path().is_empty() || uri.path() == "/")
+            });
+    if valid {
+        Ok(())
+    } else {
+        Err(CliRefusal::InvalidAllowedOrigin {
+            value: value.to_owned(),
+        })
+    }
 }
 
 /// Whether an allowlist carries at least one value that could match anything.
@@ -428,7 +544,11 @@ mod tests {
 
     /// A hostname bind is treated as remote, so it needs the flags too.
     #[test]
-    fn a_hostname_bind_requires_allowlists() {
+    fn a_hostname_bind_is_refused_as_non_numeric() {
+        // `--host` feeds a `SocketAddr` with no DNS step, so a hostname never
+        // reaches a bind either way. It is refused here, before the
+        // allowlist checks, with a cause the opaque downstream parse error
+        // would not have named.
         let r = validate(&parse(&[
             "-t",
             "streamable-http",
@@ -439,7 +559,7 @@ mod tests {
             "--allow-insecure-bind",
         ]));
         assert!(
-            matches!(r, Err(CliRefusal::AllowedHostRequired { .. })),
+            matches!(r, Err(CliRefusal::NonNumericHost { .. })),
             "got {r:?}"
         );
     }
@@ -523,4 +643,149 @@ mod tests {
     // flags on the shared `Cli` at all (see `VerifiedApproverArgs`'s doc
     // comment for why), so their cross-checks live and are tested on
     // `VerifiedApproverArgs::validate` in `cli.rs`, not here.
+
+    /// `--tokens-file` and `--allow-no-auth` together used to pass shared
+    /// validation, with every consumer's own main.rs silently preferring
+    /// `tokens_file` and dropping `allow_no_auth` (mecmcp#358). Promoted from
+    /// rustpanosmcp's fork, which refused this from the start.
+    #[test]
+    fn tokens_file_and_allow_no_auth_together_is_refused() {
+        let r = validate(&parse(&[
+            "-t",
+            "streamable-http",
+            "--tokens-file",
+            "/tmp/t.json",
+            "--allow-no-auth",
+        ]));
+        assert_eq!(r, Err(CliRefusal::AuthConflict));
+    }
+
+    /// A numeric loopback address is unaffected by the new `--host` check.
+    #[test]
+    fn numeric_loopback_host_is_not_a_non_numeric_refusal() {
+        assert!(
+            validate(&parse(&[
+                "-t",
+                "streamable-http",
+                "--tokens-file",
+                "/tmp/t.json",
+                "-H",
+                "127.0.0.1",
+            ]))
+            .is_ok()
+        );
+    }
+
+    /// Promoted from rustpanosmcp's fork (mecmcp#358): an allowlist entry
+    /// that cannot parse never matches anything at the Host/Origin
+    /// comparison in `mecmcp_transport::server`, so accepting it here was a
+    /// policy that silently did nothing.
+    #[test]
+    fn a_malformed_allowed_host_entry_is_refused() {
+        let r = validate(&parse(&[
+            "-t",
+            "streamable-http",
+            "--tokens-file",
+            "/tmp/t.json",
+            "-H",
+            "0.0.0.0",
+            "--allow-insecure-bind",
+            "--allowed-host",
+            "not a host!",
+            "--allowed-origin",
+            "https://server.example.org:8443",
+        ]));
+        assert!(
+            matches!(r, Err(CliRefusal::InvalidAllowedHost { .. })),
+            "got {r:?}"
+        );
+    }
+
+    #[test]
+    fn a_malformed_allowed_origin_entry_is_refused() {
+        let r = validate(&parse(&[
+            "-t",
+            "streamable-http",
+            "--tokens-file",
+            "/tmp/t.json",
+            "-H",
+            "0.0.0.0",
+            "--allow-insecure-bind",
+            "--allowed-host",
+            "server.example.org:8443",
+            "--allowed-origin",
+            "not a url",
+        ]));
+        assert!(
+            matches!(r, Err(CliRefusal::InvalidAllowedOrigin { .. })),
+            "got {r:?}"
+        );
+    }
+
+    #[test]
+    fn an_allowed_origin_with_a_path_or_query_is_refused() {
+        for bad in [
+            "https://server.example.org/some/path",
+            "https://server.example.org?x=1",
+        ] {
+            let r = validate(&parse(&[
+                "-t",
+                "streamable-http",
+                "--tokens-file",
+                "/tmp/t.json",
+                "-H",
+                "0.0.0.0",
+                "--allow-insecure-bind",
+                "--allowed-host",
+                "server.example.org",
+                "--allowed-origin",
+                bad,
+            ]));
+            assert!(
+                matches!(r, Err(CliRefusal::InvalidAllowedOrigin { .. })),
+                "expected a refusal for {bad}, got {r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_opaque_null_origin_is_refused() {
+        // The transport never matches "null" against any allowlist entry (see
+        // mecmcp-transport/src/server.rs), so the allowlist must not accept it either.
+        let r = validate(&parse(&[
+            "-t",
+            "streamable-http",
+            "--tokens-file",
+            "/tmp/t.json",
+            "-H",
+            "0.0.0.0",
+            "--allow-insecure-bind",
+            "--allowed-host",
+            "server.example.org",
+            "--allowed-origin",
+            "null",
+        ]));
+        assert!(
+            matches!(r, Err(CliRefusal::InvalidAllowedOrigin { .. })),
+            "got {r:?}"
+        );
+    }
+
+    #[test]
+    fn well_formed_allowlists_still_pass() {
+        let r = validate(&parse(&[
+            "-t",
+            "streamable-http",
+            "--tokens-file",
+            "/tmp/t.json",
+            "-H",
+            "0.0.0.0",
+            "--allow-insecure-bind",
+            "--allowed-host",
+            "server.example.org:8443",
+            "--allowed-origin",
+            "https://server.example.org:8443",
+        ]));
+        assert!(r.is_ok(), "got {r:?}");
+    }
 }
