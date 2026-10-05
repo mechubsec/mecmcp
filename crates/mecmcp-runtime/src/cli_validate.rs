@@ -22,7 +22,7 @@ use crate::cli::{Cli, Transport};
 use std::net::IpAddr;
 
 /// A CLI combination with no safe unambiguous interpretation.
-#[derive(Debug, thiserror::Error, PartialEq)]
+#[derive(Debug, Clone, thiserror::Error, PartialEq)]
 pub enum CliRefusal {
     /// Remote transport needs authentication.
     #[error("--transport streamable-http requires --tokens-file (or --allow-no-auth on loopback)")]
@@ -109,6 +109,28 @@ pub enum CliRefusal {
         /// Refused value.
         value: String,
     },
+}
+
+/// Validate `cli` and, on refusal, print the operator-facing message and
+/// exit the process with status 1.
+///
+/// Call this instead of handling [`validate`]'s `Result` yourself. Two of six
+/// consumers drifted from the shared refusal text (mecmcp#358): one forked
+/// this module and propagated the error with `?`, which surfaced the bare
+/// enum variant name instead of its message; the other never called shared
+/// validation at all, so its refusal came from a downstream bind failure
+/// with the real cause swallowed. Routing every consumer through this single
+/// function makes both mistakes structurally unreachable — there is no
+/// `Result` left for a consumer's own formatting (or lack of a call) to get
+/// wrong.
+///
+/// Must run before inventory, secrets, sockets, or TLS load, same as
+/// [`validate`] — see that function's doc for why.
+pub fn validate_or_exit(cli: &Cli) {
+    if let Err(refusal) = validate(cli) {
+        eprintln!("Error: {refusal}");
+        std::process::exit(1);
+    }
 }
 
 /// Validate all serve arguments before inventory, secrets, sockets, or TLS load.
@@ -261,6 +283,279 @@ fn validate_allowed_origin(value: &str) -> Result<(), CliRefusal> {
 /// and reintroduce exactly the gap this closes.
 fn has_usable_entry(values: &[String]) -> bool {
     values.iter().any(|value| !value.trim().is_empty())
+}
+
+/// Shared fixtures for pinning a consumer's *actual process* stderr against
+/// the refusal messages this module promises, instead of each repo hand-
+/// copying the expected text into its own integration test — hand copies
+/// are exactly how rustpanosmcp's fork and the five other consumers ended up
+/// disagreeing in the first place (mecmcp#358).
+///
+/// A consumer's own integration test should spawn its real binary once per
+/// fixture and assert its stderr equals [`expected_stderr`] of the paired
+/// [`CliRefusal`]:
+///
+/// ```ignore
+/// # use std::process::Command;
+/// for (args, refusal) in mecmcp_runtime::cli_validate::testing::refusal_fixtures() {
+///     let output = Command::new(env!("CARGO_BIN_EXE_my-server"))
+///         .args(&args)
+///         .output()
+///         .expect("spawn");
+///     assert_eq!(
+///         String::from_utf8_lossy(&output.stderr).trim_end(),
+///         mecmcp_runtime::cli_validate::testing::expected_stderr(&refusal),
+///     );
+/// }
+/// ```
+#[cfg(any(test, feature = "test-util"))]
+pub mod testing {
+    use super::CliRefusal;
+
+    /// The exact stderr line a conformant consumer must print for `refusal`.
+    ///
+    /// This is what [`super::validate_or_exit`] prints. A consumer that does
+    /// not call `validate_or_exit` directly (for example because it needs to
+    /// run vendor-specific validation first) must still reproduce this
+    /// exactly — `format!("Error: {refusal}")`, nothing added or reformatted.
+    #[must_use]
+    pub fn expected_stderr(refusal: &CliRefusal) -> String {
+        format!("Error: {refusal}")
+    }
+
+    /// One minimal CLI argument set per [`CliRefusal`] variant, paired with
+    /// the refusal it produces under [`super::validate`].
+    ///
+    /// Covers every variant that exists today; extend this alongside the
+    /// enum so a new refusal is pinned from the start rather than left to
+    /// drift the way the original ten did.
+    #[must_use]
+    pub fn refusal_fixtures() -> Vec<(Vec<&'static str>, CliRefusal)> {
+        vec![
+            (vec!["-t", "streamable-http"], CliRefusal::AuthRequired),
+            (
+                vec![
+                    "-t",
+                    "streamable-http",
+                    "--tokens-file",
+                    "/tmp/t.json",
+                    "--allow-no-auth",
+                ],
+                CliRefusal::AuthConflict,
+            ),
+            (
+                vec!["-t", "streamable-http", "--allow-no-auth", "-H", "0.0.0.0"],
+                CliRefusal::NoAuthOffLoopback {
+                    host: "0.0.0.0".to_owned(),
+                },
+            ),
+            (
+                vec![
+                    "-t",
+                    "streamable-http",
+                    "--tokens-file",
+                    "/tmp/t.json",
+                    "-H",
+                    "0.0.0.0",
+                ],
+                CliRefusal::InsecureBindRequired {
+                    host: "0.0.0.0".to_owned(),
+                },
+            ),
+            (
+                vec![
+                    "-t",
+                    "streamable-http",
+                    "--tokens-file",
+                    "/tmp/t.json",
+                    "-H",
+                    "0.0.0.0",
+                    "--allow-insecure-bind",
+                ],
+                CliRefusal::AllowedHostRequired {
+                    host: "0.0.0.0".to_owned(),
+                },
+            ),
+            (
+                vec![
+                    "-t",
+                    "streamable-http",
+                    "--tokens-file",
+                    "/tmp/t.json",
+                    "-H",
+                    "0.0.0.0",
+                    "--allow-insecure-bind",
+                    "--allowed-host",
+                    "server.example.org:8443",
+                ],
+                CliRefusal::AllowedOriginRequired {
+                    host: "0.0.0.0".to_owned(),
+                },
+            ),
+            (
+                vec![
+                    "-t",
+                    "streamable-http",
+                    "--tokens-file",
+                    "/tmp/t.json",
+                    "--tls-cert",
+                    "/tmp/c.pem",
+                ],
+                CliRefusal::TlsPairIncomplete {
+                    cert: true,
+                    key: false,
+                },
+            ),
+            (
+                vec![
+                    "-t",
+                    "streamable-http",
+                    "--tokens-file",
+                    "/tmp/t.json",
+                    "-H",
+                    "server.example.org",
+                    "--allow-insecure-bind",
+                ],
+                CliRefusal::NonNumericHost {
+                    host: "server.example.org".to_owned(),
+                },
+            ),
+            (
+                vec![
+                    "-t",
+                    "streamable-http",
+                    "--tokens-file",
+                    "/tmp/t.json",
+                    "-H",
+                    "0.0.0.0",
+                    "--allow-insecure-bind",
+                    "--allowed-host",
+                    "not a host!",
+                    "--allowed-origin",
+                    "https://server.example.org:8443",
+                ],
+                CliRefusal::InvalidAllowedHost {
+                    value: "not a host!".to_owned(),
+                },
+            ),
+            (
+                vec![
+                    "-t",
+                    "streamable-http",
+                    "--tokens-file",
+                    "/tmp/t.json",
+                    "-H",
+                    "0.0.0.0",
+                    "--allow-insecure-bind",
+                    "--allowed-host",
+                    "server.example.org:8443",
+                    "--allowed-origin",
+                    "not a url",
+                ],
+                CliRefusal::InvalidAllowedOrigin {
+                    value: "not a url".to_owned(),
+                },
+            ),
+        ]
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::super::validate;
+        use super::*;
+        use crate::cli::Cli;
+        use clap::Parser;
+
+        fn parse(args: &[&str]) -> Cli {
+            Cli::parse_from(std::iter::once("test-server").chain(args.iter().copied()))
+        }
+
+        /// Every fixture must actually reproduce the refusal it claims to,
+        /// against the real `validate`. If this drifts, the fixture is
+        /// wrong, not the rule it was meant to pin.
+        #[test]
+        fn every_fixture_reproduces_its_claimed_refusal() {
+            for (args, refusal) in refusal_fixtures() {
+                let got = validate(&parse(&args));
+                assert_eq!(
+                    got,
+                    Err(refusal.clone()),
+                    "fixture {args:?} did not reproduce its claimed refusal"
+                );
+            }
+        }
+
+        /// One variant per enum member, exact byte match. This is the test
+        /// that would have caught rustpanosmcp's fork: a bare `?`
+        /// propagation of a type without this exact `Display` text prints
+        /// something other than what is asserted here.
+        #[test]
+        fn expected_stderr_is_exactly_error_colon_space_display() {
+            assert_eq!(
+                expected_stderr(&CliRefusal::AuthRequired),
+                "Error: --transport streamable-http requires --tokens-file \
+                 (or --allow-no-auth on loopback)"
+            );
+            assert_eq!(
+                expected_stderr(&CliRefusal::AllowedOriginRequired {
+                    host: "0.0.0.0".to_owned()
+                }),
+                "Error: non-loopback bind '0.0.0.0' requires at least one \
+                 --allowed-origin (the accepted browser Origin, e.g. \
+                 https://server.example.org:8443)"
+            );
+        }
+
+        /// All ten variants that exist today are covered. A new variant
+        /// added without a matching fixture is a silent gap in the shared
+        /// contract this module exists to pin (mecmcp#358 point 3).
+        #[test]
+        fn fixtures_cover_every_known_variant() {
+            use std::collections::BTreeSet;
+            let covered: BTreeSet<&'static str> = refusal_fixtures()
+                .iter()
+                .map(|(_, r)| variant_name(r))
+                .collect();
+            let all = [
+                "AuthRequired",
+                "AuthConflict",
+                "NoAuthOffLoopback",
+                "InsecureBindRequired",
+                "AllowedHostRequired",
+                "AllowedOriginRequired",
+                "TlsPairIncomplete",
+                "NonNumericHost",
+                "InvalidAllowedHost",
+                "InvalidAllowedOrigin",
+            ];
+            for variant in all {
+                assert!(
+                    covered.contains(variant),
+                    "fixtures missing a case for {variant}"
+                );
+            }
+            assert_eq!(
+                covered.len(),
+                all.len(),
+                "fixtures cover an unlisted variant too"
+            );
+        }
+
+        fn variant_name(r: &CliRefusal) -> &'static str {
+            match r {
+                CliRefusal::AuthRequired => "AuthRequired",
+                CliRefusal::AuthConflict => "AuthConflict",
+                CliRefusal::NoAuthOffLoopback { .. } => "NoAuthOffLoopback",
+                CliRefusal::InsecureBindRequired { .. } => "InsecureBindRequired",
+                CliRefusal::AllowedHostRequired { .. } => "AllowedHostRequired",
+                CliRefusal::AllowedOriginRequired { .. } => "AllowedOriginRequired",
+                CliRefusal::TlsPairIncomplete { .. } => "TlsPairIncomplete",
+                CliRefusal::NonNumericHost { .. } => "NonNumericHost",
+                CliRefusal::InvalidAllowedHost { .. } => "InvalidAllowedHost",
+                CliRefusal::InvalidAllowedOrigin { .. } => "InvalidAllowedOrigin",
+            }
+        }
+    }
 }
 
 #[cfg(test)]
