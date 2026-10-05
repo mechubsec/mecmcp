@@ -11,6 +11,7 @@ authors.workspace    = true
 anyhow      = "1"
 clap        = { version = "4", features = ["derive"] }
 getrandom   = { workspace = true }
+http        = "1"
 mecmcp-audit = { version = "0.26.1", path = "../mecmcp-audit" }
 mecmcp-auth = { version = "0.26.1", path = "../mecmcp-auth" }
 mecmcp-secret = { version = "0.26.1", path = "../mecmcp-secret" }
