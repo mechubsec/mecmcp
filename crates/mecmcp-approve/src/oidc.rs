@@ -281,10 +281,12 @@ pub async fn login_device_code(
     // `google_devicecode`/`microsoft_devicecode_*` examples, which do the same).
     match details.verification_uri_complete() {
         Some(complete) => println!(
+            // codeql[rust/cleartext-logging]: RFC 8628 verification URI, not a secret.
             "Open this URL in your browser to approve as yourself:\n\n  {}\n",
             complete.secret()
         ),
         None => println!(
+            // codeql[rust/cleartext-logging]: RFC 8628 verification URI/user code, not secrets.
             "Open this URL in your browser to approve as yourself:\n\n  {}\n\nAnd enter this code: {}\n",
             details.verification_uri().as_str(),
             details.user_code().secret()
