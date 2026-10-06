@@ -274,6 +274,11 @@ pub async fn login_device_code(
         .await
         .map_err(|err| ApproveError::DeviceCodeExchange(err.to_string()))?;
 
+    // RFC 8628 requires displaying the verification URI and user code to the
+    // operator so they can complete the login out-of-band; the oauth2 crate
+    // wraps both in `Secret` defensively, but printing them to the operator's
+    // own terminal is the documented, intended use (see e.g. the crate's
+    // `google_devicecode`/`microsoft_devicecode_*` examples, which do the same).
     match details.verification_uri_complete() {
         Some(complete) => println!(
             "Open this URL in your browser to approve as yourself:\n\n  {}\n",
