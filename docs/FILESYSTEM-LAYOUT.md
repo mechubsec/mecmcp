@@ -57,13 +57,14 @@ The current split puts a server-written file under `/etc`, which is why an atomi
 **Service name == binary name.** Use the full crate name as the binary, service, and directory name. No abbreviations unless inherited from an already-deployed system.
 
 | Repo | Binary | Service user | Config | State |
-|---|---|---|---|
+|---|---|---|---|---|
 | `RustJunosMCP` | `rust-junosmcp` | `rust-junosmcp` | `/etc/rust-junosmcp` | `/var/lib/rust-junosmcp` |
 | `rust-panosmcp` | `rust-panosmcp` | `rust-panosmcp` | `/etc/rust-panosmcp` | `/var/lib/rust-panosmcp` |
 | `rustsdcmcp` | `rustsdcmcp` | `rustsdcmcp` | `/etc/rustsdcmcp` | `/var/lib/rustsdcmcp` |
 | `rustproxmoxmcp` | `rust-proxmoxmcp` | `proxmoxmcp` | `/etc/proxmoxmcp`\* | `/var/lib/proxmoxmcp`\* |
 | `rustunifimcp` | `rustunifimcp` | `unifimcp` | `/etc/unifimcp`\* | `/var/lib/unifimcp`\* |
 | `rustmistmcp` | `rustmistmcp` | `rustmistmcp` | `/etc/rustmistmcp` | `/var/lib/rustmistmcp` |
+| `rustopnsmcp` | `rustopnsmcp` | `rustopnsmcp` | `/etc/rustopnsmcp` | `/var/lib/rustopnsmcp` |
 
 \* `rustproxmoxmcp` and `rustunifimcp` ship with an abbreviated directory/service-user
 base (`proxmoxmcp`, `unifimcp`) that drops the `rust(-)` prefix from the binary name —
@@ -140,9 +141,9 @@ The standard location is /var/lib/rust-panosmcp/tokens.json. To migrate:
 ## Permissions
 
 | File | Mode | Owner | Group | Reason |
-|---|---|---|---|
+|---|---|---|---|---|
 | `/etc/<svc>/` | 0750 | root | `<svc>` | Config dir readable by service |
-| `/etc/<svc>/devices.json` | 0640 | root | `<svc>` | Operator edits, service reads |
+| `/etc/<svc>/devices.json` | 0600 | `<svc>` | `<svc>` | Operator edits as root, service reads; `read_hardened_file` refuses any group- or world-accessible inventory |
 | `/etc/<svc>/audit-hmac.key` | 0600 | `<svc>` | `<svc>` | Secret, service rewrites (on rotate) |
 | `/etc/<svc>/credentials.env` | 0600 | `<svc>` | `<svc>` | API keys |
 | `/var/lib/<svc>/` | 0700 | `<svc>` | `<svc>` | State dir, service writes |
@@ -268,6 +269,31 @@ with the same operational risk this document exists to avoid. Any future
 vendor should use the full binary name as the directory base unless there is
 a comparable reason not to.
 
+## Decision: directory base and devices.json mode
+
+**Status:** recommended by the rustopnsmcp v1.0 plan, awaiting board
+confirmation. Until confirmed, the recommendation below is what new code
+follows.
+
+**Directory base.** A new server uses its full binary name as the directory
+base and service user: `/etc/<binary>`, `/var/lib/<binary>`, user
+`<binary>`. `rustopnsmcp` is therefore `/etc/rustopnsmcp`,
+`/var/lib/rustopnsmcp`, user `rustopnsmcp`. The short names `jmcp`,
+`proxmoxmcp` and `unifimcp` are deployed exceptions and are not a rule for new
+servers. `mecmcp_secret::naming::known` records each server's base, and its
+rule text says the same thing as this section.
+
+**devices.json mode.** `0600`, owned by the service user. This is what
+`mecmcp_inventory::FileInventory::load` enforces through
+`mecmcp_secret::read_hardened_file`: any group- or world-accessible inventory
+is refused, and so is one owned by another non-root uid. An operator edits it
+as root (root may read any owner's file). An installer must create it `0600`
+and `chown <svc>:<svc>` it. `0640 root:<svc>`, which this document used to
+give, produces a service that refuses to start.
+
+`crates/mecmcp-inventory/tests/filesystem_layout_doc.rs` fails if this
+section or the Permissions table drifts from the loader.
+
 ## Verification
 
 For each repo, the packaging tests must assert:
@@ -298,6 +324,7 @@ verified against the standard in this document:
 | `rustproxmoxmcp` | `/etc/proxmoxmcp` | `/var/lib/proxmoxmcp` | `resolve_tokens_with` + stale-secret scan |
 | `rustmistmcp` | `/etc/rustmistmcp` | `/var/lib/rustmistmcp` | `resolve_tokens_with` + stale-secret scan |
 | `rustunifimcp` | `/etc/unifimcp` | `/var/lib/unifimcp` | none needed — shipped `/var/lib`-only from its first release, never had an `/etc` token store to migrate away from |
+| `rustopnsmcp` | `/etc/rustopnsmcp` | `/var/lib/rustopnsmcp` | none needed -- ships `/var/lib`-only from its first release (verified at its P2 packaging gate, not yet released) |
 
 \* `rust-junosmcp` also honours the locked-in `jmcp` exception paths; see
 above.
