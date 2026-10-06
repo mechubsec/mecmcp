@@ -23,13 +23,12 @@
 //! now on. It takes a `short_name`, not a crate name: the short name is not a
 //! mechanical strip of the crate name (`rust-junosmcp` folds to `jmcp`, not
 //! `junosmcp`), so this module does not attempt to derive it automatically.
-//! [`known`] is the fixed table for the six servers this module covers today
-//! -- `rustfortimcp` and `rustopnsmcp` also exist in the workspace but are
-//! not yet in this table; adding them is the same one-constant step as any
-//! other new server, not a separate mechanism. A server not yet in `known`
-//! picks its own short name by the same rule described there, adds a
-//! constant to that table, and calls `ServerNaming::derive` with it --
-//! nothing else in this module changes.
+//! [`known`] is the fixed table for the seven servers this module covers
+//! today. `rustfortimcp` also exists in the workspace but is not yet in this
+//! table; adding it is the same one-constant step as any other new server,
+//! not a separate mechanism. A server not yet in `known` takes its full
+//! binary name as its short name, adds a constant to that table, and calls
+//! `ServerNaming::derive` with it -- nothing else in this module changes.
 
 use std::path::PathBuf;
 
@@ -86,58 +85,51 @@ impl ServerNaming {
     }
 }
 
-/// The short name for each of the six mechub MCP servers this table covers
-/// today. `rustfortimcp` and `rustopnsmcp` also exist in the workspace but
-/// have not yet been assigned a short name here.
+/// The short name for each of the seven mechub MCP servers this table covers
+/// today. `rustfortimcp` also exists in the workspace but has not yet been
+/// assigned a short name here.
 ///
-/// Each short name is either derived from the crate name, or an explicit,
-/// documented exception matching the server's actual production deployment.
-/// `JUNOS`, `PROXMOX` and `UNIFI` are derivations -- the vendor token an
-/// operator would actually type, chosen once and fixed here so it cannot
-/// drift between packaging, docs, and code. `PANOS`, `SDC` and `MIST` are
-/// hand-verified exceptions: Kay decided (MEC-987, 2026-09-30) not to rename
-/// those three services in production, so their constant is the name
-/// already deployed everywhere (sysusers entry, unit `User=`, `/etc`,
-/// `/var/lib`), not a derivation:
+/// Each short name is either a server's full binary name, or an explicit,
+/// documented exception matching the server's production deployment:
 ///
-/// | Repo               | Crate            | Short name (`known`) | Derived or exception        |
-/// |---------------------|-------------------|-----------------------|------------------------------|
-/// | `rustjunosmcp`      | `rust-junosmcp`   | `jmcp`                | derived                      |
-/// | `rustpanosmcp`      | `rust-panosmcp`   | `rust-panosmcp`       | exception -- matches deployed |
-/// | `rustsdcmcp`        | `rustsdcmcp`      | `rustsdcmcp`          | exception -- matches deployed |
-/// | `rustproxmoxmcp`    | `rust-proxmoxmcp` | `proxmoxmcp`          | derived                      |
-/// | `rustmistmcp`       | `rustmistmcp`     | `rustmistmcp`         | exception -- matches deployed |
-/// | `rustunifimcp`      | `rustunifimcp`    | `unifimcp`            | derived                      |
+/// | Repo               | Crate            | Short name (`known`) | Source                              |
+/// |--------------------|------------------|----------------------|--------------------------------------|
+/// | `rustjunosmcp`      | `rust-junosmcp`  | `jmcp`               | exception -- deployed short name     |
+/// | `rustpanosmcp`      | `rust-panosmcp`  | `rust-panosmcp`      | full binary name, as deployed        |
+/// | `rustsdcmcp`        | `rustsdcmcp`     | `rustsdcmcp`         | full binary name, as deployed        |
+/// | `rustproxmoxmcp`    | `rust-proxmoxmcp`| `proxmoxmcp`         | exception -- deployed short name     |
+/// | `rustmistmcp`       | `rustmistmcp`    | `rustmistmcp`        | full binary name, as deployed        |
+/// | `rustunifimcp`      | `rustunifimcp`   | `unifimcp`           | exception -- deployed short name     |
+/// | `rustopnsmcp`       | `rustopnsmcp`    | `rustopnsmcp`        | full binary name (new server)        |
 ///
-/// A seventh server adds one constant here, following the same rule: drop
-/// the `rust`/`rust-`/`mecmcp` scaffolding, keep the shortest vendor token
-/// that is still unambiguous on its own (`junos` folded further, to `j`,
-/// because Junos was already the first mechub MCP server and `jmcp` was
-/// established in production before this table existed; a new vendor should
-/// not assume the same additional contraction applies to it -- keep the
-/// full vendor token unless there is already a production deployment using
-/// something shorter), *unless* the server is already deployed under a
-/// different name, in which case the constant matches deployment as a
-/// documented exception, the same as `PANOS`, `SDC` and `MIST` here.
+/// A new server adds one constant here, set to its full binary name
+/// (FILESYSTEM-LAYOUT.md, "Decision: directory base and devices.json mode").
+/// The three short names above are deployed exceptions, and Kay's MEC-987
+/// decision (2026-09-30) stands: production is not renamed in either
+/// direction. They are not a pattern for a new server to follow.
 pub mod known {
-    /// `rustjunosmcp` / `rust-junosmcp`. Derived.
+    /// `rustjunosmcp` / `rust-junosmcp`. Hand-verified exception: deployed
+    /// everywhere as `jmcp`, not the full binary name. Do not change this
+    /// without a coordinated on-disk migration.
     pub const JUNOS: &str = "jmcp";
-    /// `rustpanosmcp` / `rust-panosmcp`. Hand-verified exception: deployed
-    /// everywhere as `rust-panosmcp`, not a derived short name. Do not
-    /// change this without a coordinated on-disk migration.
+    /// `rustpanosmcp` / `rust-panosmcp`. Full binary name, as deployed.
     pub const PANOS: &str = "rust-panosmcp";
-    /// `rustsdcmcp`. Hand-verified exception: deployed everywhere as
-    /// `rustsdcmcp`, not a derived short name. Do not change this without a
-    /// coordinated on-disk migration.
+    /// `rustsdcmcp`. Full binary name, as deployed.
     pub const SDC: &str = "rustsdcmcp";
-    /// `rustproxmoxmcp` / `rust-proxmoxmcp`. Derived.
+    /// `rustproxmoxmcp` / `rust-proxmoxmcp`. Hand-verified exception:
+    /// deployed everywhere as `proxmoxmcp`, not the full binary name. Do not
+    /// change this without a coordinated on-disk migration.
     pub const PROXMOX: &str = "proxmoxmcp";
-    /// `rustmistmcp`. Hand-verified exception: deployed everywhere as
-    /// `rustmistmcp`, not a derived short name. Do not change this without a
-    /// coordinated on-disk migration.
+    /// `rustmistmcp`. Full binary name, as deployed.
     pub const MIST: &str = "rustmistmcp";
-    /// `rustunifimcp`. Derived.
+    /// `rustunifimcp`. Hand-verified exception: deployed everywhere as
+    /// `unifimcp`, not the full binary name. Do not change this without a
+    /// coordinated on-disk migration.
     pub const UNIFI: &str = "unifimcp";
+    /// `rustopnsmcp`. The full binary name, which is the rule for a server
+    /// with no earlier deployment (FILESYSTEM-LAYOUT.md, "Decision: directory
+    /// base and devices.json mode").
+    pub const OPNSENSE: &str = "rustopnsmcp";
 }
 
 #[cfg(test)]
@@ -162,6 +154,7 @@ mod tests {
             known::PROXMOX,
             known::MIST,
             known::UNIFI,
+            known::OPNSENSE,
         ] {
             let naming = ServerNaming::derive(short_name);
             assert_eq!(naming.service_user, short_name);
@@ -177,6 +170,7 @@ mod tests {
             known::PROXMOX,
             known::MIST,
             known::UNIFI,
+            known::OPNSENSE,
         ];
         for (i, a) in names.iter().enumerate() {
             for (j, b) in names.iter().enumerate() {
@@ -193,6 +187,7 @@ mod tests {
         assert_eq!(known::PROXMOX, "proxmoxmcp");
         assert_eq!(known::MIST, "rustmistmcp");
         assert_eq!(known::UNIFI, "unifimcp");
+        assert_eq!(known::OPNSENSE, "rustopnsmcp");
     }
 
     #[test]
@@ -214,5 +209,36 @@ mod tests {
         assert_eq!(mist.config_dir, PathBuf::from("/etc/rustmistmcp"));
         assert_eq!(mist.state_dir, PathBuf::from("/var/lib/rustmistmcp"));
         assert_eq!(mist.service_user, "rustmistmcp");
+    }
+
+    #[test]
+    fn opnsense_derives_to_its_full_binary_name() {
+        // New servers use the full binary name as the directory base
+        // (FILESYSTEM-LAYOUT.md, "Decision: directory base and devices.json
+        // mode"), not a shortened vendor token such as `opnsmcp`.
+        let opnsense = ServerNaming::derive(known::OPNSENSE);
+        assert_eq!(opnsense.config_dir, PathBuf::from("/etc/rustopnsmcp"));
+        assert_eq!(opnsense.state_dir, PathBuf::from("/var/lib/rustopnsmcp"));
+        assert_eq!(opnsense.service_user, "rustopnsmcp");
+    }
+
+    #[test]
+    fn the_layout_doc_lists_opnsense_at_its_known_paths() {
+        let doc = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/FILESYSTEM-LAYOUT.md"
+        ))
+        .expect("FILESYSTEM-LAYOUT.md is readable from the workspace");
+        let naming = ServerNaming::derive(known::OPNSENSE);
+        let row = format!(
+            "| `rustopnsmcp` | `rustopnsmcp` | `{user}` | `{config}` | `{state}` |",
+            user = naming.service_user,
+            config = naming.config_dir.display(),
+            state = naming.state_dir.display(),
+        );
+        assert!(
+            doc.contains(&row),
+            "FILESYSTEM-LAYOUT.md is missing the row {row}"
+        );
     }
 }
