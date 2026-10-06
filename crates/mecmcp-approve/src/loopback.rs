@@ -13,13 +13,17 @@
 
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
 use crate::error::ApproveError;
 
 const CALLBACK_PATH: &str = "/callback";
 const RESPONSE_BODY: &str = "mecmcp-approve received the authorization response. You can close this tab and return to your terminal.";
+/// Caps the request line this listener will ever read. A real browser
+/// redirect fits in a few hundred bytes; this is generous headroom, not an
+/// attempt to accommodate anything unusual.
+const MAX_REQUEST_LINE_BYTES: u64 = 8192;
 
 /// A bound loopback listener, ready to accept the one redirect it expects.
 pub struct LoopbackListener {
@@ -59,18 +63,29 @@ impl LoopbackListener {
 
     /// Accept the single expected redirect, bounded by `timeout`.
     ///
-    /// Reads only the request line (never the body, never further headers)
-    /// -- everything this flow needs is in the query string, and a browser's
-    /// GET has no body worth reading. Replies with a fixed 200 regardless of
-    /// what was in the query string; callers decide separately whether
-    /// `code`/`state` were valid.
+    /// The accept and the read share one `timeout`, not two separate ones
+    /// -- a connection that opens and then sends nothing would otherwise
+    /// hang this call forever once past the accept. Reads only the
+    /// request line (never the body, never further headers), capped at
+    /// [`MAX_REQUEST_LINE_BYTES`] -- everything this flow needs is in the
+    /// query string, and a browser's GET has no body worth reading.
+    /// Replies with a fixed 200 regardless of what was in the query
+    /// string; callers decide separately whether `code`/`state` were
+    /// valid.
     pub async fn accept_once(self, timeout: Duration) -> Result<CallbackParams, ApproveError> {
-        let (mut stream, _) = tokio::time::timeout(timeout, self.listener.accept())
+        tokio::time::timeout(timeout, self.accept_and_respond())
             .await
             .map_err(|_elapsed| ApproveError::LoopbackTimeout)?
+    }
+
+    async fn accept_and_respond(self) -> Result<CallbackParams, ApproveError> {
+        let (mut stream, _) = self
+            .listener
+            .accept()
+            .await
             .map_err(ApproveError::LoopbackRead)?;
 
-        let mut reader = BufReader::new(&mut stream);
+        let mut reader = BufReader::new((&mut stream).take(MAX_REQUEST_LINE_BYTES));
         let mut request_line = String::new();
         reader
             .read_line(&mut request_line)
@@ -108,8 +123,17 @@ fn parse_request_line(line: &str) -> Option<CallbackParams> {
     }
 
     // Query parsing needs a base to resolve against; the authority is
-    // never used (only the query string is read), so any placeholder works.
+    // never used (only the path and query string are read), so any
+    // placeholder works.
     let url = url::Url::parse(&format!("http://127.0.0.1{path_and_query}")).ok()?;
+
+    // A probe hitting this one-shot listener on any other path (`/`,
+    // `/favicon.ico`, ...) is not a valid callback, whether or not it
+    // happens to carry `code`/`state` -- only the exact path this
+    // listener advertised in its redirect_uri is ever legitimate.
+    if url.path() != CALLBACK_PATH {
+        return None;
+    }
 
     let mut code = None;
     let mut state = None;
@@ -173,6 +197,12 @@ mod tests {
         assert!(parse_request_line("not a request line").is_none());
     }
 
+    #[test]
+    fn rejects_wrong_path() {
+        assert!(parse_request_line("GET /?code=abc&state=xyz HTTP/1.1\r\n").is_none());
+        assert!(parse_request_line("GET /favicon.ico HTTP/1.1\r\n").is_none());
+    }
+
     #[tokio::test]
     async fn bind_picks_an_ephemeral_port_by_default() {
         let listener = LoopbackListener::bind(0).await.unwrap();
@@ -208,5 +238,52 @@ mod tests {
         let listener = LoopbackListener::bind(0).await.unwrap();
         let result = listener.accept_once(Duration::from_millis(50)).await;
         assert!(matches!(result, Err(ApproveError::LoopbackTimeout)));
+    }
+
+    /// A connection that opens and then sends nothing used to hang
+    /// `accept_once` forever (the old code's timeout wrapped only the
+    /// `accept()`, not the subsequent read). Confirms the read now shares
+    /// the same timeout.
+    #[tokio::test]
+    async fn accept_once_times_out_on_a_silent_connection() {
+        let listener = LoopbackListener::bind(0).await.unwrap();
+        let port = listener.port;
+
+        let client = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            // Hold the connection open without sending anything.
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            drop(stream);
+        });
+
+        let result = listener.accept_once(Duration::from_millis(100)).await;
+        assert!(matches!(result, Err(ApproveError::LoopbackTimeout)));
+        client.abort();
+    }
+
+    #[tokio::test]
+    async fn accept_once_rejects_an_oversized_request_line() {
+        let listener = LoopbackListener::bind(0).await.unwrap();
+        let port = listener.port;
+
+        let client = tokio::spawn(async move {
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            let oversized = "x".repeat(MAX_REQUEST_LINE_BYTES as usize + 1);
+            stream
+                .write_all(format!("GET /callback?code={oversized} HTTP/1.1\r\n\r\n").as_bytes())
+                .await
+                .unwrap();
+        });
+
+        let result = listener.accept_once(Duration::from_secs(5)).await;
+        client.await.unwrap();
+        assert!(matches!(
+            result,
+            Err(ApproveError::LoopbackMalformedCallback)
+        ));
     }
 }

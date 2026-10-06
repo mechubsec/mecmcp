@@ -27,14 +27,28 @@ use serde::{Deserialize, Serialize};
 use crate::error::ApproveError;
 use crate::http_bridge;
 use crate::loopback::LoopbackListener;
+use crate::scheme;
+use crate::terminal::terminal_safe;
 
 /// The one OIDC extra claim this CLI cares about pulling out of the token
 /// response: `id_token`. Every other extension field a real IdP returns
 /// (and there can be many) is dropped rather than retained, per the
 /// JWT-held-only-in-memory / never-logged requirement.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct OidcExtraFields {
     pub id_token: Option<String>,
+}
+
+/// Hand-written rather than derived: `oauth2::ExtraTokenFields` requires
+/// `Debug`, but the derived form would print `id_token` -- the
+/// `Mecmcp-Approver-Assertion` value itself -- in full the moment anyone
+/// logs `{token:?}` on the surrounding `OidcTokenResponse`.
+impl std::fmt::Debug for OidcExtraFields {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OidcExtraFields")
+            .field("id_token", &self.id_token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl ExtraTokenFields for OidcExtraFields {}
@@ -82,6 +96,7 @@ struct DiscoveryDocument {
 async fn discover(
     client: &reqwest::Client,
     issuer: &str,
+    allow_insecure_http: bool,
 ) -> Result<DiscoveryDocument, ApproveError> {
     let url = format!(
         "{}/.well-known/openid-configuration",
@@ -116,9 +131,35 @@ async fn discover(
     if document.issuer != issuer {
         return Err(ApproveError::IssuerMismatch {
             configured: issuer.to_owned(),
-            reported: document.issuer,
+            reported: terminal_safe(&document.issuer),
             origin: "discovery document",
         });
+    }
+
+    // The document can point the token/authorization/device endpoints
+    // anywhere, including back down to plain `http` even when `issuer`
+    // itself is `https` -- every one of those endpoints is about to
+    // receive the authorization code, the client secret, or the exchanged
+    // tokens, so each gets the same check `--server-url`/`--oidc-issuer`
+    // already passed in `lib::run`.
+    scheme::require_secure(
+        "the discovery document's token_endpoint",
+        &document.token_endpoint,
+        allow_insecure_http,
+    )?;
+    if let Some(auth_endpoint) = &document.authorization_endpoint {
+        scheme::require_secure(
+            "the discovery document's authorization_endpoint",
+            auth_endpoint,
+            allow_insecure_http,
+        )?;
+    }
+    if let Some(device_endpoint) = &document.device_authorization_endpoint {
+        scheme::require_secure(
+            "the discovery document's device_authorization_endpoint",
+            device_endpoint,
+            allow_insecure_http,
+        )?;
     }
 
     Ok(document)
@@ -141,6 +182,13 @@ pub struct LoginConfig {
     pub scopes: Vec<String>,
     pub redirect_port: u16,
     pub login_timeout: Duration,
+    /// PKCE flow only: the `max_age` to request, forcing the IdP to treat
+    /// an authentication older than this many seconds as stale.
+    pub max_age_secs: u64,
+    /// PKCE flow only: skip OIDC's `prompt=login`, allowing the IdP to
+    /// reuse an existing browser session instead of forcing a fresh login.
+    pub allow_cached_login: bool,
+    pub allow_insecure_http: bool,
 }
 
 fn extract_id_token(token: &OidcTokenResponse) -> Result<String, ApproveError> {
@@ -177,7 +225,7 @@ async fn login_pkce_inner(
     config: &LoginConfig,
     on_ready: impl FnOnce(&str, &str),
 ) -> Result<LoginResult, ApproveError> {
-    let discovery = discover(http, &config.issuer).await?;
+    let discovery = discover(http, &config.issuer, config.allow_insecure_http).await?;
     let auth_endpoint = discovery
         .authorization_endpoint
         .ok_or(ApproveError::DiscoveryField {
@@ -197,11 +245,28 @@ async fn login_pkce_inner(
     )?;
 
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
-    let (authorize_url, csrf_token) = client
+    let mut authorize_request = client
         .authorize_url(CsrfToken::new_random)
         .add_scopes(config.scopes.iter().cloned().map(Scope::new))
         .set_pkce_challenge(pkce_challenge)
-        .url();
+        // OIDC Core §3.1.2.1 `max_age`: tells the IdP to treat an
+        // authentication older than this many seconds as stale and force a
+        // fresh login, rather than silently reusing an existing browser
+        // session -- this CLI exists to prove a human is here right now,
+        // not that they were at some point in the past.
+        .add_extra_param("max_age", config.max_age_secs.to_string())
+        // A nonce this process never checks (the server verifies the
+        // assertion, not this CLI -- see the module doc), but IdPs expect
+        // one on an OIDC request regardless, and it costs nothing to send.
+        .add_extra_param("nonce", CsrfToken::new_random().secret().clone());
+    if !config.allow_cached_login {
+        // OIDC Core §3.1.2.1 `prompt=login`: the stronger, more widely
+        // honored sibling of `max_age` -- ask outright for a fresh login
+        // screen rather than relying on every IdP to implement `max_age`
+        // correctly.
+        authorize_request = authorize_request.add_extra_param("prompt", "login");
+    }
+    let (authorize_url, csrf_token) = authorize_request.url();
 
     on_ready(authorize_url.as_str(), &redirect_uri);
 
@@ -221,7 +286,7 @@ async fn login_pkce_inner(
     {
         return Err(ApproveError::IssuerMismatch {
             configured: config.issuer.clone(),
-            reported: reported.clone(),
+            reported: terminal_safe(reported),
             origin: "authorization redirect",
         });
     }
@@ -244,11 +309,20 @@ async fn login_pkce_inner(
 /// invoked unless the operator explicitly asked for it, per the Storm-2372
 /// device-code-phishing concern and the many tenants that block the flow by
 /// conditional access.
+///
+/// Unlike [`login_pkce_inner`], this flow has no `prompt`/`max_age`
+/// equivalent to force freshness -- RFC 8628 defines no such parameter,
+/// and whether the IdP reuses an existing session during the out-of-band
+/// browser step is entirely up to it. Operators who need this flow's
+/// `id_token` to prove a *current* human approval should turn on
+/// `require_auth_time` on the mecmcp server side instead (see
+/// `mecmcp-auth::approver::bind_approver`); that still fails closed, just
+/// not from here.
 pub async fn login_device_code(
     http: &reqwest::Client,
     config: &LoginConfig,
 ) -> Result<LoginResult, ApproveError> {
-    let discovery = discover(http, &config.issuer).await?;
+    let discovery = discover(http, &config.issuer, config.allow_insecure_http).await?;
     let device_endpoint = discovery
         .device_authorization_endpoint
         .ok_or(ApproveError::DeviceAuthUnsupported)?;
@@ -279,15 +353,19 @@ pub async fn login_device_code(
     // wraps both in `Secret` defensively, but printing them to the operator's
     // own terminal is the documented, intended use (see e.g. the crate's
     // `google_devicecode`/`microsoft_devicecode_*` examples, which do the same).
+    // Escaped through `terminal_safe` regardless: both values are echoed
+    // back verbatim from the IdP's device-authorization response, and an
+    // IdP able to inject terminal control sequences there could otherwise
+    // rewrite what the operator sees right before they open the URL.
     match details.verification_uri_complete() {
         Some(complete) => println!(
             "Open this URL in your browser to approve as yourself:\n\n  {}\n",
-            complete.secret()
+            terminal_safe(complete.secret())
         ),
         None => println!(
             "Open this URL in your browser to approve as yourself:\n\n  {}\n\nAnd enter this code: {}\n",
-            details.verification_uri().as_str(),
-            details.user_code().secret()
+            terminal_safe(details.verification_uri().as_str()),
+            terminal_safe(details.user_code().secret())
         ),
     }
     println!("Waiting for you to complete the device login...");
@@ -367,6 +445,22 @@ mod tests {
     struct MockRequest {
         path: String,
         headers: HashMap<String, String>,
+    }
+
+    #[test]
+    fn oidc_extra_fields_debug_redacts_id_token() {
+        let fields = OidcExtraFields {
+            id_token: Some("secret-jwt-value".to_owned()),
+        };
+        let debug = format!("{fields:?}");
+        assert!(!debug.contains("secret-jwt-value"));
+        assert!(debug.contains("redacted"));
+    }
+
+    #[test]
+    fn oidc_extra_fields_debug_shows_none_when_absent() {
+        let fields = OidcExtraFields { id_token: None };
+        assert_eq!(format!("{fields:?}"), "OidcExtraFields { id_token: None }");
     }
 
     /// Reads one minimal HTTP/1.1 request off `stream`: request line,
@@ -514,6 +608,9 @@ mod tests {
             scopes: vec!["openid".to_owned()],
             redirect_port: 0,
             login_timeout: Duration::from_secs(5),
+            max_age_secs: 0,
+            allow_cached_login: false,
+            allow_insecure_http: false,
         };
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();

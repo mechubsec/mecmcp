@@ -10,7 +10,13 @@ use crate::error::ApproveError;
 
 /// Approve an mecmcp change set as a verified human, over a fresh OIDC
 /// login -- see mecmcp#400 (MEC-996).
-#[derive(Parser, Debug)]
+///
+/// Deliberately has no `Debug` derive: `--oidc-client-secret-file`'s path
+/// is harmless to print, but a hand-written `Debug` is one more thing to
+/// keep in sync by hand every time a field is added, for a trait nothing
+/// in this crate uses. If a future need for it shows up, write one that
+/// redacts rather than deriving.
+#[derive(Parser)]
 #[command(name = "mecmcp-approve", version)]
 pub struct Args {
     /// The MCP server's streamable-HTTP endpoint, e.g.
@@ -65,10 +71,19 @@ pub struct Args {
     #[arg(long)]
     pub oidc_client_id: String,
 
-    /// The OIDC client secret, if the IdP requires one for a native/CLI
-    /// client (most public clients do not).
+    /// Environment variable holding the OIDC client secret, if the IdP
+    /// requires one for a native/CLI client (most public clients do not).
+    /// Mutually exclusive with `--oidc-client-secret-file`. Never pass the
+    /// secret directly on argv: it would land in `/proc/<pid>/cmdline`,
+    /// `ps`, and shell history.
     #[arg(long)]
-    pub oidc_client_secret: Option<String>,
+    pub oidc_client_secret_env: Option<String>,
+
+    /// File holding the OIDC client secret (hardened permissions required,
+    /// see `mecmcp-secret`). Mutually exclusive with
+    /// `--oidc-client-secret-env`.
+    #[arg(long)]
+    pub oidc_client_secret_file: Option<PathBuf>,
 
     /// OIDC scopes to request, in addition to `openid` (always requested).
     #[arg(long = "oidc-scope")]
@@ -90,6 +105,29 @@ pub struct Args {
     /// up, in seconds.
     #[arg(long, default_value_t = 300)]
     pub login_timeout_secs: u64,
+
+    /// PKCE flow only: the OIDC `max_age` to request, in seconds. `0` (the
+    /// default) tells the IdP the end-user's authentication must be
+    /// current right now, forcing a fresh login rather than silently
+    /// reusing a stale browser session.
+    #[arg(long, default_value_t = 0)]
+    pub max_age_secs: u64,
+
+    /// PKCE flow only: allow the IdP to reuse an existing browser session
+    /// instead of forcing a fresh login via OIDC's `prompt=login`. Off by
+    /// default -- this CLI's purpose is proving a human approved this
+    /// specific request right now, and a cached SSO session undermines
+    /// that.
+    #[arg(long)]
+    pub allow_cached_login: bool,
+
+    /// Allow `http://` (instead of `https://`) for `--server-url`,
+    /// `--oidc-issuer`, and every endpoint read from OIDC discovery, other
+    /// than loopback hosts (always allowed). Lab use only: every one of
+    /// those connections carries a bearer token, the approver assertion,
+    /// an authorization code, or a client secret.
+    #[arg(long)]
+    pub allow_insecure_http: bool,
 
     /// Skip the interactive confirmation prompt. The preview and digest are
     /// still printed first regardless.
@@ -153,6 +191,33 @@ pub fn resolve_static_bearer_token(args: &Args) -> Result<Option<String>, Approv
     }
 }
 
+/// Resolve the OIDC client secret, mirroring
+/// [`resolve_static_bearer_token`] from at most one of
+/// `--oidc-client-secret-env` / `--oidc-client-secret-file`. Unlike the
+/// bearer token, there is no fallback: most public clients need no secret
+/// at all, so `(None, None)` is the ordinary case, not a missing-config
+/// error.
+pub fn resolve_client_secret(args: &Args) -> Result<Option<String>, ApproveError> {
+    match (&args.oidc_client_secret_env, &args.oidc_client_secret_file) {
+        (Some(_), Some(_)) => Err(ApproveError::OidcConfig(
+            "--oidc-client-secret-env and --oidc-client-secret-file are mutually exclusive"
+                .to_owned(),
+        )),
+        (Some(var), None) => {
+            let secret = mecmcp_secret::load_from_env(var, mecmcp_secret::SecretLimits::default())
+                .map_err(ApproveError::OidcClientSecret)?;
+            Ok(Some(secret.expose().to_owned()))
+        }
+        (None, Some(path)) => {
+            let secret =
+                mecmcp_secret::load_from_file(path, mecmcp_secret::SecretLimits::default())
+                    .map_err(ApproveError::OidcClientSecret)?;
+            Ok(Some(secret.expose().to_owned()))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -206,11 +271,15 @@ mod tests {
             bearer_token_file: None,
             oidc_issuer: String::new(),
             oidc_client_id: String::new(),
-            oidc_client_secret: None,
+            oidc_client_secret_env: None,
+            oidc_client_secret_file: None,
             oidc_scopes: vec!["offline_access".to_owned()],
             device_code: false,
             redirect_port: 0,
             login_timeout_secs: 300,
+            max_age_secs: 0,
+            allow_cached_login: false,
+            allow_insecure_http: false,
             yes: false,
         };
         assert_eq!(

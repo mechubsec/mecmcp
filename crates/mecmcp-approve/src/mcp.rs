@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::error::ApproveError;
+use crate::terminal::terminal_safe;
 
 #[derive(Serialize)]
 struct JsonRpcRequest<'a> {
@@ -95,10 +96,14 @@ pub async fn call_tool(
         })?;
 
     if let Some(error) = parsed.error {
+        // The server's JSON-RPC error message is untrusted text that ends
+        // up on the approver's terminal via `ApproveError`'s `Display` --
+        // escape it the same as any other server-sourced string (see
+        // `terminal.rs`).
         return Err(ApproveError::ToolCallRpcError {
             tool: tool.to_owned(),
             code: error.code,
-            message: error.message,
+            message: terminal_safe(&error.message),
         });
     }
 
@@ -111,7 +116,7 @@ pub async fn call_tool(
     if result.is_error == Some(true) {
         return Err(ApproveError::ToolCallToolError {
             tool: tool.to_owned(),
-            content: render_text(&result),
+            content: terminal_safe(&render_text(&result)),
         });
     }
 
@@ -151,4 +156,52 @@ pub fn structured_digest(result: &CallToolResult) -> Option<String> {
         .and_then(|obj| obj.get("digest"))
         .and_then(Value::as_str)
         .map(str::to_owned)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use super::*;
+
+    /// A malicious (or merely careless) server's JSON-RPC error message
+    /// reaches the approver's terminal through `ApproveError`'s `Display`
+    /// -- confirm `call_tool` strips the ANSI escape before that happens,
+    /// rather than relying on every call site to remember to.
+    #[tokio::test]
+    async fn rpc_error_message_is_terminal_safe() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf).await.unwrap();
+            let body = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"code": -1, "message": "\u{1b}[2Kclobbered"},
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            let _ = stream.shutdown().await;
+        });
+
+        let http = reqwest::Client::new();
+        let err = call_tool(&http, &addr, "token", None, "approve", Map::new())
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+
+        let rendered = err.to_string();
+        assert!(!rendered.contains('\u{1b}'));
+        assert!(rendered.contains("clobbered"));
+    }
 }

@@ -14,6 +14,8 @@ mod loopback;
 mod mcp;
 mod oidc;
 pub mod preview;
+mod scheme;
+mod terminal;
 
 use error::ApproveError;
 
@@ -25,6 +27,14 @@ use error::ApproveError;
 /// from the human declining, happens strictly before the approve request is
 /// built.
 pub async fn run(args: &cli::Args) -> Result<(), ApproveError> {
+    // Every URL this process dereferences directly carries credentials in
+    // flight (the bearer token, the approver assertion, the OIDC client
+    // secret, the authorization code) -- check both before doing anything
+    // else. Endpoints read back out of discovery get the same check inside
+    // `oidc::discover`.
+    scheme::require_secure("--server-url", &args.server_url, args.allow_insecure_http)?;
+    scheme::require_secure("--oidc-issuer", &args.oidc_issuer, args.allow_insecure_http)?;
+
     // Installed once, process-wide, before any `reqwest::Client` is built --
     // the same requirement `mecmcp-http::HttpClient::new` documents (D4).
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -40,10 +50,13 @@ pub async fn run(args: &cli::Args) -> Result<(), ApproveError> {
     let login_config = oidc::LoginConfig {
         issuer: args.oidc_issuer.clone(),
         client_id: args.oidc_client_id.clone(),
-        client_secret: args.oidc_client_secret.clone(),
+        client_secret: cli::resolve_client_secret(args)?,
         scopes: args.oidc_scopes_with_openid(),
         redirect_port: args.redirect_port,
         login_timeout: args.login_timeout(),
+        max_age_secs: args.max_age_secs,
+        allow_cached_login: args.allow_cached_login,
+        allow_insecure_http: args.allow_insecure_http,
     };
 
     let login = if args.device_code {
@@ -56,6 +69,11 @@ pub async fn run(args: &cli::Args) -> Result<(), ApproveError> {
         Some(token) => token,
         None => login.access_token.clone(),
     };
+
+    // The server-reported digest, once read from a preview reply, binding
+    // the preview the human saw to the approve call about to be made below
+    // (see `preview::check_expected_digest_arg` right before that call).
+    let mut server_digest: Option<String> = None;
 
     if let Some(preview_tool) = &args.preview_tool {
         let preview_args = cli::args_to_json(&args.preview_args);
@@ -70,23 +88,22 @@ pub async fn run(args: &cli::Args) -> Result<(), ApproveError> {
         .await?;
 
         println!("--- {preview_tool} ---");
-        println!("{}", mcp::render_text(&preview_result));
+        println!(
+            "{}",
+            terminal::terminal_safe(&mcp::render_text(&preview_result))
+        );
 
-        if let Some(server_digest) = mcp::structured_digest(&preview_result) {
-            println!("server-reported digest: {server_digest}");
-            if let Some(expected) = &args.expect_digest
-                && expected != &server_digest
-            {
-                return Err(ApproveError::DigestMismatch {
-                    expected: expected.clone(),
-                    actual: server_digest,
-                });
-            }
+        server_digest = mcp::structured_digest(&preview_result);
+        if let Some(digest) = &server_digest {
+            println!("server-reported digest: {digest}");
         }
         println!();
     }
+    preview::check_expect_digest(args.expect_digest.as_deref(), server_digest.as_deref())?;
 
     let approve_args = cli::args_to_json(&args.args);
+    preview::check_expected_digest_arg(&approve_args, server_digest.as_deref())?;
+
     let request_digest = preview::request_digest(&args.approve_tool, &approve_args);
     preview::print_preview(&args.approve_tool, &approve_args, &request_digest);
     preview::confirm(args.yes)?;
@@ -101,6 +118,6 @@ pub async fn run(args: &cli::Args) -> Result<(), ApproveError> {
     )
     .await?;
 
-    println!("{}", mcp::render_text(&result));
+    println!("{}", terminal::terminal_safe(&mcp::render_text(&result)));
     Ok(())
 }

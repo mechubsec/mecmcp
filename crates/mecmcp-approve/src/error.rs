@@ -103,6 +103,11 @@ pub enum ApproveError {
     #[error("failed to load the bearer token: {0}")]
     BearerToken(#[source] mecmcp_secret::SecretError),
 
+    /// The OIDC client secret could not be loaded from the environment
+    /// variable or file the operator named.
+    #[error("failed to load the OIDC client secret: {0}")]
+    OidcClientSecret(#[source] mecmcp_secret::SecretError),
+
     /// `--expect-digest` was given and the preview tool's server-reported
     /// digest did not match it.
     #[error(
@@ -113,6 +118,30 @@ pub enum ApproveError {
         expected: String,
         /// The digest the preview tool actually reported.
         actual: String,
+    },
+
+    /// `--expect-digest` was given, but either no `--preview-tool` was
+    /// given, or the preview tool's reply had no usable
+    /// `structured_content.digest` to check it against. Refusing to
+    /// approve rather than silently skipping the check the operator asked
+    /// for.
+    #[error(
+        "--expect-digest was given but there is no server-reported digest to verify it against; pass --preview-tool naming a tool whose reply has a structured_content.digest string"
+    )]
+    DigestUnverifiable,
+
+    /// A URL this CLI must dereference (`--server-url`, `--oidc-issuer`, or
+    /// an endpoint read from OIDC discovery) is neither `https` nor `http`
+    /// to a loopback host. Refusing rather than sending credentials,
+    /// bearer tokens, or the approver assertion in cleartext.
+    #[error(
+        "{label} must be https (or http to a loopback host); got {url}; pass --allow-insecure-http for lab use"
+    )]
+    InsecureUrl {
+        /// Which configuration value failed the check.
+        label: &'static str,
+        /// The offending URL.
+        url: String,
     },
 
     /// The human declined (or failed to correctly type) the confirmation
