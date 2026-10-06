@@ -1,5 +1,5 @@
 [workspace]
-members  = ["crates/mecmcp-auth", "crates/mecmcp-audit", "crates/mecmcp-changeset", "crates/mecmcp-scp", "crates/mecmcp-transport", "crates/mecmcp-runtime", "crates/mecmcp-policy", "crates/mecmcp-inventory", "crates/mecmcp-device", "crates/mecmcp-secret", "crates/mecmcp-http", "crates/mecmcp-job", "crates/mecmcp-openapi", "crates/mecmcp-oidc", "crates/mecmcp-redact", "crates/mecmcp-server"]
+members  = ["crates/mecmcp-auth", "crates/mecmcp-audit", "crates/mecmcp-changeset", "crates/mecmcp-scp", "crates/mecmcp-transport", "crates/mecmcp-runtime", "crates/mecmcp-policy", "crates/mecmcp-inventory", "crates/mecmcp-device", "crates/mecmcp-secret", "crates/mecmcp-http", "crates/mecmcp-job", "crates/mecmcp-openapi", "crates/mecmcp-oidc", "crates/mecmcp-redact", "crates/mecmcp-server", "crates/mecmcp-approve"]
 resolver = "2"
 
 [workspace.package]
