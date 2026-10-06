@@ -1,0 +1,65 @@
+[package]
+name        = "mecmcp-approve"
+description = "Approver CLI: OIDC login (PKCE by default, device code opt-in) plus a reviewed MCP tools/call approval, so a human never approves a change set blind and a 5-minute-lived assertion never has to live in a static header."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[[bin]]
+name = "mecmcp-approve"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+mecmcp-secret = { version = "0.26.1", path = "../mecmcp-secret" }
+mecmcp-transport = { version = "0.26.1", path = "../mecmcp-transport" }
+# Minimal: only `rmcp::model`'s typed `CallToolRequestParams`/`CallToolResult`,
+# so the approve call's request/response shapes stay identical to what a real
+# MCP server returns instead of a hand-rolled JSON guess. No transport or
+# server feature -- this binary speaks streamable HTTP itself over `reqwest`
+# (below), matching mecmcp-server's own `default-features = false` rationale.
+rmcp       = { version = "3", default-features = false }
+# De facto standard OAuth2/OIDC client crate (also what rmcp's own client-side
+# "auth" feature is built on) -- chosen over hand-rolling PKCE and the device
+# flow per the dependency-surface-is-attack-surface lens: PKCE code-verifier
+# generation, the authorization-code exchange, and RFC 8628 polling semantics
+# are exactly the kind of security-sensitive protocol code a differential
+# between a hand implementation and the spec turns into an exploit.
+oauth2     = { version = "5", default-features = false }
+# Same client/TLS posture as mecmcp-http (D4): rustls with an explicitly
+# installed `aws-lc-rs` CryptoProvider, HTTP/1.1 only, no native-tls. Pulled
+# directly (not through mecmcp-http) because this binary needs the raw
+# `reqwest::Client` oauth2's `AsyncHttpClient` impl and the MCP tools/call POST
+# both expect, not mecmcp-http's path-templated vendor-REST abstraction, which
+# existed to keep device-supplied strings out of request paths -- not a
+# concern here, since every URL this binary calls is operator-supplied at
+# startup, never data from an untrusted device or model.
+#
+# oauth2's own "rustls-tls" feature is deliberately left off: it exists only
+# to configure oauth2's *bundled* reqwest client (gated behind oauth2's
+# "reqwest" feature, also off -- this crate never calls it, see http_bridge.rs),
+# and it wires reqwest to the `ring` crypto provider, not `aws-lc-rs`. Enabling
+# it would link both providers into this binary, the exact two-provider
+# conflict mecmcp-http's Cargo.toml warns broke TLS before.
+reqwest    = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json"] }
+rustls     = { version = "0.23", default-features = false, features = ["std", "aws-lc-rs"] }
+http       = "1"
+anyhow     = "1"
+clap       = { version = "4", features = ["derive"] }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+sha2       = { workspace = true }
+thiserror  = { workspace = true }
+tokio      = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util"] }
+tracing    = { workspace = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
+url        = "2"
+uuid       = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
