@@ -172,6 +172,14 @@ mod tests {
     /// rather than relying on every call site to remember to.
     #[tokio::test]
     async fn rpc_error_message_is_terminal_safe() {
+        // `reqwest` is built with `rustls-no-provider` (see this crate's
+        // Cargo.toml), so a process-wide crypto provider must be installed
+        // before the first `reqwest::Client` is built. Other test modules
+        // (e.g. oidc.rs) install it too, but test binaries run all tests in
+        // one process in an unspecified order, so this test cannot rely on
+        // another module's test having already run first.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
 
