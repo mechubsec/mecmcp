@@ -377,11 +377,6 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
             source,
         })?;
 
-        validate_references(&updated, known).map_err(|error| FileError::Store {
-            path: path.to_path_buf(),
-            source: StoreError::Entry(crate::entry::EntryError::Invalid(error)),
-        })?;
-
         let minted = updated
             .entries()
             .iter()
@@ -392,6 +387,10 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
                     "minted token missing from store".to_owned(),
                 )),
             })?;
+        validate_entry_references(minted, known).map_err(|error| FileError::Store {
+            path: path.to_path_buf(),
+            source: StoreError::Entry(crate::entry::EntryError::Invalid(error)),
+        })?;
         validate_scope_agreement(minted).map_err(|error| FileError::Store {
             path: path.to_path_buf(),
             source: StoreError::Entry(crate::entry::EntryError::Invalid(error)),
@@ -403,13 +402,21 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
 
     /// Atomically replace one token digest while preserving its scopes.
     ///
+    /// Does not validate device or tool references: rotation never changes an
+    /// entry's scopes, so re-checking them here would only fail for a reason
+    /// unrelated to this call — a device or tool that has since left the known
+    /// registries would make an existing token's secret permanently
+    /// unrotatable, which is exactly backwards for the one operation an
+    /// incident response reaches for first. `known` is accepted but unused, to
+    /// keep this signature source-compatible with every pinned caller.
+    ///
     /// # Errors
     /// Returns [`FileError`] if the named token does not exist, or on I/O or
     /// validation failure.
     pub fn rotate(
         path: &Path,
         name: &str,
-        known: &KnownNames<'_>,
+        _known: &KnownNames<'_>,
     ) -> Result<TokenSecret, FileError> {
         use crate::token::TokenSecret;
 
@@ -463,11 +470,6 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
         let updated = TokenStore::try_new(entries).map_err(|source| FileError::Store {
             path: path.to_path_buf(),
             source,
-        })?;
-
-        validate_references(&updated, known).map_err(|error| FileError::Store {
-            path: path.to_path_buf(),
-            source: StoreError::Entry(crate::entry::EntryError::Invalid(error)),
         })?;
 
         write_atomic(path, updated.entries(), version)?;
@@ -541,11 +543,6 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
             source,
         })?;
 
-        validate_references(&updated, known).map_err(|error| FileError::Store {
-            path: path.to_path_buf(),
-            source: StoreError::Entry(crate::entry::EntryError::Invalid(error)),
-        })?;
-
         let changed = updated
             .entries()
             .iter()
@@ -556,6 +553,10 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
                     "token '{name}' missing from store after scope change"
                 ))),
             })?;
+        validate_entry_references(changed, known).map_err(|error| FileError::Store {
+            path: path.to_path_buf(),
+            source: StoreError::Entry(crate::entry::EntryError::Invalid(error)),
+        })?;
         validate_scope_agreement(changed).map_err(|error| FileError::Store {
             path: path.to_path_buf(),
             source: StoreError::Entry(crate::entry::EntryError::Invalid(error)),
@@ -646,10 +647,16 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
 
     /// Idempotently revoke one named token.
     ///
+    /// Does not validate device or tool references: removing an entry only
+    /// shrinks the store's reference surface, it never adds to it, so a stale
+    /// device or tool name on some other surviving entry has no bearing on
+    /// this call — and revoke is exactly the operation an incident response
+    /// reaches for, so it must not be the one blocked by a stale sibling.
+    ///
     /// # Errors
     /// Returns [`FileError`] on I/O or validation failure. Returns `Ok(false)`
     /// if the token was not present.
-    pub fn revoke(path: &Path, name: &str, known: &KnownNames<'_>) -> Result<bool, FileError> {
+    pub fn revoke(path: &Path, name: &str, _known: &KnownNames<'_>) -> Result<bool, FileError> {
         let (current, version) = Self::read_store(path)?;
         let mut entries = current.entries().to_vec();
         let before = entries.len();
@@ -660,11 +667,6 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
             let updated = TokenStore::try_new(entries).map_err(|source| FileError::Store {
                 path: path.to_path_buf(),
                 source,
-            })?;
-
-            validate_references(&updated, known).map_err(|error| FileError::Store {
-                path: path.to_path_buf(),
-                source: StoreError::Entry(crate::entry::EntryError::Invalid(error)),
             })?;
 
             write_atomic(path, updated.entries(), version)?;
@@ -783,10 +785,11 @@ pub fn write_atomic<G: Grant + serde::Serialize>(
 /// closed *first* is inert. That is a live deployment shape today
 /// (rustmistmcp#17), and it looks identical to a correctly narrowed token.
 ///
-/// Deliberately **not** part of [`validate_references`]: that runs on `rotate`
-/// and `revoke` too, and refusing to rotate an existing token's secret because
-/// of a scope shape it already has would turn an emergency rotation into an
-/// outage. This runs only where scopes are chosen — `add` and `set_scopes`.
+/// Deliberately **not** part of [`validate_entry_references`]: `rotate` and
+/// `revoke` don't call either check, and refusing to rotate an existing
+/// token's secret because of a scope shape it already has would turn an
+/// emergency rotation into an outage. This runs only where scopes are chosen —
+/// `add` and `set_scopes`.
 ///
 /// It takes **one entry**, not the store, for the same reason. A file is
 /// allowed to contain the legacy shape; validating every entry on each mutation
@@ -811,42 +814,48 @@ fn validate_scope_agreement<G: Grant>(entry: &TokenEntry<G>) -> Result<(), Strin
     Ok(())
 }
 
-/// Validate device and tool references against the known registries.
+/// Validate one entry's device and tool references against the known
+/// registries.
 ///
-/// Reference-validation is deliberately NOT run during [`TokenStoreFile::load`],
-/// only during the mutating operations that mint new scopes. Running it on
-/// every load would mean a device decommissioned from the inventory would stop
-/// every token in the file from loading and take authentication offline
-/// server-wide. Catching a typo when a token is minted is worth it; refusing to
-/// start because inventory drifted is not.
-fn validate_references<G: Grant>(
-    store: &TokenStore<G>,
+/// Takes a single entry, not the store, for the same reason
+/// [`validate_scope_agreement`] does: a pre-existing token whose scopes name a
+/// device or tool this binary's [`KnownNames`] no longer knows about — because
+/// the inventory or tool surface moved on since that token was minted — must
+/// not block minting, rotating, or rescoping every *other* token in the file.
+/// Only the entry being written is this check's business.
+///
+/// Reference-validation is deliberately NOT run during [`TokenStoreFile::load`]
+/// either, for the matching reason: a device decommissioned from the inventory
+/// must not stop every token in the file from loading and take authentication
+/// offline server-wide. Catching a typo when a token is minted or rescoped is
+/// worth it; refusing to start, or refusing to touch unrelated tokens, because
+/// inventory or tool-surface drift left one entry stale is not.
+fn validate_entry_references<G: Grant>(
+    entry: &TokenEntry<G>,
     known: &KnownNames<'_>,
 ) -> Result<(), String> {
-    for entry in store.entries() {
-        if let ScopeSet::Allowlist(devices) = &entry.devices {
-            // Only validate device names if Some(...) was provided.
-            // None means skip device-name checks entirely.
-            if let Some(known_devices) = known.devices {
-                for device in devices {
-                    if !known_devices.iter().any(|known| known == device) {
-                        return Err(format!(
-                            "token '{}' references unknown device '{device}'",
-                            entry.name
-                        ));
-                    }
-                }
-            }
-        }
-        if let ScopeSet::Allowlist(tools) = &entry.tools {
-            // Tool validation is always enforced.
-            for tool in tools {
-                if !known.tools.iter().any(|known| known == tool) {
+    if let ScopeSet::Allowlist(devices) = &entry.devices {
+        // Only validate device names if Some(...) was provided.
+        // None means skip device-name checks entirely.
+        if let Some(known_devices) = known.devices {
+            for device in devices {
+                if !known_devices.iter().any(|known| known == device) {
                     return Err(format!(
-                        "token '{}' references unknown tool '{tool}'",
+                        "token '{}' references unknown device '{device}'",
                         entry.name
                     ));
                 }
+            }
+        }
+    }
+    if let ScopeSet::Allowlist(tools) = &entry.tools {
+        // Tool validation is always enforced.
+        for tool in tools {
+            if !known.tools.iter().any(|known| known == tool) {
+                return Err(format!(
+                    "token '{}' references unknown tool '{tool}'",
+                    entry.name
+                ));
             }
         }
     }
@@ -1573,6 +1582,180 @@ mod tests {
         let removed_again =
             TokenStoreFile::<NoGrant>::revoke(&path, "lab", &known).expect("revoke again");
         assert!(!removed_again, "second revoke should return false");
+    }
+
+    /// A store where one entry's scopes name a device/tool the caller's
+    /// current [`KnownNames`] no longer knows about — the shape left behind
+    /// when a device leaves inventory or a tool is retired from a later
+    /// release.
+    const STALE_SIBLING_STORE: &str = r#"{
+        "tokens": [
+            {
+                "name": "stale",
+                "digest": "sha256:n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg",
+                "devices": ["retired-fw"],
+                "tools": ["retired_tool"],
+                "created_at_unix": 1783850400
+            },
+            {
+                "name": "target",
+                "digest": "sha256:n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg",
+                "devices": ["edge-fw"],
+                "tools": ["get_junos_config"],
+                "created_at_unix": 1783850400
+            }
+        ]
+    }"#;
+
+    #[test]
+    fn add_succeeds_with_a_stale_sibling_entry_present() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_file(&dir, STALE_SIBLING_STORE);
+        let known = KnownNames {
+            devices: Some(known_devices()),
+            tools: &["get_junos_config"],
+        };
+
+        let secret = TokenStoreFile::<NoGrant>::add(
+            &path,
+            "lab",
+            ScopeSet::Allowlist(vec!["edge-fw".to_owned()]),
+            ScopeSet::Allowlist(vec!["get_junos_config".to_owned()]),
+            &known,
+        )
+        .expect("a stale sibling referencing a retired device/tool must not block minting");
+
+        let file: TokenStoreFile<NoGrant> = TokenStoreFile::load(&path).expect("load");
+        let store = file.store();
+        assert_eq!(store.len(), 3);
+        assert!(store.authenticate(secret.expose_secret()).is_some());
+    }
+
+    #[test]
+    fn set_scopes_succeeds_with_a_stale_sibling_entry_present() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_file(&dir, STALE_SIBLING_STORE);
+        let known = KnownNames {
+            devices: Some(known_devices()),
+            tools: &["get_junos_config"],
+        };
+
+        TokenStoreFile::<NoGrant>::set_scopes(
+            &path,
+            "target",
+            Some(ScopeSet::Allowlist(vec!["core-fw".to_owned()])),
+            None,
+            None,
+            &known,
+        )
+        .expect("a stale sibling referencing a retired device/tool must not block rescoping");
+
+        let file: TokenStoreFile<NoGrant> = TokenStoreFile::load(&path).expect("load");
+        let store = file.store();
+        let target = store
+            .entries()
+            .iter()
+            .find(|entry| entry.name == "target")
+            .expect("target entry");
+        assert_eq!(
+            target.devices,
+            ScopeSet::Allowlist(vec!["core-fw".to_owned()])
+        );
+        let stale = store
+            .entries()
+            .iter()
+            .find(|entry| entry.name == "stale")
+            .expect("stale entry must survive untouched");
+        assert_eq!(
+            stale.devices,
+            ScopeSet::Allowlist(vec!["retired-fw".to_owned()])
+        );
+    }
+
+    #[test]
+    fn rotate_succeeds_with_a_stale_sibling_entry_present() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_file(&dir, STALE_SIBLING_STORE);
+        let known = KnownNames {
+            devices: Some(known_devices()),
+            tools: &["get_junos_config"],
+        };
+
+        let rotated = TokenStoreFile::<NoGrant>::rotate(&path, "target", &known)
+            .expect("a stale sibling referencing a retired device/tool must not block rotation");
+
+        let file: TokenStoreFile<NoGrant> = TokenStoreFile::load(&path).expect("load");
+        let store = file.store();
+        assert!(store.authenticate(rotated.expose_secret()).is_some());
+    }
+
+    /// Rotating the stale entry itself must also succeed: rotation replaces a
+    /// secret, it never re-validates scopes, so the entry's own unknown
+    /// references are not this call's business either.
+    #[test]
+    fn rotate_succeeds_on_the_stale_entry_itself() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_file(&dir, STALE_SIBLING_STORE);
+        let known = KnownNames {
+            devices: Some(known_devices()),
+            tools: &["get_junos_config"],
+        };
+
+        let rotated = TokenStoreFile::<NoGrant>::rotate(&path, "stale", &known)
+            .expect("rotating a token whose own scopes are stale must still succeed");
+
+        let file: TokenStoreFile<NoGrant> = TokenStoreFile::load(&path).expect("load");
+        let store = file.store();
+        let stale = store
+            .entries()
+            .iter()
+            .find(|entry| entry.name == "stale")
+            .expect("stale entry");
+        assert_eq!(
+            stale.devices,
+            ScopeSet::Allowlist(vec!["retired-fw".to_owned()])
+        );
+        assert_eq!(
+            stale.tools,
+            ScopeSet::Allowlist(vec!["retired_tool".to_owned()])
+        );
+        assert!(store.authenticate(rotated.expose_secret()).is_some());
+    }
+
+    #[test]
+    fn revoke_succeeds_with_a_stale_sibling_entry_present() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_file(&dir, STALE_SIBLING_STORE);
+        let known = KnownNames {
+            devices: Some(known_devices()),
+            tools: &["get_junos_config"],
+        };
+
+        let removed = TokenStoreFile::<NoGrant>::revoke(&path, "target", &known)
+            .expect("a stale sibling referencing a retired device/tool must not block revoke");
+        assert!(removed);
+
+        let file: TokenStoreFile<NoGrant> = TokenStoreFile::load(&path).expect("load");
+        assert_eq!(file.store().len(), 1);
+    }
+
+    /// The incident this fix responds to needed to revoke the stale token
+    /// itself during rollback. That must work too.
+    #[test]
+    fn revoke_succeeds_on_the_stale_entry_itself() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_file(&dir, STALE_SIBLING_STORE);
+        let known = KnownNames {
+            devices: Some(known_devices()),
+            tools: &["get_junos_config"],
+        };
+
+        let removed = TokenStoreFile::<NoGrant>::revoke(&path, "stale", &known)
+            .expect("revoking a token whose own scopes are stale must still succeed");
+        assert!(removed);
+
+        let file: TokenStoreFile<NoGrant> = TokenStoreFile::load(&path).expect("load");
+        assert_eq!(file.store().len(), 1);
     }
 
     #[test]

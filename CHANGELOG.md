@@ -27,6 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [Unreleased]
+
+### Fixed
+
+- **mecmcp-auth: token add, rotate, rescope, and revoke no longer re-validate
+  every token's device/tool scopes against the current build's known names**
+  (MEC-2225), only the entry actually being minted or changed. A stale
+  reference left on one token by unrelated inventory or tool-surface drift
+  could previously block credential-rotation operations on every other token
+  in the same file.
+
 ## [0.26.1] - 2026-10-03
 
 ### Security
