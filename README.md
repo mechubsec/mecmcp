@@ -26,7 +26,7 @@ Every mechub MCP server is built on it:
 | [`rustproxmoxmcp`](https://github.com/mechubsec/rustproxmoxmcp) | Proxmox VE | HTTPS REST API | [v0.10.0](https://github.com/mechubsec/rustproxmoxmcp/releases/tag/v0.10.0) | ![status](https://img.shields.io/badge/status-beta-yellow) |
 | [`rustsdcmcp`](https://github.com/mechubsec/rustsdcmcp) | Juniper Security Director Cloud | HTTPS REST API | [v0.1.0](https://github.com/mechubsec/rustsdcmcp/releases/tag/v0.1.0) | ![status](https://img.shields.io/badge/status-alpha-orange) |
 | [`rustmistmcp`](https://github.com/mechubsec/rustmistmcp) | HPE Juniper Mist | HTTPS REST API | [v0.3.2](https://github.com/mechubsec/rustmistmcp/releases/tag/v0.3.2) | ![status](https://img.shields.io/badge/status-alpha-orange) |
-| [`rustunifimcp`](https://github.com/mechubsec/rustunifimcp) | Ubiquiti UniFi Network | HTTPS REST API | [v0.5.0](https://github.com/mechubsec/rustunifimcp/releases/tag/v0.5.0) | ![status](https://img.shields.io/badge/status-alpha-orange) |
+| [`rustunifimcp`](https://github.com/mechubsec/rustunifimcp) | Ubiquiti UniFi Network | HTTPS REST API | [v0.6.0](https://github.com/mechubsec/rustunifimcp/releases/tag/v0.6.0) | ![status](https://img.shields.io/badge/status-alpha-orange) |
 | [`rustfortimcp`](https://github.com/mechubsec/rustfortimcp) | Fortinet FortiGate | HTTPS REST API | unreleased | ![status](https://img.shields.io/badge/status-planned-lightgrey) |
 | [`rustopnsmcp`](https://github.com/mechubsec/rustopnsmcp) | OPNsense | HTTPS REST API | unreleased | ![status](https://img.shields.io/badge/status-planned-lightgrey) |
 
