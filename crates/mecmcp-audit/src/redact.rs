@@ -215,7 +215,7 @@ fn escape_field(s: &str) -> String {
 
 /// Render the `devices` and `metadata` strings with `redaction` applied.
 /// `None` → cleartext, identical to the pre-redaction join modulo
-/// [`escape_field`]. `devices` is transformed per-name then re-joined so
+/// field escaping. `devices` is transformed per-name then re-joined so
 /// multi-device lines stay correlatable; dropped device names are omitted.
 /// Every caller-controlled value is encoded immediately before it is
 /// joined, hardening the rendered record's field encoding.
