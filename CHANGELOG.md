@@ -27,7 +27,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
-## [Unreleased]
+## [0.27.0] - 2026-10-07
+
+### Added
+
+- **mecmcp-approve: new `mecmcp-approve` CLI** (MEC-996, mecmcp#500). Does an
+  OIDC login (PKCE on a loopback redirect by default, RFC 8628 device code
+  opt-in) and sends one reviewed MCP `tools/call` carrying both the bearer
+  token and the login's `id_token` as the `Mecmcp-Approver-Assertion`
+  header, so a short-lived step-up assertion never has to live in a static
+  header and approval moves out of the agent's reach. Validates the OIDC
+  discovery document's issuer and the authorization redirect's optional
+  RFC 9207 `iss` parameter as a mix-up-attack defense.
+- **mecmcp: step-up verified-approver assertion path for change-set
+  approval** (MEC-994, mecmcp#494). A change-set approval can now require a
+  fresh, separately verified caller assertion in addition to the existing
+  bearer token, rather than trusting the bearer token alone for approver
+  identity. The assertion is verified against a configured OIDC issuer,
+  bound to the caller's token, never persisted or logged, and a replay
+  guard rejects reuse of the assertion's `jti`. Gated behind a
+  `verified-approver` feature (default off) on `mecmcp-transport`.
+- **mecmcp-oidc: browser-login relying-party additions** (mecmcp#493) —
+  nonce verification (`VerifyOptions::expected_nonce`), an optional
+  `azp` (authorized party) check per OIDC Core §3.1.3.7, a `display_name`
+  claim derived from `preferred_username`/`name` (opt-in, capped and
+  trimmed), and optional RP discovery-document fields
+  (`authorization_endpoint`, `token_endpoint`, `end_session_endpoint`,
+  and the supported-algorithms/code-challenge-methods lists), all
+  validated HTTPS. Additive and opt-in; existing resource-server
+  verification is unchanged.
+- **mecmcp-runtime: `cli_validate` gained more shared refusal rules and a
+  fail-closed exit helper** (mecmcp#496, mecmcp#497). A conflicting auth
+  configuration, a non-numeric listen host, and a malformed
+  `--allowed-host`/`--allowed-origin` entry (including the opaque `null`
+  origin) are now refused at startup instead of being silently resolved or
+  accepted into a policy that can never match. The new
+  `cli_validate::validate_or_exit` helper removes the two ways a consumer
+  server previously drifted from the shared refusal contract.
+- **mecmcp-secret: `known::OPNSENSE`** (mecmcp#499), part of onboarding
+  `rustopnsmcp`.
 
 ### Fixed
 
@@ -37,6 +75,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reference left on one token by unrelated inventory or tool-surface drift
   could previously block credential-rotation operations on every other token
   in the same file.
+- **packaging/conformance: R7 can now fatal-check a distroless, no-shell
+  image** via an `audit_hmac_flag` alternative to the executable-wrapper
+  check (MEC-978, mecmcp#492), closing a gap where every vendor image R7
+  targets was permanently stuck at WARN.
+
+### Changed
+
+- **ci: the reusable release-image workflow can dual-push to GHCR and
+  Docker Hub** with cosign signing and SBOM/provenance attestations on
+  each, opt-in per caller (mecmcp#501).
+- **ci: new reusable release-SBOM attestation workflow**, fail-closed
+  when called outside a published release (mecmcp#502).
 
 ## [0.26.1] - 2026-10-03
 
