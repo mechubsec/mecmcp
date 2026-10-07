@@ -17,21 +17,24 @@ Authentication, attribution, audit, transport hardening, policy, inventory,
 change control — everything that is *not* NETCONF or XML-API — lives here once
 and is consumed by every vendor server.
 
-Today two servers independently reimplement all of it:
+Every mechub MCP server is built on it:
 
-| | [rustjunosmcp](https://github.com/mechubsec/rustjunosmcp) | [rustpanosmcp](https://github.com/mechubsec/rustpanosmcp) |
-|---|---|---|
-| Vendor | Juniper Junos / SRX | Palo Alto PAN-OS |
-| Device transport | NETCONF over SSH (`rustnetconf`) | HTTPS XML-API (`reqwest`) |
-| Shared-by-accident | token auth, scopes, TLS, CLI, HTTP transport, inventory | same, written separately |
+| Server | Vendor | Device transport | Latest release | Status |
+|---|---|---|---|---|
+| [`rustjunosmcp`](https://github.com/mechubsec/rustjunosmcp) | Juniper Junos / SRX | NETCONF over SSH (`rustnetconf`) | [v0.27.3](https://github.com/mechubsec/rustjunosmcp/releases/tag/v0.27.3) | ![status](https://img.shields.io/badge/status-beta-yellow) |
+| [`rustpanosmcp`](https://github.com/mechubsec/rustpanosmcp) | Palo Alto PAN-OS | HTTPS XML-API | [v0.14.0](https://github.com/mechubsec/rustpanosmcp/releases/tag/v0.14.0) | ![status](https://img.shields.io/badge/status-beta-yellow) |
+| [`rustproxmoxmcp`](https://github.com/mechubsec/rustproxmoxmcp) | Proxmox VE | HTTPS REST API | [v0.10.0](https://github.com/mechubsec/rustproxmoxmcp/releases/tag/v0.10.0) | ![status](https://img.shields.io/badge/status-beta-yellow) |
+| [`rustsdcmcp`](https://github.com/mechubsec/rustsdcmcp) | Juniper Security Director Cloud | HTTPS REST API | [v0.1.0](https://github.com/mechubsec/rustsdcmcp/releases/tag/v0.1.0) | ![status](https://img.shields.io/badge/status-alpha-orange) |
+| [`rustmistmcp`](https://github.com/mechubsec/rustmistmcp) | HPE Juniper Mist | HTTPS REST API | [v0.3.2](https://github.com/mechubsec/rustmistmcp/releases/tag/v0.3.2) | ![status](https://img.shields.io/badge/status-alpha-orange) |
+| [`rustunifimcp`](https://github.com/mechubsec/rustunifimcp) | Ubiquiti UniFi Network | HTTPS REST API | [v0.5.0](https://github.com/mechubsec/rustunifimcp/releases/tag/v0.5.0) | ![status](https://img.shields.io/badge/status-alpha-orange) |
+| [`rustfortimcp`](https://github.com/mechubsec/rustfortimcp) | Fortinet FortiGate | HTTPS REST API | unreleased | ![status](https://img.shields.io/badge/status-planned-lightgrey) |
+| [`rustopnsmcp`](https://github.com/mechubsec/rustopnsmcp) | OPNsense | HTTPS REST API | unreleased | ![status](https://img.shields.io/badge/status-planned-lightgrey) |
 
-The duplication is not the main cost. The main cost is that **each repo is the
-reference implementation for something the other lacks** — rustjunosmcp has the
-runtime hardening (concurrency, rate limits, session caps, audit redaction),
-rustpanosmcp has the change-control state machine (plan → digest → approve →
-apply) and the modern crate hygiene. Neither benefits from the other.
+Each server keeps only its vendor transport and tools; everything above the
+device boundary comes from `mecmcp`, so a hardening fix lands once and reaches
+every server on its next release. Status reflects honest maturity: no server is
+tagged stable yet, and all run in the maintainer's lab, not production.
 
-`mecmcp` makes both the union instead of the intersection.
 
 ## Status
 
