@@ -39,6 +39,13 @@ Two reusable workflows (`workflow_call`), both under
   release asset (tarball) already uploaded to a published GitHub release,
   with the signature bundle uploaded back onto the release. Mirrors
   rustjunosmcp's `release-sign-tarball.yml`.
+- **`reusable-attest-release-sbom.yml`** — CycloneDX SBOM for the binary that
+  ships in a repo's image, attached to the GitHub release and cosign-attested
+  on the pushed image digest. Resolves the digest by polling (up to ~20 min)
+  rather than a single lookup, because the image-push workflow (triggered by
+  the tag push) and this one (triggered by `release: published`) are
+  independent events with no ordering guarantee between them (MEC-2133).
+  Mirrors rustjunosmcp's `release-sbom.yml`.
 
 Both pin every third-party action to a commit SHA. The SHAs used are the
 ones already validated in production by rustpanosmcp, rustunifimcp,
@@ -132,6 +139,37 @@ jobs:
     uses: mechubsec/mecmcp/.github/workflows/reusable-sign-release-tarball.yml@v0.8.1
 ```
 
+### Release SBOM attestation
+
+```yaml
+name: Release SBOM
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  sbom:
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    uses: mechubsec/mecmcp/.github/workflows/reusable-attest-release-sbom.yml@<mecmcp-ref>
+    with:
+      image: ghcr.io/mechubsec/rust-junosmcp
+      cargo-manifest-path: rust-junosmcp/Cargo.toml
+      sbom-file: rust-junosmcp/rust-junosmcp.cdx.json
+```
+
+`reusable-attest-release-sbom.yml` is new in this PR, so it does not exist at any
+mecmcp tag yet — pin `<mecmcp-ref>` to the first tag cut after this merges, not
+to an existing tag like the other two workflows' examples above.
+
+`cargo-manifest-path` and `sbom-file` point at the workspace member whose
+binary actually ships in the image, not the workspace root — `cargo
+cyclonedx` has no per-package flag, so it writes one `.cdx.json` per member
+and only one of them is the SBOM that belongs attested on the image.
+
 ## Reference migration: rustjunosmcp
 
 `rustjunosmcp`'s `release-image.yml` and `release-sign-tarball.yml` now call
@@ -139,6 +177,11 @@ these two reusable workflows instead of carrying their own copies of the
 SBOM/build/sign steps. The behavior is unchanged: same SBOM tool, same
 image tags, same keyless cosign signing of the digest, same tarball
 signature-bundle upload. Only the step definitions moved.
+
+`release-sbom.yml` still carries its own copy of the
+`reusable-attest-release-sbom.yml` logic as of MEC-2133 (that PR fixed the
+digest race in place first); migrating it to call the reusable workflow is a
+tracked follow-up once this one merges.
 
 ## Migrating another repo
 
