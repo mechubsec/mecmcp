@@ -29,9 +29,11 @@ tarball artifact shape.
 Two reusable workflows (`workflow_call`), both under
 `.github/workflows/` in `mecmcp`:
 
-- **`reusable-release-image.yml`** — SBOM (CycloneDX via `cargo-cyclonedx`),
-  Docker Buildx build + push to GHCR, keyless cosign signing of the pushed
-  digest. Mirrors rustjunosmcp's `release-image.yml` (MEC-49), which is the
+- **`reusable-release-image.yml`** — SBOM (CycloneDX via `cargo-cyclonedx`,
+  plus a buildx-attested SBOM/provenance pair on the image itself), Docker
+  Buildx build + push to GHCR (and, opt-in, Docker Hub — MEC-2110), keyless
+  cosign signing of the pushed digest on every registry it was pushed to.
+  Mirrors rustjunosmcp's `release-image.yml` (MEC-49), which is the
   reference this was extracted from.
 - **`reusable-sign-release-tarball.yml`** — keyless cosign `sign-blob` of a
   release asset (tarball) already uploaded to a published GitHub release,
@@ -78,14 +80,37 @@ jobs:
     uses: mechubsec/mecmcp/.github/workflows/reusable-release-image.yml@v0.8.1
     with:
       image: ghcr.io/mechubsec/rust-junosmcp
+      dockerhub-image: docker.io/mechubsec/rust-junosmcp
+      description: 'Junos/SRX MCP server'
       version: ${{ github.event.inputs.version }}
       ref: ${{ github.event.inputs.ref }}
       smoke-test-command: ./packaging/tests/container-scp-smoke.sh
+    secrets: inherit
 ```
 
 `permissions:` on the calling job is required — a reusable workflow's
 effective permissions can only be narrowed by the caller, never widened, so
 the caller must grant `packages: write` and `id-token: write` itself.
+
+### Dual-push to Docker Hub (MEC-2110)
+
+`dockerhub-image` is opt-in and empty by default, so adding the pin bump
+alone changes nothing. A repo that wants the Docker Hub push too must also:
+
+- Add `dockerhub-image: docker.io/mechubsec/<repo>` (same tags as GHCR:
+  `vX.Y.Z`, `X.Y`, `latest`).
+- Add `secrets: inherit` to the calling job (or map
+  `dockerhub-username`/`dockerhub-token` explicitly) — the org-level
+  `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` secrets this depends on are set up
+  once, org-wide, not per repo.
+- Optionally set `description` for the Docker Hub repo overview, and
+  `dockerhub-readme` if the repo's README isn't at the root.
+
+If `dockerhub-image` is set but the Docker Hub secrets are not visible to
+the run (a fork with no access to org secrets, or before the org secrets
+exist), the job logs a warning and continues with a GHCR-only push instead
+of failing. Cosign signing, the buildx SBOM/provenance attestations, and
+the image tags are identical on both registries when both are pushed.
 
 ### Tarball signing
 
