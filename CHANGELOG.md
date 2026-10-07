@@ -69,6 +69,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **mecmcp-auth: token add, rotate, rescope, and revoke no longer re-validate
+  every token's device/tool scopes against the current build's known names**
+  (MEC-2225), only the entry actually being minted or changed. A stale
+  reference left on one token by unrelated inventory or tool-surface drift
+  could previously block credential-rotation operations on every other token
+  in the same file.
 - **packaging/conformance: R7 can now fatal-check a distroless, no-shell
   image** via an `audit_hmac_flag` alternative to the executable-wrapper
   check (MEC-978, mecmcp#492), closing a gap where every vendor image R7
