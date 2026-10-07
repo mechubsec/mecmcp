@@ -60,6 +60,17 @@ jobs:
       packages: write # cosign attest pushes the attestation to GHCR
       id-token: write # keyless cosign signing
     steps:
+      - name: Require a published release
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [[ -n "$TAG" ]] || { echo "must be called from a 'release: published' workflow" >&2; exit 1; }
+          if [[ -n "$VERSION_INPUT" && "$VERSION_INPUT" != "${TAG#v}" ]]; then
+            echo "version input '$VERSION_INPUT' does not match release tag '$TAG'" >&2; exit 1
+          fi
+
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

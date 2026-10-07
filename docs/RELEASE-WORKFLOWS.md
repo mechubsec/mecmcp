@@ -126,12 +126,16 @@ jobs:
       contents: write
       packages: write
       id-token: write
-    uses: mechubsec/mecmcp/.github/workflows/reusable-attest-release-sbom.yml@v0.8.1
+    uses: mechubsec/mecmcp/.github/workflows/reusable-attest-release-sbom.yml@<mecmcp-ref>
     with:
       image: ghcr.io/mechubsec/rust-junosmcp
       cargo-manifest-path: rust-junosmcp/Cargo.toml
       sbom-file: rust-junosmcp/rust-junosmcp.cdx.json
 ```
+
+`reusable-attest-release-sbom.yml` is new in this PR, so it does not exist at any
+mecmcp tag yet — pin `<mecmcp-ref>` to the first tag cut after this merges, not
+to an existing tag like the other two workflows' examples above.
 
 `cargo-manifest-path` and `sbom-file` point at the workspace member whose
 binary actually ships in the image, not the workspace root — `cargo
