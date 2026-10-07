@@ -37,7 +37,7 @@ on:
         type: string
         default: ''
       oci-image:
-        description: 'Full OCI image reference just pushed, e.g. ghcr.io/mechubsec/rust-junosmcp:0.27.4. Must end in ":<version>" matching the verified tag. Written to every server.json packages[] entry with registryType "oci".'
+        description: 'Full OCI image reference just pushed, e.g. ghcr.io/mechubsec/rustjunosmcp:0.27.4. Must end in ":<version>" matching the verified tag. Written to every server.json packages[] entry with registryType "oci".'
         required: true
         type: string
       server-json-path:

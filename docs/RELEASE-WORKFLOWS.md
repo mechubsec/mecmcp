@@ -90,8 +90,8 @@ jobs:
       id-token: write
     uses: mechubsec/mecmcp/.github/workflows/reusable-release-image.yml@v0.8.1
     with:
-      image: ghcr.io/mechubsec/rust-junosmcp
-      dockerhub-image: docker.io/mechub/rust-junosmcp
+      image: ghcr.io/mechubsec/rustjunosmcp
+      dockerhub-image: docker.io/mechub/rustjunosmcp
       description: 'Junos/SRX MCP server'
       version: ${{ github.event.inputs.version }}
       ref: ${{ github.event.inputs.ref }}
@@ -160,7 +160,7 @@ jobs:
       id-token: write
     uses: mechubsec/mecmcp/.github/workflows/reusable-attest-release-sbom.yml@<mecmcp-ref>
     with:
-      image: ghcr.io/mechubsec/rust-junosmcp
+      image: ghcr.io/mechubsec/rustjunosmcp
       cargo-manifest-path: rust-junosmcp/Cargo.toml
       sbom-file: rust-junosmcp/rust-junosmcp.cdx.json
 ```
@@ -210,7 +210,6 @@ jobs:
   # `v` -- resolve it once here instead of repeating the strip in every
   # `with:` block below.
   resolve-version:
-    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.value }}
@@ -227,28 +226,33 @@ jobs:
       id-token: write
     uses: mechubsec/mecmcp/.github/workflows/reusable-release-image.yml@<mecmcp-ref>
     with:
-      image: ghcr.io/mechubsec/rust-junosmcp
+      image: ghcr.io/mechubsec/rustjunosmcp
       version: ${{ needs.resolve-version.outputs.version }}
 
   registry-publish:
-    needs: release
+    needs: [resolve-version, release]
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: read
       id-token: write
     uses: mechubsec/mecmcp/.github/workflows/reusable-registry-publish.yml@<mecmcp-ref>
     with:
-      oci-image: ghcr.io/mechubsec/rust-junosmcp:${{ needs.resolve-version.outputs.version }}
+      oci-image: ghcr.io/mechubsec/rustjunosmcp:${{ needs.resolve-version.outputs.version }}
 ```
 
-`registry-publish` and `resolve-version` are both guarded with
-`if: startsWith(github.ref, 'refs/tags/')` so a `workflow_dispatch` run
-(if the caller's `on:` adds one for manual image builds, as the
-image-release example above does) skips straight past them instead of
-failing the tag signature check against a branch ref. `version` is passed
-explicitly here, computed from the tag — `reusable-registry-publish.yml`
-checks it against the tag it re-verifies itself and fails the job if they
-disagree, so this is defense in depth, not the workflow's only check.
+`registry-publish` lists `resolve-version` in its own `needs:` — GitHub
+Actions only exposes `outputs` from a job's *direct* dependencies, and its
+`oci-image` reads `needs.resolve-version.outputs.version`, so depending on
+`release` alone left that value empty. `registry-publish` is guarded with
+`if: startsWith(github.ref, 'refs/tags/')` so a `workflow_dispatch` run (if
+the caller's `on:` adds one for manual image builds, as the image-release
+example above does) skips straight past the tag signature check instead of
+failing it against a branch ref; `resolve-version` carries no such guard, so
+a manual dispatch still resolves a (branch-ref) version and `release` still
+runs — only the registry publish is skipped. `version` is passed explicitly
+here, computed from the tag — `reusable-registry-publish.yml` checks it
+against the tag it re-verifies itself and fails the job if they disagree, so
+this is defense in depth, not the workflow's only check.
 
 `reusable-registry-publish.yml` is new in this PR, so `<mecmcp-ref>` has to
 be the first mecmcp tag cut after this merges, same caveat as
