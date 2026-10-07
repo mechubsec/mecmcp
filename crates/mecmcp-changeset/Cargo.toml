@@ -39,7 +39,7 @@ test-util = []
 
 [dev-dependencies]
 hex = "0.4"
-mecmcp-auth = { version = "0.26.0", path = "../mecmcp-auth", features = ["test-util"] }
+mecmcp-auth = { version = "0.27.0", path = "../mecmcp-auth", features = ["test-util"] }
 # `rt-multi-thread` for tests only. The atomic-claim test has to be able to
 # fail: on a current-thread runtime the claimants never interleave, so a
 # non-atomic claim would pass it.
