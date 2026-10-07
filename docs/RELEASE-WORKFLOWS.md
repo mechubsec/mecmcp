@@ -188,33 +188,67 @@ Unlike the other reusable workflows here, this one re-verifies the pushed
 tag's GitHub signature itself (same check as `verify-release-tag.yml`)
 rather than relying on that separate workflow's result — two workflow
 files triggered by the same tag push have no `needs:`-style ordering
-between them. Call this job from the SAME workflow file that calls
-`reusable-release-image.yml`, with `needs:` on that image job, so the
-registry publish only ever runs after the image it references exists:
+between them. That signature check needs the triggering ref to be a real
+tag, so this job only supports `push: tags:`, not `workflow_dispatch` — a
+caller whose combined release workflow also accepts `workflow_dispatch`
+for the image job (as the image-release example above does) must guard
+`registry-publish` with `if: startsWith(github.ref, 'refs/tags/')` so a
+manual dispatch skips it instead of failing the signature check against a
+branch ref.
+
+The version written to `server.json` always comes from the verified tag
+itself, never from the `version` input — the workflow fails the job if a
+supplied `version` or the `oci-image` tag disagrees with it. Call this job
+from the SAME workflow file that calls `reusable-release-image.yml`, with
+`needs:` on that image job, so the registry publish only ever runs after
+the image it references exists:
 
 ```yaml
 jobs:
+  # github.ref_name on a tag push is the tag itself (e.g. `v0.27.4`), but
+  # server.json and the image tag both use the version with no leading
+  # `v` -- resolve it once here instead of repeating the strip in every
+  # `with:` block below.
+  resolve-version:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Strip leading v from the tag
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
   release:
+    needs: resolve-version
     permissions:
       contents: read
       packages: write
       id-token: write
     uses: mechubsec/mecmcp/.github/workflows/reusable-release-image.yml@<mecmcp-ref>
     with:
-      image: ghcr.io/mechubsec/rustjunosmcp
-      version: ${{ github.event.inputs.version }}
-      ref: ${{ github.event.inputs.ref }}
+      image: ghcr.io/mechubsec/rust-junosmcp
+      version: ${{ needs.resolve-version.outputs.version }}
 
   registry-publish:
     needs: release
+    if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: read
       id-token: write
     uses: mechubsec/mecmcp/.github/workflows/reusable-registry-publish.yml@<mecmcp-ref>
     with:
-      version: ${{ github.event.inputs.version }}
-      oci-image: ghcr.io/mechubsec/rustjunosmcp:${{ github.event.inputs.version }}
+      oci-image: ghcr.io/mechubsec/rust-junosmcp:${{ needs.resolve-version.outputs.version }}
 ```
+
+`registry-publish` and `resolve-version` are both guarded with
+`if: startsWith(github.ref, 'refs/tags/')` so a `workflow_dispatch` run
+(if the caller's `on:` adds one for manual image builds, as the
+image-release example above does) skips straight past them instead of
+failing the tag signature check against a branch ref. `version` is passed
+explicitly here, computed from the tag — `reusable-registry-publish.yml`
+checks it against the tag it re-verifies itself and fails the job if they
+disagree, so this is defense in depth, not the workflow's only check.
 
 `reusable-registry-publish.yml` is new in this PR, so `<mecmcp-ref>` has to
 be the first mecmcp tag cut after this merges, same caveat as

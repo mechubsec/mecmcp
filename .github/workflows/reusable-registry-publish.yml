@@ -20,16 +20,24 @@ name: Reusable / publish to MCP Registry
 # that calls reusable-release-image.yml, with `needs:` on that image job,
 # so "only after the image exists" is a plain in-workflow job dependency
 # instead of a race.
+#
+# The signature check requires the triggering ref to be an actual tag, so
+# this workflow only runs for `push: tags:` events -- it has no `workflow_
+# dispatch` story, unlike reusable-release-image.yml. The published version
+# is always the one derived from that verified tag, never the caller's
+# `version` input: if the input is supplied it is checked against the tag
+# and the job fails rather than silently publishing a mismatch (MEC-2353).
 
 on:
   workflow_call:
     inputs:
       version:
-        description: 'Release version with no leading v, e.g. 0.27.4. Written to server.json .version.'
-        required: true
+        description: 'Optional release version with no leading v, e.g. 0.27.4, checked against the verified tag. The version actually written to server.json .version always comes from the tag itself, never from this input.'
+        required: false
         type: string
+        default: ''
       oci-image:
-        description: 'Full OCI image reference just pushed, e.g. ghcr.io/mechubsec/rustjunosmcp:0.27.4. Written to every server.json packages[] entry with registryType "oci".'
+        description: 'Full OCI image reference just pushed, e.g. ghcr.io/mechubsec/rust-junosmcp:0.27.4. Must end in ":<version>" matching the verified tag. Written to every server.json packages[] entry with registryType "oci".'
         required: true
         type: string
       server-json-path:
@@ -55,12 +63,15 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+    outputs:
+      tag-name: ${{ steps.tag.outputs.name }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       - name: Resolve tag object
         id: tag
@@ -101,6 +112,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install mcp-publisher (pinned, sha256-verified)
         env:
@@ -120,9 +133,32 @@ jobs:
           chmod +x mcp-publisher
           sudo mv mcp-publisher /usr/local/bin/mcp-publisher
 
+      - name: Resolve and validate release version from the verified tag
+        id: resolved-version
+        env:
+          TAG_NAME: ${{ needs.verify-tag-signature.outputs.tag-name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          OCI_IMAGE: ${{ inputs.oci-image }}
+        run: |
+          set -euo pipefail
+          tag_version="${TAG_NAME#v}"
+          if [[ -z "$tag_version" || "$tag_version" == "$TAG_NAME" ]]; then
+            echo "::error::$TAG_NAME has no 'v' prefix; cannot derive a release version from it."
+            exit 1
+          fi
+          if [[ -n "$INPUT_VERSION" && "$INPUT_VERSION" != "$tag_version" ]]; then
+            echo "::error::inputs.version ($INPUT_VERSION) does not match the verified tag $TAG_NAME (expected $tag_version). Refusing to publish a registry entry whose version disagrees with the signed tag."
+            exit 1
+          fi
+          if [[ "$OCI_IMAGE" != *":$tag_version" ]]; then
+            echo "::error::oci-image ($OCI_IMAGE) does not end in :$tag_version, the version derived from the verified tag $TAG_NAME. Refusing to publish a server.json whose package identifier disagrees with the signed tag."
+            exit 1
+          fi
+          echo "version=$tag_version" >> "$GITHUB_OUTPUT"
+
       - name: Set server.json version and OCI package identifier
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.resolved-version.outputs.version }}
           OCI_IMAGE: ${{ inputs.oci-image }}
           SERVER_JSON_PATH: ${{ inputs.server-json-path }}
         run: |
