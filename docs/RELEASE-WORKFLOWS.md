@@ -87,7 +87,7 @@ jobs:
     uses: mechubsec/mecmcp/.github/workflows/reusable-release-image.yml@v0.8.1
     with:
       image: ghcr.io/mechubsec/rust-junosmcp
-      dockerhub-image: docker.io/mechubsec/rust-junosmcp
+      dockerhub-image: docker.io/mechub/rust-junosmcp (amd64-only)
       description: 'Junos/SRX MCP server'
       version: ${{ github.event.inputs.version }}
       ref: ${{ github.event.inputs.ref }}
@@ -106,7 +106,7 @@ the caller must grant `packages: write` and `id-token: write` itself.
 `dockerhub-image` is opt-in and empty by default, so adding the pin bump
 alone changes nothing. A repo that wants the Docker Hub push too must also:
 
-- Add `dockerhub-image: docker.io/mechubsec/<repo>` (same tags as GHCR:
+- Add `dockerhub-image: docker.io/mechub/<repo>` (amd64-only, same tags as GHCR:
   `vX.Y.Z`, `X.Y`, `latest`).
 - Map `dockerhub-username`/`dockerhub-token` explicitly to the org-level
   `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` secrets, as in the example above.
