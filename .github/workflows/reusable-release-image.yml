@@ -18,11 +18,13 @@ name: Reusable / release container image
 #
 # Dual-push to Docker Hub (MEC-2110) is opt-in per caller: set the
 # `dockerhub-image` input and pass the `dockerhub-username` /
-# `dockerhub-token` secrets (`secrets: inherit` or explicit mapping to the
-# org-level DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets). A caller that
-# omits `dockerhub-image`, or whose secrets are unset (e.g. a fork with no
-# access to org secrets), still gets a GHCR-only push with a warning instead
-# of a failure.
+# `dockerhub-token` secrets by mapping them explicitly to the org-level
+# DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets -- this workflow declares
+# exactly those two secrets, so there is no reason for a caller to use
+# `secrets: inherit`, which would hand it every repo and org secret the
+# caller's job can see. A caller that omits `dockerhub-image`, or whose
+# secrets are unset (e.g. a fork with no access to org secrets), still gets
+# a GHCR-only push with a warning instead of a failure.
 
 on:
   workflow_call:

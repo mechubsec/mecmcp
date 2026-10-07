@@ -85,7 +85,9 @@ jobs:
       version: ${{ github.event.inputs.version }}
       ref: ${{ github.event.inputs.ref }}
       smoke-test-command: ./packaging/tests/container-scp-smoke.sh
-    secrets: inherit
+    secrets:
+      dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
+      dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
 ```
 
 `permissions:` on the calling job is required — a reusable workflow's
@@ -99,10 +101,11 @@ alone changes nothing. A repo that wants the Docker Hub push too must also:
 
 - Add `dockerhub-image: docker.io/mechubsec/<repo>` (same tags as GHCR:
   `vX.Y.Z`, `X.Y`, `latest`).
-- Add `secrets: inherit` to the calling job (or map
-  `dockerhub-username`/`dockerhub-token` explicitly) — the org-level
-  `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` secrets this depends on are set up
-  once, org-wide, not per repo.
+- Map `dockerhub-username`/`dockerhub-token` explicitly to the org-level
+  `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` secrets, as in the example above.
+  This workflow declares exactly those two secrets, so don't use
+  `secrets: inherit` here — it would pass every repo and org secret visible
+  to the calling job into this workflow, not just the two Docker Hub values.
 - Optionally set `description` for the Docker Hub repo overview, and
   `dockerhub-readme` if the repo's README isn't at the root.
 
