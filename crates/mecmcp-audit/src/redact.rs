@@ -219,6 +219,34 @@ fn escape_field(s: &str) -> String {
     out
 }
 
+/// True for the line/paragraph separators and the bidi override/isolate
+/// controls, none of which `char::is_control` covers.
+fn is_extra_line_or_bidi_control(ch: char) -> bool {
+    matches!(ch as u32, 0x2028 | 0x2029 | 0x202A..=0x202E | 0x2066..=0x2069)
+}
+
+/// Percent-encode the characters that would let a single free-text value
+/// masquerade as more than one audit line or reorder how it displays: every
+/// `char::is_control` character (notably `\n`/`\r`), the Unicode line and
+/// paragraph separators, the bidi override/isolate controls, and the escape
+/// marker itself (`%`). Unlike [`escape_field`], this leaves space, `,` and
+/// `=` untouched — callers of this function emit one value with no internal
+/// delimiter for those characters to threaten, and the field's content is
+/// prose where a space is meaningful, not structural.
+pub(crate) fn escape_control_chars(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '%' => out.push_str("%25"),
+            c if c.is_control() || is_extra_line_or_bidi_control(c) => {
+                out.push_str(&format!("%{:02X}", c as u32))
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Render the `devices` and `metadata` strings with `redaction` applied.
 /// `None` → cleartext, identical to the pre-redaction join modulo
 /// [`escape_field`]. `devices` is transformed per-name then re-joined so
@@ -474,5 +502,29 @@ mod tests {
             "devices must be pseudonymised: {d}"
         );
         assert!(!m.contains("10.0.0.1"), "host must be dropped: {m}");
+    }
+
+    #[test]
+    fn escape_control_chars_percent_encodes_newline_and_percent() {
+        assert_eq!(escape_control_chars("a\nb\rc\td%e"), "a%0Ab%0Dc%09d%25e");
+    }
+
+    #[test]
+    fn escape_control_chars_percent_encodes_line_and_paragraph_separators() {
+        assert_eq!(escape_control_chars("a\u{2028}b\u{2029}c"), "a%2028b%2029c");
+    }
+
+    #[test]
+    fn escape_control_chars_percent_encodes_bidi_controls() {
+        assert_eq!(escape_control_chars("a\u{202E}b\u{2066}c"), "a%202Eb%2066c");
+    }
+
+    #[test]
+    fn escape_control_chars_leaves_space_comma_and_equals_unchanged() {
+        assert_eq!(
+            escape_control_chars("a, b=c d"),
+            "a, b=c d",
+            "these fields carry prose, not delimited structure"
+        );
     }
 }
