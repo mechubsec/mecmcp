@@ -8,7 +8,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-mecmcp-audit = { version = "0.26.1", path = "../mecmcp-audit" }
+mecmcp-audit = { version = "0.27.0", path = "../mecmcp-audit" }
 async-trait  = { workspace = true }
 hex          = "0.4"
 serde        = { workspace = true }
@@ -20,8 +20,8 @@ getrandom    = { workspace = true }
 tokio        = { version = "1", features = ["sync", "macros", "rt", "time"] }
 tokio-util   = { version = "0.7" }
 tempfile     = { workspace = true }
-mecmcp-secret = { version = "0.26.1", path = "../mecmcp-secret" }
-mecmcp-redact = { version = "0.26.1", path = "../mecmcp-redact" }
+mecmcp-secret = { version = "0.27.0", path = "../mecmcp-secret" }
+mecmcp-redact = { version = "0.27.0", path = "../mecmcp-redact" }
 rustix       = { workspace = true }
 # Reporting only: the one place an evidence write can fail after the device has
 # already acted, where refusing is impossible and silence is unacceptable.
