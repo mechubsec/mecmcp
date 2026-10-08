@@ -207,17 +207,16 @@ fn push_percent_encoded(out: &mut String, ch: char) {
     }
 }
 
-/// Percent-encode only the characters that would be read as record
-/// structure once the value is joined into the rendered output, given
-/// `structural`, the one character this field's join relies on (`,` for
-/// the comma-joined device list, `=` for metadata `k=v` pairs). Every
-/// other character, including plain spaces, passes through unchanged, so
-/// well-formed values render identically to before this escaping existed.
-fn escape_field(s: &str, structural: char) -> String {
+/// Percent-encode only the characters that are structural in the rendered
+/// audit line, given `structural`, the set this field's join and the
+/// enclosing tracing line depend on. Every other character passes through
+/// unchanged, so well-formed values (ASCII alphanumeric plus `_.-` for
+/// device names) render identically to before this escaping existed.
+fn escape_field(s: &str, structural: &[char]) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         let is_line_separator = matches!(ch, '\u{2028}' | '\u{2029}');
-        if ch == structural || ch == '%' || ch.is_control() || is_line_separator {
+        if structural.contains(&ch) || ch == '%' || ch.is_control() || is_line_separator {
             push_percent_encoded(&mut out, ch);
         } else {
             out.push(ch);
@@ -240,12 +239,12 @@ pub fn render(
     let Some(r) = redaction else {
         let devices = devices
             .iter()
-            .map(|d| escape_field(d, ','))
+            .map(|d| escape_field(d, &[',', ' ', '=', '"']))
             .collect::<Vec<_>>()
             .join(",");
         let metadata = metadata
             .iter()
-            .map(|(k, v)| format!("{k}={}", escape_field(&v.to_string(), '=')))
+            .map(|(k, v)| format!("{k}={}", escape_field(&v.to_string(), &['='])))
             .collect::<Vec<_>>()
             .join(" ");
         return (devices, metadata);
@@ -253,14 +252,14 @@ pub fn render(
     let devices = devices
         .iter()
         .filter_map(|name| r.apply("devices", name))
-        .map(|rendered| escape_field(&rendered, ','))
+        .map(|rendered| escape_field(&rendered, &[',', ' ', '=', '"']))
         .collect::<Vec<_>>()
         .join(",");
     let metadata = metadata
         .iter()
         .filter_map(|(k, v)| {
             r.apply(k, &v.to_string())
-                .map(|rendered| format!("{k}={}", escape_field(&rendered, '=')))
+                .map(|rendered| format!("{k}={}", escape_field(&rendered, &['='])))
         })
         .collect::<Vec<_>>()
         .join(" ");
@@ -423,6 +422,28 @@ mod tests {
         // U+2028 is 3 UTF-8 bytes (E2 80 A8); each byte is percent-encoded so a
         // standard percent-decoder reconstructs the original character.
         assert_eq!(m, "command=a%E2%80%A8b");
+    }
+
+    #[test]
+    fn render_escapes_structural_characters_in_a_device_name() {
+        // A device name must not be able to introduce characters that are
+        // structural in the rendered audit line.
+        let devices = vec!["r1 authorization=allowed result=ok".to_string()];
+        let (d, _) = render(None, &devices, &[]);
+        assert!(
+            !d.contains(' ') && !d.contains('='),
+            "structural characters must not survive in the rendered devices string: {d:?}"
+        );
+    }
+
+    #[test]
+    fn render_escapes_a_quote_in_a_device_name() {
+        let devices = vec!["\"x".to_string()];
+        let (d, _) = render(None, &devices, &[]);
+        assert!(
+            !d.contains('"'),
+            "structural characters must not survive in the rendered devices string: {d:?}"
+        );
     }
 
     #[test]
