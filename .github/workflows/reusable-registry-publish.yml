@@ -1,0 +1,184 @@
+name: Reusable / publish to MCP Registry
+
+# Publishes a vendor repo's server.json to the official MCP Registry
+# (registry.modelcontextprotocol.io) after its release image has already
+# been pushed. Extracted into mecmcp (MEC-2327) so the publish step --
+# pinned mcp-publisher install, github-oidc login, server.json version
+# bump -- is defined once instead of re-implemented per repo.
+#
+# The calling job MUST grant these permissions itself -- a reusable
+# workflow's permissions can only be narrowed by the caller, never widened:
+#   permissions:
+#     contents: read
+#     id-token: write   # required for the github-oidc registry login
+#
+# This workflow re-checks the pushed tag's signature itself (mirroring
+# verify-release-tag.yml) rather than depending on that separate workflow's
+# result, because GitHub Actions has no cross-workflow `needs:` -- two
+# workflow files triggered by the same tag push have no ordering guarantee
+# between them. Callers should run this as a job in the SAME workflow file
+# that calls reusable-release-image.yml, with `needs:` on that image job,
+# so "only after the image exists" is a plain in-workflow job dependency
+# instead of a race.
+#
+# The signature check requires the triggering ref to be an actual tag, so
+# this workflow only runs for `push: tags:` events -- it has no `workflow_
+# dispatch` story, unlike reusable-release-image.yml. The published version
+# is always the one derived from that verified tag, never the caller's
+# `version` input: if the input is supplied it is checked against the tag
+# and the job fails rather than silently publishing a mismatch (MEC-2353).
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Optional release version with no leading v, e.g. 0.27.4, checked against the verified tag. The version actually written to server.json .version always comes from the tag itself, never from this input.'
+        required: false
+        type: string
+        default: ''
+      oci-image:
+        description: 'Full OCI image reference just pushed, e.g. ghcr.io/mechubsec/rustjunosmcp:0.27.4. Must end in ":<version>" matching the verified tag. Written to every server.json packages[] entry with registryType "oci".'
+        required: true
+        type: string
+      server-json-path:
+        description: 'Path to server.json, relative to the repo root.'
+        required: false
+        type: string
+        default: 'server.json'
+      mcp-publisher-version:
+        description: 'Pinned mcp-publisher release tag.'
+        required: false
+        type: string
+        default: 'v1.8.1'
+      mcp-publisher-sha256-linux-amd64:
+        description: 'Expected sha256 of mcp-publisher_linux_amd64.tar.gz for mcp-publisher-version.'
+        required: false
+        type: string
+        default: 'a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc'
+
+jobs:
+  verify-tag-signature:
+    name: git tag must be annotated and GitHub-verified
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag-name: ${{ steps.tag.outputs.name }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Resolve tag object
+        id: tag
+        run: |
+          set -euo pipefail
+          tag_name="${GITHUB_REF#refs/tags/}"
+          tag_type=$(git cat-file -t "$tag_name")
+          if [[ "$tag_type" != "tag" ]]; then
+            echo "::error::$tag_name is a lightweight tag ($tag_type object) -- release tags must be annotated and signed (git tag -s $tag_name)."
+            exit 1
+          fi
+          tag_sha=$(git rev-parse "$tag_name")
+          echo "name=$tag_name" >> "$GITHUB_OUTPUT"
+          echo "sha=$tag_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check GitHub's verification of the tag signature
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_SHA: ${{ steps.tag.outputs.sha }}
+          TAG_NAME: ${{ steps.tag.outputs.name }}
+        run: |
+          set -euo pipefail
+          verified=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_SHA}" --jq '.verification.verified')
+          if [[ "$verified" != "true" ]]; then
+            reason=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_SHA}" --jq '.verification.reason')
+            echo "::error::$TAG_NAME is not a GitHub-verified signature (reason: $reason). Registry publish refuses to run against an unsigned tag."
+            exit 1
+          fi
+          echo "$TAG_NAME: signature verified"
+
+  publish:
+    name: mcp-publisher publish
+    needs: verify-tag-signature
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install mcp-publisher (pinned, sha256-verified)
+        env:
+          MCP_PUBLISHER_VERSION: ${{ inputs.mcp-publisher-version }}
+          EXPECTED_SHA256: ${{ inputs.mcp-publisher-sha256-linux-amd64 }}
+        run: |
+          set -euo pipefail
+          archive="mcp-publisher_linux_amd64.tar.gz"
+          url="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/${archive}"
+          curl -sSL -o "$archive" "$url"
+          actual_sha256=$(sha256sum "$archive" | cut -d' ' -f1)
+          if [[ "$actual_sha256" != "$EXPECTED_SHA256" ]]; then
+            echo "::error::mcp-publisher ${MCP_PUBLISHER_VERSION} sha256 mismatch: expected ${EXPECTED_SHA256}, got ${actual_sha256}."
+            exit 1
+          fi
+          tar xzf "$archive" mcp-publisher
+          chmod +x mcp-publisher
+          sudo mv mcp-publisher /usr/local/bin/mcp-publisher
+
+      - name: Resolve and validate release version from the verified tag
+        id: resolved-version
+        env:
+          TAG_NAME: ${{ needs.verify-tag-signature.outputs.tag-name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          OCI_IMAGE: ${{ inputs.oci-image }}
+        run: |
+          set -euo pipefail
+          tag_version="${TAG_NAME#v}"
+          if [[ -z "$tag_version" || "$tag_version" == "$TAG_NAME" ]]; then
+            echo "::error::$TAG_NAME has no 'v' prefix; cannot derive a release version from it."
+            exit 1
+          fi
+          if [[ -n "$INPUT_VERSION" && "$INPUT_VERSION" != "$tag_version" ]]; then
+            echo "::error::inputs.version ($INPUT_VERSION) does not match the verified tag $TAG_NAME (expected $tag_version). Refusing to publish a registry entry whose version disagrees with the signed tag."
+            exit 1
+          fi
+          if [[ "$OCI_IMAGE" != *":$tag_version" ]]; then
+            echo "::error::oci-image ($OCI_IMAGE) does not end in :$tag_version, the version derived from the verified tag $TAG_NAME. Refusing to publish a server.json whose package identifier disagrees with the signed tag."
+            exit 1
+          fi
+          echo "version=$tag_version" >> "$GITHUB_OUTPUT"
+
+      - name: Set server.json version and OCI package identifier
+        env:
+          VERSION: ${{ steps.resolved-version.outputs.version }}
+          OCI_IMAGE: ${{ inputs.oci-image }}
+          SERVER_JSON_PATH: ${{ inputs.server-json-path }}
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp)
+          jq --arg version "$VERSION" --arg image "$OCI_IMAGE" '
+            .version = $version
+            | .packages |= map(if .registryType == "oci" then .identifier = $image else . end)
+          ' "$SERVER_JSON_PATH" > "$tmp"
+          mv "$tmp" "$SERVER_JSON_PATH"
+
+      - name: Validate server.json
+        env:
+          SERVER_JSON_PATH: ${{ inputs.server-json-path }}
+        run: mcp-publisher validate "$SERVER_JSON_PATH"
+
+      - name: Log in via GitHub Actions OIDC
+        run: mcp-publisher login github-oidc
+
+      - name: Publish to the MCP Registry
+        env:
+          SERVER_JSON_PATH: ${{ inputs.server-json-path }}
+        run: mcp-publisher publish "$SERVER_JSON_PATH"
