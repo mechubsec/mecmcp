@@ -26,7 +26,7 @@ tarball artifact shape.
 
 ## What this repo provides
 
-Two reusable workflows (`workflow_call`), both under
+Reusable workflows (`workflow_call`), all under
 `.github/workflows/` in `mecmcp`:
 
 - **`reusable-release-image.yml`** — SBOM (CycloneDX via `cargo-cyclonedx`,
@@ -46,6 +46,10 @@ Two reusable workflows (`workflow_call`), both under
   the tag push) and this one (triggered by `release: published`) are
   independent events with no ordering guarantee between them (MEC-2133).
   Mirrors rustjunosmcp's `release-sbom.yml`.
+- **`reusable-registry-publish.yml`** — publishes `server.json` to the
+  official MCP Registry via a pinned, sha256-verified `mcp-publisher` and
+  `login github-oidc`, after re-verifying the pushed tag's GitHub
+  signature itself (MEC-2327).
 
 Both pin every third-party action to a commit SHA. The SHAs used are the
 ones already validated in production by rustpanosmcp, rustunifimcp,
@@ -86,8 +90,8 @@ jobs:
       id-token: write
     uses: mechubsec/mecmcp/.github/workflows/reusable-release-image.yml@v0.8.1
     with:
-      image: ghcr.io/mechubsec/rust-junosmcp
-      dockerhub-image: docker.io/mechubsec/rust-junosmcp
+      image: ghcr.io/mechubsec/rustjunosmcp
+      dockerhub-image: docker.io/mechub/rustjunosmcp
       description: 'Junos/SRX MCP server'
       version: ${{ github.event.inputs.version }}
       ref: ${{ github.event.inputs.ref }}
@@ -106,7 +110,7 @@ the caller must grant `packages: write` and `id-token: write` itself.
 `dockerhub-image` is opt-in and empty by default, so adding the pin bump
 alone changes nothing. A repo that wants the Docker Hub push too must also:
 
-- Add `dockerhub-image: docker.io/mechubsec/<repo>` (same tags as GHCR:
+- Add `dockerhub-image: docker.io/mechub/<repo>` (same tags as GHCR:
   `vX.Y.Z`, `X.Y`, `latest`).
 - Map `dockerhub-username`/`dockerhub-token` explicitly to the org-level
   `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` secrets, as in the example above.
@@ -156,7 +160,7 @@ jobs:
       id-token: write
     uses: mechubsec/mecmcp/.github/workflows/reusable-attest-release-sbom.yml@<mecmcp-ref>
     with:
-      image: ghcr.io/mechubsec/rust-junosmcp
+      image: ghcr.io/mechubsec/rustjunosmcp
       cargo-manifest-path: rust-junosmcp/Cargo.toml
       sbom-file: rust-junosmcp/rust-junosmcp.cdx.json
 ```
@@ -169,6 +173,90 @@ to an existing tag like the other two workflows' examples above.
 binary actually ships in the image, not the workspace root — `cargo
 cyclonedx` has no per-package flag, so it writes one `.cdx.json` per member
 and only one of them is the SBOM that belongs attested on the image.
+
+### MCP Registry publish (MEC-2327)
+
+`reusable-registry-publish.yml` publishes a repo's `server.json` to the
+official MCP Registry after the release image has already been pushed. It
+installs a pinned, sha256-verified `mcp-publisher`, logs in with
+`mcp-publisher login github-oidc` (no stored token — the registry grants
+`io.github.<owner>/*` to a workflow run in that owner's repo), writes the
+release version and the just-pushed image reference into `server.json`,
+then runs `mcp-publisher publish`.
+
+Unlike the other reusable workflows here, this one re-verifies the pushed
+tag's GitHub signature itself (same check as `verify-release-tag.yml`)
+rather than relying on that separate workflow's result — two workflow
+files triggered by the same tag push have no `needs:`-style ordering
+between them. That signature check needs the triggering ref to be a real
+tag, so this job only supports `push: tags:`, not `workflow_dispatch` — a
+caller whose combined release workflow also accepts `workflow_dispatch`
+for the image job (as the image-release example above does) must guard
+`registry-publish` with `if: startsWith(github.ref, 'refs/tags/')` so a
+manual dispatch skips it instead of failing the signature check against a
+branch ref.
+
+The version written to `server.json` always comes from the verified tag
+itself, never from the `version` input — the workflow fails the job if a
+supplied `version` or the `oci-image` tag disagrees with it. Call this job
+from the SAME workflow file that calls `reusable-release-image.yml`, with
+`needs:` on that image job, so the registry publish only ever runs after
+the image it references exists:
+
+```yaml
+jobs:
+  # github.ref_name on a tag push is the tag itself (e.g. `v0.27.4`), but
+  # server.json and the image tag both use the version with no leading
+  # `v` -- resolve it once here instead of repeating the strip in every
+  # `with:` block below.
+  resolve-version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Strip leading v from the tag
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: resolve-version
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: mechubsec/mecmcp/.github/workflows/reusable-release-image.yml@<mecmcp-ref>
+    with:
+      image: ghcr.io/mechubsec/rustjunosmcp
+      version: ${{ needs.resolve-version.outputs.version }}
+
+  registry-publish:
+    needs: [resolve-version, release]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: read
+      id-token: write
+    uses: mechubsec/mecmcp/.github/workflows/reusable-registry-publish.yml@<mecmcp-ref>
+    with:
+      oci-image: ghcr.io/mechubsec/rustjunosmcp:${{ needs.resolve-version.outputs.version }}
+```
+
+`registry-publish` lists `resolve-version` in its own `needs:` — GitHub
+Actions only exposes `outputs` from a job's *direct* dependencies, and its
+`oci-image` reads `needs.resolve-version.outputs.version`, so depending on
+`release` alone left that value empty. `registry-publish` is guarded with
+`if: startsWith(github.ref, 'refs/tags/')` so a `workflow_dispatch` run (if
+the caller's `on:` adds one for manual image builds, as the image-release
+example above does) skips straight past the tag signature check instead of
+failing it against a branch ref; `resolve-version` carries no such guard, so
+a manual dispatch still resolves a (branch-ref) version and `release` still
+runs — only the registry publish is skipped. `version` is passed explicitly
+here, computed from the tag — `reusable-registry-publish.yml` checks it
+against the tag it re-verifies itself and fails the job if they disagree, so
+this is defense in depth, not the workflow's only check.
+
+`reusable-registry-publish.yml` is new in this PR, so `<mecmcp-ref>` has to
+be the first mecmcp tag cut after this merges, same caveat as
+`reusable-attest-release-sbom.yml` above.
 
 ## Reference migration: rustjunosmcp
 
