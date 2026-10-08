@@ -197,20 +197,55 @@ fn hmac_hex(key: &[u8], msg: &[u8]) -> String {
     out
 }
 
+/// Percent-encode a single character as its UTF-8 bytes, so a standard
+/// percent-decoder reconstructs the original scalar value rather than a
+/// code-point number that happens to share digits with different bytes.
+fn push_percent_encoded(out: &mut String, ch: char) {
+    let mut buf = [0u8; 4];
+    for byte in ch.encode_utf8(&mut buf).as_bytes() {
+        out.push_str(&format!("%{byte:02X}"));
+    }
+}
+
+/// Percent-encode only the characters that would be read as record
+/// structure once the value is joined into the rendered output, given
+/// `structural`, the one character this field's join relies on (`,` for
+/// the comma-joined device list, `=` for metadata `k=v` pairs). Every
+/// other character, including plain spaces, passes through unchanged, so
+/// well-formed values render identically to before this escaping existed.
+fn escape_field(s: &str, structural: char) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        let is_line_separator = matches!(ch, '\u{2028}' | '\u{2029}');
+        if ch == structural || ch == '%' || ch.is_control() || is_line_separator {
+            push_percent_encoded(&mut out, ch);
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// Render the `devices` and `metadata` strings with `redaction` applied.
-/// `None` → cleartext, identical to the pre-redaction join. `devices` is
-/// transformed per-name then re-joined so multi-device lines stay
-/// correlatable; dropped device names are omitted.
+/// `None` → cleartext, identical to the pre-redaction join modulo
+/// field escaping. `devices` is transformed per-name then re-joined so
+/// multi-device lines stay correlatable; dropped device names are omitted.
+/// Every caller-controlled value is encoded immediately before it is
+/// joined, hardening the rendered record's field encoding.
 pub fn render(
     redaction: Option<&AuditRedaction>,
     devices: &[String],
     metadata: &[(&'static str, AuditValue)],
 ) -> (String, String) {
     let Some(r) = redaction else {
-        let devices = devices.join(",");
+        let devices = devices
+            .iter()
+            .map(|d| escape_field(d, ','))
+            .collect::<Vec<_>>()
+            .join(",");
         let metadata = metadata
             .iter()
-            .map(|(k, v)| format!("{k}={v}"))
+            .map(|(k, v)| format!("{k}={}", escape_field(&v.to_string(), '=')))
             .collect::<Vec<_>>()
             .join(" ");
         return (devices, metadata);
@@ -218,13 +253,14 @@ pub fn render(
     let devices = devices
         .iter()
         .filter_map(|name| r.apply("devices", name))
+        .map(|rendered| escape_field(&rendered, ','))
         .collect::<Vec<_>>()
         .join(",");
     let metadata = metadata
         .iter()
         .filter_map(|(k, v)| {
             r.apply(k, &v.to_string())
-                .map(|rendered| format!("{k}={rendered}"))
+                .map(|rendered| format!("{k}={}", escape_field(&rendered, '=')))
         })
         .collect::<Vec<_>>()
         .join(" ");
@@ -331,6 +367,62 @@ mod tests {
         let (d, m) = render(None, &devices, &meta);
         assert_eq!(d, "r1,r2");
         assert_eq!(m, "host=1.2.3.4 count=3");
+    }
+
+    #[test]
+    fn render_escapes_a_newline_embedded_in_a_device_name() {
+        let devices = vec!["r1\nother=value".to_string(), "r2".to_string()];
+        let (d, _) = render(None, &devices, &[]);
+        assert_eq!(
+            d.lines().count(),
+            1,
+            "an embedded newline must not start a second line: {d:?}"
+        );
+        assert!(
+            !d.contains('\n'),
+            "the raw newline byte must not survive rendering: {d:?}"
+        );
+        // Still exactly two devices, split on the (now unambiguous) comma.
+        assert_eq!(d.split(',').count(), 2, "got {d:?}");
+    }
+
+    #[test]
+    fn render_escapes_an_embedded_equals_in_a_metadata_value() {
+        let meta = vec![(
+            "command",
+            AuditValue::from("show version, extra_field=injected host=evil"),
+        )];
+        let (_, m) = render(None, &[], &meta);
+        // No raw `=` survives inside the value, so a consumer splitting on it —
+        // unaware of any escaping scheme — cannot be misled into seeing extra
+        // metadata pairs. Spaces and commas are left alone: they carry no
+        // structural meaning for a space-joined `k=v` list.
+        let tokens_with_raw_eq = m.split(' ').filter(|p| p.contains('=')).count();
+        assert_eq!(
+            tokens_with_raw_eq, 1,
+            "an embedded '=' must not introduce a second key=value pair: {m:?}"
+        );
+        assert!(m.starts_with("command="), "got {m:?}");
+        assert!(
+            !m.contains("extra_field=injected") && !m.contains("host=evil"),
+            "embedded key=value text must not be interpretable as a new pair: {m:?}"
+        );
+    }
+
+    #[test]
+    fn render_leaves_a_well_formed_multi_word_value_byte_identical() {
+        let meta = vec![("command", AuditValue::from("show version"))];
+        let (_, m) = render(None, &[], &meta);
+        assert_eq!(m, "command=show version");
+    }
+
+    #[test]
+    fn render_percent_encodes_utf8_bytes_of_a_line_separator() {
+        let meta = vec![("command", AuditValue::from("a\u{2028}b"))];
+        let (_, m) = render(None, &[], &meta);
+        // U+2028 is 3 UTF-8 bytes (E2 80 A8); each byte is percent-encoded so a
+        // standard percent-decoder reconstructs the original character.
+        assert_eq!(m, "command=a%E2%80%A8b");
     }
 
     #[test]
