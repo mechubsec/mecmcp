@@ -91,7 +91,7 @@ jobs:
     uses: mechubsec/mecmcp/.github/workflows/reusable-release-image.yml@v0.8.1
     with:
       image: ghcr.io/mechubsec/rustjunosmcp
-      dockerhub-image: docker.io/mechub/rustjunosmcp
+      dockerhub-image: docker.io/mechub/rustjunosmcp  # linux/amd64 only
       description: 'Junos/SRX MCP server'
       version: ${{ github.event.inputs.version }}
       ref: ${{ github.event.inputs.ref }}
@@ -111,7 +111,8 @@ the caller must grant `packages: write` and `id-token: write` itself.
 alone changes nothing. A repo that wants the Docker Hub push too must also:
 
 - Add `dockerhub-image: docker.io/mechub/<repo>` (same tags as GHCR:
-  `vX.Y.Z`, `X.Y`, `latest`).
+  `vX.Y.Z`, `X.Y`, `latest`). Docker Hub images are linux/amd64 only, so
+  keep `platforms: linux/amd64` for any caller that sets `dockerhub-image`.
 - Map `dockerhub-username`/`dockerhub-token` explicitly to the org-level
   `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` secrets, as in the example above.
   This workflow declares exactly those two secrets, so don't use

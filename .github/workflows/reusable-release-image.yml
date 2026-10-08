@@ -34,7 +34,7 @@ on:
         required: true
         type: string
       dockerhub-image:
-        description: 'Full Docker Hub image path, e.g. docker.io/mechubsec/rust-junosmcp. Empty skips the Docker Hub push entirely.'
+        description: 'Full Docker Hub image path, e.g. docker.io/mechub/rust-junosmcp. Docker Hub images are linux/amd64 only, so callers that set this must keep `platforms: linux/amd64`. Empty skips the Docker Hub push entirely.'
         required: false
         type: string
         default: ''
@@ -64,7 +64,7 @@ on:
         type: string
         default: '.'
       platforms:
-        description: 'Comma-separated platform list for docker/build-push-action, e.g. linux/amd64,linux/arm64'
+        description: 'Comma-separated platform list for docker/build-push-action, e.g. linux/amd64,linux/arm64. GHCR can be multi-arch; Docker Hub is pushed from the same list, so callers that set dockerhub-image must keep this linux/amd64 only.'
         required: false
         type: string
         default: 'linux/amd64'
