@@ -1,6 +1,7 @@
 //! RAII audit guard: emits exactly one `target="audit"` event on Drop.
 
 use crate::attribution::{ActorType, Attribution, Principal};
+use crate::redact::escape_control_chars;
 use crate::schema::{AuditOutcome, AuditValue, bounded_error};
 use std::fmt::Display;
 use std::time::Instant;
@@ -167,7 +168,7 @@ impl Drop for AuditScope {
         };
         let (result, error_kind, error, reason) = match &self.outcome {
             AuditOutcome::Succeeded => ("ok", "", String::new(), ""),
-            AuditOutcome::Failed { kind, msg } => ("error", *kind, msg.clone(), ""),
+            AuditOutcome::Failed { kind, msg } => ("error", *kind, escape_control_chars(msg), ""),
             AuditOutcome::Denied { reason } => ("denied", "", String::new(), *reason),
             AuditOutcome::Unsettled => ("unsettled", "", String::new(), ""),
         };
@@ -189,20 +190,21 @@ impl Drop for AuditScope {
             .attribution
             .agent
             .as_ref()
-            .map(|a| a.model_id.as_str())
-            .unwrap_or("");
+            .map(|a| escape_control_chars(&a.model_id))
+            .unwrap_or_default();
         let session_id = self
             .attribution
             .agent
             .as_ref()
-            .map(|a| a.session_id.as_str())
-            .unwrap_or("");
+            .map(|a| escape_control_chars(&a.session_id))
+            .unwrap_or_default();
         let client_name = self
             .attribution
             .agent
             .as_ref()
             .and_then(|a| a.client_name.as_deref())
-            .unwrap_or("");
+            .map(escape_control_chars)
+            .unwrap_or_default();
         // The provider and its tier are the fields this whole mechanism exists to
         // make trustworthy. Carrying them on the Attribution but never emitting
         // them would leave every SIEM consumer with the trust marker and nothing
@@ -211,16 +213,26 @@ impl Drop for AuditScope {
             .attribution
             .agent
             .as_ref()
-            .map(|a| a.provider.as_str())
-            .unwrap_or("");
+            .map(|a| escape_control_chars(&a.provider))
+            .unwrap_or_default();
         let provider_tier = self
             .attribution
             .agent
             .as_ref()
             .map(|a| a.provider_tier.to_string())
             .unwrap_or_default();
-        let on_behalf_of = self.attribution.on_behalf_of.as_deref().unwrap_or("");
-        let change_ref = self.attribution.change_ref.as_deref().unwrap_or("");
+        let on_behalf_of = self
+            .attribution
+            .on_behalf_of
+            .as_deref()
+            .map(escape_control_chars)
+            .unwrap_or_default();
+        let change_ref = self
+            .attribution
+            .change_ref
+            .as_deref()
+            .map(escape_control_chars)
+            .unwrap_or_default();
 
         metrics::histogram!(
             duration_metric_name(),
@@ -240,8 +252,8 @@ impl Drop for AuditScope {
             model_id = %model_id,
             session_id = %session_id,
             client_name = %client_name,
-            client_version = %self.client_version.as_deref().unwrap_or(""),
-            client_call_id = %self.client_call_id.as_deref().unwrap_or(""),
+            client_version = %self.client_version.as_deref().map(escape_control_chars).unwrap_or_default(),
+            client_call_id = %self.client_call_id.as_deref().map(escape_control_chars).unwrap_or_default(),
             on_behalf_of = %on_behalf_of,
             change_ref = %change_ref,
             tool = %self.tool,
@@ -569,5 +581,70 @@ mod tests {
             out.contains("on_behalf_of=dev@example.com"),
             "on_behalf_of must flow from token entry: {out}"
         );
+    }
+
+    /// A newline embedded in any caller-asserted free-text field must not let
+    /// that field start what looks like a second, independently-parseable
+    /// audit line.
+    #[test]
+    fn newline_in_free_text_fields_does_not_split_the_audit_line() {
+        let out = run_with_capture(|| {
+            let mut attr = Attribution::stdio();
+            attr.actor_type = ActorType::Agent;
+            attr.agent = Some(AgentIdentity {
+                model_id: "claude\nsonnet".into(),
+                session_id: "sess\nabc".into(),
+                client_name: Some("mcp-client\n/1.0".into()),
+                provider: "anthro\npic".into(),
+                provider_tier: crate::Tier::Public,
+                skills_used: vec![],
+            });
+            attr.on_behalf_of = Some("alice\nbob".into());
+            attr.change_ref = Some("CHG\n0012345".into());
+            let mut a = AuditScope::new(attr, "commit_config", "commit", vec!["r1".into()]);
+            a.set_client_extras(Some("1\nX".into()), Some("call\nid".into()));
+            a.fail("device said:\nunexpected prompt");
+        });
+        assert_eq!(
+            out.lines().count(),
+            1,
+            "a caller-asserted newline must not produce a second audit line: {out:?}"
+        );
+        assert!(!out.contains("model_id=claude\nsonnet"));
+        assert!(out.contains("model_id=claude%0Asonnet"));
+        assert!(out.contains("session_id=sess%0Aabc"));
+        assert!(out.contains("client_name=mcp-client%0A/1.0"));
+        assert!(out.contains("provider=anthro%0Apic"));
+        assert!(out.contains("on_behalf_of=alice%0Abob"));
+        assert!(out.contains("change_ref=CHG%0A0012345"));
+        assert!(out.contains("client_version=1%0AX"));
+        assert!(out.contains("client_call_id=call%0Aid"));
+        assert!(out.contains("error=device said:%0Aunexpected prompt"));
+    }
+
+    /// Well-formed values with legitimate spaces render unchanged: the escape
+    /// targets control characters, not the space delimiter the text format
+    /// already uses loosely for these free-text fields.
+    #[test]
+    fn well_formed_free_text_values_render_unchanged() {
+        let out = run_with_capture(|| {
+            let mut attr = Attribution::stdio();
+            attr.actor_type = ActorType::Agent;
+            attr.agent = Some(AgentIdentity {
+                model_id: "claude-sonnet-4-5".into(),
+                session_id: "sess-abc".into(),
+                client_name: Some("my client app".into()),
+                provider: "anthropic".into(),
+                provider_tier: crate::Tier::Public,
+                skills_used: vec![],
+            });
+            attr.on_behalf_of = Some("alice smith".into());
+            attr.change_ref = Some("CHG0012345".into());
+            let mut a = AuditScope::new(attr, "commit_config", "commit", vec!["r1".into()]);
+            a.fail("device returned a timeout after 30 seconds");
+        });
+        assert!(out.contains("client_name=my client app"));
+        assert!(out.contains("on_behalf_of=alice smith"));
+        assert!(out.contains("error=device returned a timeout after 30 seconds"));
     }
 }
