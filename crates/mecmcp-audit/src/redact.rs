@@ -209,15 +209,19 @@ fn push_percent_encoded(out: &mut String, ch: char) {
 
 /// Percent-encode only the characters that would be read as record
 /// structure once the value is joined into the rendered output, given
-/// `structural`, the one character this field's join relies on (`,` for
-/// the comma-joined device list, `=` for metadata `k=v` pairs). Every
-/// other character, including plain spaces, passes through unchanged, so
-/// well-formed values render identically to before this escaping existed.
-fn escape_field(s: &str, structural: char) -> String {
+/// `structural`, the characters this field's join and the enclosing
+/// tracing line rely on (`,` for the comma-joined device list plus
+/// ` ` and `=`, since an unescaped device name can otherwise forge a
+/// top-level `key=value` token in text-format output; `=` alone for
+/// metadata `k=v` pairs, which are already space-separated by
+/// construction). Every other character passes through unchanged, so
+/// well-formed values (ASCII alphanumeric plus `_.-` for device names)
+/// render identically to before this escaping existed.
+fn escape_field(s: &str, structural: &[char]) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         let is_line_separator = matches!(ch, '\u{2028}' | '\u{2029}');
-        if ch == structural || ch == '%' || ch.is_control() || is_line_separator {
+        if structural.contains(&ch) || ch == '%' || ch.is_control() || is_line_separator {
             push_percent_encoded(&mut out, ch);
         } else {
             out.push(ch);
@@ -240,12 +244,12 @@ pub fn render(
     let Some(r) = redaction else {
         let devices = devices
             .iter()
-            .map(|d| escape_field(d, ','))
+            .map(|d| escape_field(d, &[',', ' ', '=']))
             .collect::<Vec<_>>()
             .join(",");
         let metadata = metadata
             .iter()
-            .map(|(k, v)| format!("{k}={}", escape_field(&v.to_string(), '=')))
+            .map(|(k, v)| format!("{k}={}", escape_field(&v.to_string(), &['='])))
             .collect::<Vec<_>>()
             .join(" ");
         return (devices, metadata);
@@ -253,14 +257,14 @@ pub fn render(
     let devices = devices
         .iter()
         .filter_map(|name| r.apply("devices", name))
-        .map(|rendered| escape_field(&rendered, ','))
+        .map(|rendered| escape_field(&rendered, &[',', ' ', '=']))
         .collect::<Vec<_>>()
         .join(",");
     let metadata = metadata
         .iter()
         .filter_map(|(k, v)| {
             r.apply(k, &v.to_string())
-                .map(|rendered| format!("{k}={}", escape_field(&rendered, '=')))
+                .map(|rendered| format!("{k}={}", escape_field(&rendered, &['='])))
         })
         .collect::<Vec<_>>()
         .join(" ");
@@ -423,6 +427,19 @@ mod tests {
         // U+2028 is 3 UTF-8 bytes (E2 80 A8); each byte is percent-encoded so a
         // standard percent-decoder reconstructs the original character.
         assert_eq!(m, "command=a%E2%80%A8b");
+    }
+
+    #[test]
+    fn render_escapes_space_and_equals_in_a_device_name() {
+        // A device name containing a space and '=' must not be able to forge
+        // extra top-level key=value tokens ahead of the real fields once the
+        // tracing fmt layer writes this devices string unquoted in text format.
+        let devices = vec!["r1 authorization=allowed result=ok".to_string()];
+        let (d, _) = render(None, &devices, &[]);
+        assert!(
+            !d.contains(' ') && !d.contains('='),
+            "raw space or '=' must not survive in the rendered devices string: {d:?}"
+        );
     }
 
     #[test]
