@@ -229,6 +229,20 @@ impl Drop for AuditScope {
         )
         .record(elapsed.as_secs_f64());
 
+        // client_name/client_version/client_call_id are client-asserted (see
+        // the module doc on `Attribution`) and `error` carries a bounded
+        // Display of a handler error that may itself echo caller-controlled
+        // input. None of them pass through `redact::render`, since they
+        // aren't part of the `devices`/`metadata` join, so they need their
+        // own escaping to keep a crafted value from corrupting or spoofing
+        // this single-line audit record.
+        let client_name = crate::redact::escape_control_chars(client_name);
+        let client_version =
+            crate::redact::escape_control_chars(self.client_version.as_deref().unwrap_or(""));
+        let client_call_id =
+            crate::redact::escape_control_chars(self.client_call_id.as_deref().unwrap_or(""));
+        let error = crate::redact::escape_control_chars(&error);
+
         tracing::info!(
             target: "audit",
             request_id = %self.attribution.request_id,
@@ -240,8 +254,8 @@ impl Drop for AuditScope {
             model_id = %model_id,
             session_id = %session_id,
             client_name = %client_name,
-            client_version = %self.client_version.as_deref().unwrap_or(""),
-            client_call_id = %self.client_call_id.as_deref().unwrap_or(""),
+            client_version = %client_version,
+            client_call_id = %client_call_id,
             on_behalf_of = %on_behalf_of,
             change_ref = %change_ref,
             tool = %self.tool,
@@ -481,6 +495,65 @@ mod tests {
         assert!(
             out.contains("client_call_id=toolu_011on2R3XWgvKmG2WRChDa5P"),
             "per-call id must be emitted: {out}"
+        );
+    }
+
+    /// A client-asserted field embedding a raw newline must not be able to
+    /// start a second, unattributed line in the audit record, and a client
+    /// error message must not either.
+    #[test]
+    fn client_asserted_fields_escape_an_embedded_newline() {
+        let out = run_with_capture(|| {
+            let mut attr = Attribution::stdio();
+            attr.actor_type = ActorType::Agent;
+            attr.agent = Some(AgentIdentity {
+                model_id: "claude-sonnet-4-5".into(),
+                session_id: "sess-abc".into(),
+                client_name: Some("evil\ntarget=\"root\" result=\"ok\"".into()),
+                provider: "anthropic".into(),
+                provider_tier: crate::Tier::Public,
+                skills_used: vec![],
+            });
+            let mut a = AuditScope::new(attr, "commit_config", "commit", vec![]);
+            a.set_client_extras(
+                Some("1\nspoofed=true".into()),
+                Some("id\nspoofed=true".into()),
+            );
+            a.fail("device said: boom\nspoofed=true");
+        });
+        assert_eq!(
+            out.lines().count(),
+            1,
+            "an embedded newline in any client-asserted field must not start a second line: {out:?}"
+        );
+        assert!(
+            !out.contains('\n'),
+            "the raw newline byte must not survive in any client-asserted field: {out:?}"
+        );
+    }
+
+    /// A bidi override character in a client-asserted field must not survive,
+    /// since it could visually reorder or hide the rest of the audit line in
+    /// a terminal or log viewer.
+    #[test]
+    fn client_asserted_field_escapes_a_bidi_override() {
+        let out = run_with_capture(|| {
+            let mut attr = Attribution::stdio();
+            attr.actor_type = ActorType::Agent;
+            attr.agent = Some(AgentIdentity {
+                model_id: "m".into(),
+                session_id: "s".into(),
+                client_name: Some("safe\u{202E}reversed".into()),
+                provider: "anthropic".into(),
+                provider_tier: crate::Tier::Public,
+                skills_used: vec![],
+            });
+            let mut a = AuditScope::new(attr, "commit_config", "commit", vec![]);
+            a.succeed();
+        });
+        assert!(
+            !out.contains('\u{202E}'),
+            "the raw bidi override character must not survive: {out:?}"
         );
     }
 

@@ -207,22 +207,46 @@ fn push_percent_encoded(out: &mut String, ch: char) {
     }
 }
 
-/// Percent-encode only the characters that are structural in the rendered
+/// Characters that are always unsafe to emit raw into a line-oriented,
+/// tracing-formatted audit record, independent of any per-field structural
+/// set: C0/C1 control characters (would break a single-line record), the
+/// Unicode line/paragraph separators (not caught by `char::is_control`),
+/// the bidi override/isolate format characters (can visually reorder or
+/// hide the rest of the line in a terminal or log viewer), and `%` itself
+/// (so a standard percent-decoder can unambiguously reconstruct the
+/// original value).
+fn is_always_escaped(ch: char) -> bool {
+    ch.is_control()
+        || ch == '%'
+        || matches!(ch, '\u{2028}' | '\u{2029}')
+        || matches!(ch, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Percent-encode the characters that are structural in the rendered
 /// audit line, given `structural`, the set this field's join and the
-/// enclosing tracing line depend on. Every other character passes through
-/// unchanged, so well-formed values (ASCII alphanumeric plus `_.-` for
-/// device names) render identically to before this escaping existed.
+/// enclosing tracing line depend on, plus everything `is_always_escaped`
+/// covers. Every other character passes through unchanged, so well-formed
+/// values (ASCII alphanumeric plus `_.-` for device names) render
+/// identically to before this escaping existed.
 fn escape_field(s: &str, structural: &[char]) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
-        let is_line_separator = matches!(ch, '\u{2028}' | '\u{2029}');
-        if structural.contains(&ch) || ch == '%' || ch.is_control() || is_line_separator {
+        if structural.contains(&ch) || is_always_escaped(ch) {
             push_percent_encoded(&mut out, ch);
         } else {
             out.push(ch);
         }
     }
     out
+}
+
+/// Percent-encode a single-value field with no delimiter structure of its
+/// own (e.g. a client-asserted attribution string or a bounded error
+/// message) against everything `is_always_escaped` covers. Used for audit
+/// fields that `render` doesn't reach because they aren't part of the
+/// `devices`/`metadata` join.
+pub(crate) fn escape_control_chars(s: &str) -> String {
+    escape_field(s, &[])
 }
 
 /// Render the `devices` and `metadata` strings with `redaction` applied.
@@ -432,6 +456,37 @@ mod tests {
             !d.contains(' ') && !d.contains('='),
             "structural characters must not survive in the rendered devices string: {d:?}"
         );
+    }
+
+    #[test]
+    fn render_escapes_a_bidi_override_in_a_device_name() {
+        let devices = vec!["safe\u{202E}reversed".to_string()];
+        let (d, _) = render(None, &devices, &[]);
+        assert!(
+            !d.contains('\u{202E}'),
+            "a bidi override character must not survive in the rendered devices string: {d:?}"
+        );
+    }
+
+    #[test]
+    fn escape_control_chars_leaves_a_well_formed_value_untouched() {
+        assert_eq!(
+            escape_control_chars("mcp-client/1.0, build 2"),
+            "mcp-client/1.0, build 2"
+        );
+    }
+
+    #[test]
+    fn escape_control_chars_escapes_an_embedded_newline() {
+        let out = escape_control_chars("a\nb");
+        assert!(!out.contains('\n'), "got {out:?}");
+        assert_eq!(out, "a%0Ab");
+    }
+
+    #[test]
+    fn escape_control_chars_escapes_a_bidi_isolate() {
+        let out = escape_control_chars("a\u{2066}b");
+        assert!(!out.contains('\u{2066}'), "got {out:?}");
     }
 
     #[test]
