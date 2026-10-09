@@ -21,12 +21,12 @@ Every mechub MCP server is built on it:
 
 | Server | Vendor | Device transport | Latest release | Status |
 |---|---|---|---|---|
-| [`rustjunosmcp`](https://github.com/mechubsec/rustjunosmcp) | Juniper Junos / SRX | NETCONF over SSH (`rustnetconf`) | [v0.27.3](https://github.com/mechubsec/rustjunosmcp/releases/tag/v0.27.3) | ![status](https://img.shields.io/badge/status-beta-yellow) |
+| [`rustjunosmcp`](https://github.com/mechubsec/rustjunosmcp) | Juniper Junos / SRX | NETCONF over SSH (`rustnetconf`) | [v0.27.5](https://github.com/mechubsec/rustjunosmcp/releases/tag/v0.27.5) | ![status](https://img.shields.io/badge/status-beta-yellow) |
 | [`rustpanosmcp`](https://github.com/mechubsec/rustpanosmcp) | Palo Alto PAN-OS | HTTPS XML-API | [v0.16.0](https://github.com/mechubsec/rustpanosmcp/releases/tag/v0.16.0) | ![status](https://img.shields.io/badge/status-beta-yellow) |
-| [`rustproxmoxmcp`](https://github.com/mechubsec/rustproxmoxmcp) | Proxmox VE | HTTPS REST API | [v0.11.1](https://github.com/mechubsec/rustproxmoxmcp/releases/tag/v0.11.1) | ![status](https://img.shields.io/badge/status-beta-yellow) |
+| [`rustproxmoxmcp`](https://github.com/mechubsec/rustproxmoxmcp) | Proxmox VE | HTTPS REST API | [v0.11.0](https://github.com/mechubsec/rustproxmoxmcp/releases/tag/v0.11.0) | ![status](https://img.shields.io/badge/status-beta-yellow) |
 | [`rustsdcmcp`](https://github.com/mechubsec/rustsdcmcp) | Juniper Security Director Cloud | HTTPS REST API | [v0.1.0](https://github.com/mechubsec/rustsdcmcp/releases/tag/v0.1.0) | ![status](https://img.shields.io/badge/status-alpha-orange) |
 | [`rustmistmcp`](https://github.com/mechubsec/rustmistmcp) | HPE Juniper Mist | HTTPS REST API | [v0.3.2](https://github.com/mechubsec/rustmistmcp/releases/tag/v0.3.2) | ![status](https://img.shields.io/badge/status-alpha-orange) |
-| [`rustunifimcp`](https://github.com/mechubsec/rustunifimcp) | Ubiquiti UniFi Network | HTTPS REST API | [v0.6.0](https://github.com/mechubsec/rustunifimcp/releases/tag/v0.6.0) | ![status](https://img.shields.io/badge/status-alpha-orange) |
+| [`rustunifimcp`](https://github.com/mechubsec/rustunifimcp) | Ubiquiti UniFi Network | HTTPS REST API | [v0.6.1](https://github.com/mechubsec/rustunifimcp/releases/tag/v0.6.1) | ![status](https://img.shields.io/badge/status-alpha-orange) |
 | [`rustfortimcp`](https://github.com/mechubsec/rustfortimcp) | Fortinet FortiGate | HTTPS REST API | unreleased | ![status](https://img.shields.io/badge/status-planned-lightgrey) |
 | [`rustopnsmcp`](https://github.com/mechubsec/rustopnsmcp) | OPNsense | HTTPS REST API | unreleased | ![status](https://img.shields.io/badge/status-planned-lightgrey) |
 
@@ -61,7 +61,7 @@ no code changes. Bump **both** strings on each entry — a `version = "0.9.x"`
 requirement does not accept `0.10.0`, so changing only `tag = "v0.9.1"` leaves
 the dependency unresolvable.
 
-**No data migration:** a live survey of the Junos and PAN-OS production guests,
+**No data migration:** a live survey of the Junos and PAN-OS lab guests,
 The SDC guest and both rehearsal rigs found 28
 change sets and **zero** waiver records, so changing the waiver digest invalidates
 nothing that exists. The neighbouring approval digest was deliberately left alone
@@ -170,7 +170,7 @@ off-loopback.
 - **Off-loopback listeners now require `--allowed-origin`.** This is a behavior
   change: an empty Origin allowlist is currently valid and disables Origin
   checking by design. Fleet survey (2026-08-13) found exactly one affected
-  deployment. **The Junos production guest (`rust-junosmcp`) binds `0.0.0.0` with `--allowed-host`
+  deployment. **The Junos lab guest (`rust-junosmcp`) binds `0.0.0.0` with `--allowed-host`
   and no `--allowed-origin`, and will be refused at startup on 0.9.0.** Add
   `--allowed-origin` to its drop-in override before installing the 0.9.0 binary.
   It is tagged `protected`: snapshot it first. The PAN-OS guests
