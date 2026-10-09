@@ -26,15 +26,15 @@ http-body-util = "0.1"
 # straight into `IpNet` instead of hand-rolling a `FromStr` wrapper.
 ipnet       = { version = "2", features = ["serde"] }
 chrono      = { workspace = true }
-mecmcp-audit = { version = "0.27.0", path = "../mecmcp-audit" }
-mecmcp-auth = { version = "0.27.0", path = "../mecmcp-auth" }
+mecmcp-audit = { version = "0.28.0", path = "../mecmcp-audit" }
+mecmcp-auth = { version = "0.28.0", path = "../mecmcp-auth" }
 # Optional: only the `verified-approver` feature needs a JWT/JWKS verifier.
 # Every server links this crate, so a normal dependency here would put
 # `mecmcp-oidc`'s `reqwest`-based HTTP client (and the rustls build it
 # selects) into every build, including servers that never install the
 # `approver_assertion` step-up path. See the `verified-approver` feature
 # below.
-mecmcp-oidc = { version = "0.27.0", path = "../mecmcp-oidc", optional = true }
+mecmcp-oidc = { version = "0.28.0", path = "../mecmcp-oidc", optional = true }
 metrics     = { workspace = true }
 # metrics-exporter-prometheus must have default-features = false to avoid
 # pulling in rustls's aws-lc-rs backend via hyper-rustls, which conflicts with
@@ -107,13 +107,13 @@ pem          = "4"
 # on the normal dependency above — that ships test scaffolding in production
 # binaries and widens the attack surface for no runtime benefit. Cargo unifies
 # features per build, so `cargo test` gets it and `cargo build` does not.
-mecmcp-audit = { version = "0.27.0", path = "../mecmcp-audit", features = ["test-util"] }
+mecmcp-audit = { version = "0.28.0", path = "../mecmcp-audit", features = ["test-util"] }
 # Test-only: proves that `mecmcp-secret`'s `AuthFailureTracker::probe` — built
 # with no dependency on this crate, by closure shape alone — actually flips
 # `/readyz` when registered as a `ReadinessCheck`. Not a normal dependency:
 # `mecmcp-transport` must not depend on `mecmcp-secret` for anything but this
 # integration test (MEC-539).
-mecmcp-secret = { version = "0.27.0", path = "../mecmcp-secret" }
+mecmcp-secret = { version = "0.28.0", path = "../mecmcp-secret" }
 # Test-only: rmcp's `EventStore` is an `#[async_trait]` trait, so the fake store
 # that proves `LimitedSessionManager` forwards `event_store()` needs the macro.
 async-trait = { workspace = true }

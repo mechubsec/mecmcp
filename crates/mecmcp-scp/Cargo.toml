@@ -22,7 +22,7 @@ unwrap_used = "warn"
 async-trait   = "0.1"
 base64        = "0.23"
 hmac          = "0.13"
-mecmcp-secret = { version = "0.27.0", path = "../mecmcp-secret" }
+mecmcp-secret = { version = "0.28.0", path = "../mecmcp-secret" }
 russh         = { workspace = true }
 rustix        = { workspace = true }
 sha1          = "0.11"

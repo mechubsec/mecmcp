@@ -27,6 +27,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [0.28.0] - 2026-10-09
+
+### Added
+
+- **ci: new reusable MCP Registry publish workflow** (mecmcp#511),
+  `reusable-registry-publish.yml`. Resolves the published version from the
+  signature-verified release tag and validates the caller's OCI image
+  reference against it before publishing, rather than trusting the
+  caller's inputs independently.
+
+### Security
+
+- **mecmcp-audit: narrowed and hardened structural-character encoding in
+  rendered audit fields** (mecmcp#517, mecmcp#521). Encoding now targets
+  only characters that could be read as record structure, keeping
+  well-formed multi-word values byte-identical to the pre-encoding format.
+
+### Changed
+
+- **ci: the reusable release-image workflow's Docker Hub namespace moved
+  from `docker.io/mechubsec` to `docker.io/mechub`** (MEC-2330, mecmcp#513,
+  mecmcp#514), with an amd64-only note on Docker Hub image descriptions.
+- **docs: refreshed the README's MCP server family table** (mecmcp#505,
+  mecmcp#509, mecmcp#510, mecmcp#512, mecmcp#520, mecmcp#527) and
+  standardized its deployment wording.
+
 ## [0.27.0] - 2026-10-07
 
 ### Added

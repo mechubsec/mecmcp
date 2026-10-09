@@ -12,7 +12,7 @@ authors.workspace       = true
 workspace = true
 
 [dependencies]
-mecmcp-http = { version = "0.27.0", path = "../mecmcp-http", features = ["absolute-url"] }
+mecmcp-http = { version = "0.28.0", path = "../mecmcp-http", features = ["absolute-url"] }
 async-trait = { workspace = true }
 subtle      = { workspace = true }
 # Widely-used, actively maintained JWT crate (>200M downloads) with a built-in
