@@ -229,14 +229,24 @@ impl Drop for AuditScope {
         )
         .record(elapsed.as_secs_f64());
 
-        // client_name/client_version/client_call_id are client-asserted (see
-        // the module doc on `Attribution`) and `error` carries a bounded
-        // Display of a handler error that may itself echo caller-controlled
-        // input. None of them pass through `redact::render`, since they
-        // aren't part of the `devices`/`metadata` join, so they need their
-        // own escaping to keep a crafted value from corrupting or spoofing
-        // this single-line audit record.
+        // Every string field below other than the `&'static str` ones
+        // (request_id, caller, actor_type, token_verified_fields, tool,
+        // action, authorization, result, error_kind, reason) is either
+        // client-asserted (model_id, session_id, client_name,
+        // client_version, client_call_id, provider), carried from a token
+        // entry a handler can also overwrite per-call (on_behalf_of,
+        // change_ref), or a bounded Display of a handler error that may
+        // echo untrusted device output (error). None of them pass through
+        // `redact::render`, since they aren't part of the
+        // `devices`/`metadata` join, so they need their own escaping to
+        // keep a crafted value from corrupting or spoofing this
+        // single-line audit record.
+        let model_id = crate::redact::escape_control_chars(model_id);
+        let session_id = crate::redact::escape_control_chars(session_id);
         let client_name = crate::redact::escape_control_chars(client_name);
+        let provider = crate::redact::escape_control_chars(provider);
+        let on_behalf_of = crate::redact::escape_control_chars(on_behalf_of);
+        let change_ref = crate::redact::escape_control_chars(change_ref);
         let client_version =
             crate::redact::escape_control_chars(self.client_version.as_deref().unwrap_or(""));
         let client_call_id =
@@ -498,22 +508,25 @@ mod tests {
         );
     }
 
-    /// A client-asserted field embedding a raw newline must not be able to
-    /// start a second, unattributed line in the audit record, and a client
-    /// error message must not either.
+    /// A newline in any field `AuditScope::drop` emits other than the
+    /// `&'static str` ones must not be able to start a second, unattributed
+    /// line in the audit record. This test fails against the pre-fix code:
+    /// before escaping, each of these fields would split the record.
     #[test]
     fn client_asserted_fields_escape_an_embedded_newline() {
         let out = run_with_capture(|| {
             let mut attr = Attribution::stdio();
             attr.actor_type = ActorType::Agent;
             attr.agent = Some(AgentIdentity {
-                model_id: "claude-sonnet-4-5".into(),
-                session_id: "sess-abc".into(),
+                model_id: "model\nspoofed=true".into(),
+                session_id: "sess\nspoofed=true".into(),
                 client_name: Some("evil\ntarget=\"root\" result=\"ok\"".into()),
-                provider: "anthropic".into(),
+                provider: "anthropic\nspoofed=true".into(),
                 provider_tier: crate::Tier::Public,
                 skills_used: vec![],
             });
+            attr.on_behalf_of = Some("alice\nspoofed=true".into());
+            attr.change_ref = Some("CHG1\nspoofed=true".into());
             let mut a = AuditScope::new(attr, "commit_config", "commit", vec![]);
             a.set_client_extras(
                 Some("1\nspoofed=true".into()),
@@ -524,11 +537,11 @@ mod tests {
         assert_eq!(
             out.lines().count(),
             1,
-            "an embedded newline in any client-asserted field must not start a second line: {out:?}"
+            "an embedded newline in any of these fields must not start a second line: {out:?}"
         );
         assert!(
             !out.contains('\n'),
-            "the raw newline byte must not survive in any client-asserted field: {out:?}"
+            "the raw newline byte must not survive in any of these fields: {out:?}"
         );
     }
 
