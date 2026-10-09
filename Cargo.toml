@@ -28,7 +28,7 @@ quick-xml  = "0.42"
 # Do not relax the floor — Cargo.lock is committed, but that only pins already-resolved
 # builds; anyone who runs `cargo update` picks this floor right back up, so the bound here
 # is the real protection.
-russh      = { version = ">=0.63, <0.64", default-features = false, features = ["flate2", "aws-lc-rs"] }
+russh      = { version = ">=0.63, <0.65", default-features = false, features = ["flate2", "aws-lc-rs"] }
 rustix     = { version = "1", features = ["fs", "process"] }
 serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
