@@ -240,13 +240,13 @@ fn escape_field(s: &str, structural: &[char]) -> String {
     out
 }
 
-/// Percent-encode a single-value field with no delimiter structure of its
-/// own (e.g. a client-asserted attribution string or a bounded error
-/// message) against everything `is_always_escaped` covers. Used for audit
-/// fields that `render` doesn't reach because they aren't part of the
-/// `devices`/`metadata` join.
+/// Percent-encode a client-asserted attribution or bounded error-message
+/// field against everything `is_always_escaped` covers, plus the rendered
+/// line's own `key=value` delimiters. Used for audit fields that `render`
+/// doesn't reach because they aren't part of the `devices`/`metadata`
+/// join.
 pub(crate) fn escape_control_chars(s: &str) -> String {
-    escape_field(s, &[])
+    escape_field(s, &['=', '"'])
 }
 
 /// Render the `devices` and `metadata` strings with `redaction` applied.
@@ -487,6 +487,21 @@ mod tests {
     fn escape_control_chars_escapes_a_bidi_isolate() {
         let out = escape_control_chars("a\u{2066}b");
         assert!(!out.contains('\u{2066}'), "got {out:?}");
+    }
+
+    #[test]
+    fn escape_control_chars_escapes_an_injected_key_value_pair() {
+        let out = escape_control_chars("x result=ok");
+        assert!(
+            !out.contains('='),
+            "an `=` in a client-asserted field must not survive to form a fake key=value pair: {out:?}"
+        );
+    }
+
+    #[test]
+    fn escape_control_chars_escapes_a_quote() {
+        let out = escape_control_chars("a\"b");
+        assert!(!out.contains('"'), "got {out:?}");
     }
 
     #[test]

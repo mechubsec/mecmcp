@@ -543,6 +543,15 @@ mod tests {
             !out.contains('\n'),
             "the raw newline byte must not survive in any of these fields: {out:?}"
         );
+        assert_eq!(
+            out.matches(" result=").count(),
+            1,
+            "a client-asserted `=` must not forge a second key=value pair on the line: {out:?}"
+        );
+        assert!(
+            !out.contains("target=\"root\""),
+            "a client-asserted `\"` must not forge a quoted value on the line: {out:?}"
+        );
     }
 
     /// A bidi override character in a client-asserted field must not survive,
