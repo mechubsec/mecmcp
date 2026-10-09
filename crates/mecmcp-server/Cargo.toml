@@ -17,9 +17,9 @@ workspace = true
 # server transport in would unify those features into every consumer's build
 # whether or not they use that transport (decision D4).
 http         = "1"
-mecmcp-audit  = { version = "0.27.0", path = "../mecmcp-audit" }
-mecmcp-auth   = { version = "0.27.0", path = "../mecmcp-auth" }
-mecmcp-redact = { version = "0.27.0", path = "../mecmcp-redact" }
+mecmcp-audit  = { version = "0.28.0", path = "../mecmcp-audit" }
+mecmcp-auth   = { version = "0.28.0", path = "../mecmcp-auth" }
+mecmcp-redact = { version = "0.28.0", path = "../mecmcp-redact" }
 # For xml_to_json: same parser family mecmcp-redact already vets for this
 # ecosystem, so a device XML reply is walked with one parser, not two that
 # could disagree about where a tag ends.
@@ -31,7 +31,7 @@ thiserror   = { workspace = true }
 tracing     = { workspace = true }
 
 [dev-dependencies]
-mecmcp-audit = { version = "0.27.0", path = "../mecmcp-audit", features = ["test-util"] }
+mecmcp-audit = { version = "0.28.0", path = "../mecmcp-audit", features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 # Test-only: CallerCtx carries a per-request correlation ID (mecmcp#269).
 uuid        = { workspace = true }

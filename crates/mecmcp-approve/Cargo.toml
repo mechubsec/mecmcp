@@ -16,8 +16,8 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-mecmcp-secret = { version = "0.27.0", path = "../mecmcp-secret" }
-mecmcp-transport = { version = "0.27.0", path = "../mecmcp-transport" }
+mecmcp-secret = { version = "0.28.0", path = "../mecmcp-secret" }
+mecmcp-transport = { version = "0.28.0", path = "../mecmcp-transport" }
 # Minimal: only `rmcp::model`'s typed `CallToolRequestParams`/`CallToolResult`,
 # so the approve call's request/response shapes stay identical to what a real
 # MCP server returns instead of a hand-rolled JSON guess. No transport or

@@ -12,8 +12,8 @@ authors.workspace      = true
 workspace = true
 
 [dependencies]
-mecmcp-auth = { version = "0.27.0", path = "../mecmcp-auth" }
-mecmcp-secret = { version = "0.27.0", path = "../mecmcp-secret" }
+mecmcp-auth = { version = "0.28.0", path = "../mecmcp-auth" }
+mecmcp-secret = { version = "0.28.0", path = "../mecmcp-secret" }
 base64      = { workspace = true }
 chrono      = { workspace = true }
 ed25519-dalek = { workspace = true }
