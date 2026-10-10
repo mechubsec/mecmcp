@@ -229,6 +229,21 @@ impl Drop for AuditScope {
         )
         .record(elapsed.as_secs_f64());
 
+        // String fields not covered by `redact::render` (it only joins
+        // `devices`/`metadata`) get their own escaping here before being
+        // placed into the single-line audit record.
+        let model_id = crate::redact::escape_control_chars(model_id);
+        let session_id = crate::redact::escape_control_chars(session_id);
+        let client_name = crate::redact::escape_control_chars(client_name);
+        let provider = crate::redact::escape_control_chars(provider);
+        let on_behalf_of = crate::redact::escape_control_chars(on_behalf_of);
+        let change_ref = crate::redact::escape_control_chars(change_ref);
+        let client_version =
+            crate::redact::escape_control_chars(self.client_version.as_deref().unwrap_or(""));
+        let client_call_id =
+            crate::redact::escape_control_chars(self.client_call_id.as_deref().unwrap_or(""));
+        let error = crate::redact::escape_control_chars(&error);
+
         tracing::info!(
             target: "audit",
             request_id = %self.attribution.request_id,
@@ -240,8 +255,8 @@ impl Drop for AuditScope {
             model_id = %model_id,
             session_id = %session_id,
             client_name = %client_name,
-            client_version = %self.client_version.as_deref().unwrap_or(""),
-            client_call_id = %self.client_call_id.as_deref().unwrap_or(""),
+            client_version = %client_version,
+            client_call_id = %client_call_id,
             on_behalf_of = %on_behalf_of,
             change_ref = %change_ref,
             tool = %self.tool,
@@ -481,6 +496,77 @@ mod tests {
         assert!(
             out.contains("client_call_id=toolu_011on2R3XWgvKmG2WRChDa5P"),
             "per-call id must be emitted: {out}"
+        );
+    }
+
+    /// A newline in any field `AuditScope::drop` emits other than the
+    /// `&'static str` ones must not be able to start a second, unattributed
+    /// line in the audit record. This test fails against the pre-fix code:
+    /// before escaping, each of these fields would split the record.
+    #[test]
+    fn client_asserted_fields_escape_an_embedded_newline() {
+        let out = run_with_capture(|| {
+            let mut attr = Attribution::stdio();
+            attr.actor_type = ActorType::Agent;
+            attr.agent = Some(AgentIdentity {
+                model_id: "model\nspoofed=true".into(),
+                session_id: "sess\nspoofed=true".into(),
+                client_name: Some("evil\ntarget=\"root\" result=\"ok\"".into()),
+                provider: "anthropic\nspoofed=true".into(),
+                provider_tier: crate::Tier::Public,
+                skills_used: vec![],
+            });
+            attr.on_behalf_of = Some("alice\nspoofed=true".into());
+            attr.change_ref = Some("CHG1\nspoofed=true".into());
+            let mut a = AuditScope::new(attr, "commit_config", "commit", vec![]);
+            a.set_client_extras(
+                Some("1\nspoofed=true".into()),
+                Some("id\nspoofed=true".into()),
+            );
+            a.fail("device said: boom\nspoofed=true");
+        });
+        assert_eq!(
+            out.lines().count(),
+            1,
+            "an embedded newline in any of these fields must not start a second line: {out:?}"
+        );
+        assert!(
+            !out.contains('\n'),
+            "the raw newline byte must not survive in any of these fields: {out:?}"
+        );
+        assert_eq!(
+            out.matches(" result=").count(),
+            1,
+            "a client-asserted `=` must not forge a second key=value pair on the line: {out:?}"
+        );
+        assert!(
+            !out.contains("target=\"root\""),
+            "a client-asserted `\"` must not forge a quoted value on the line: {out:?}"
+        );
+    }
+
+    /// A bidi override character in a client-asserted field must not survive,
+    /// since it could visually reorder or hide the rest of the audit line in
+    /// a terminal or log viewer.
+    #[test]
+    fn client_asserted_field_escapes_a_bidi_override() {
+        let out = run_with_capture(|| {
+            let mut attr = Attribution::stdio();
+            attr.actor_type = ActorType::Agent;
+            attr.agent = Some(AgentIdentity {
+                model_id: "m".into(),
+                session_id: "s".into(),
+                client_name: Some("safe\u{202E}reversed".into()),
+                provider: "anthropic".into(),
+                provider_tier: crate::Tier::Public,
+                skills_used: vec![],
+            });
+            let mut a = AuditScope::new(attr, "commit_config", "commit", vec![]);
+            a.succeed();
+        });
+        assert!(
+            !out.contains('\u{202E}'),
+            "the raw bidi override character must not survive: {out:?}"
         );
     }
 
