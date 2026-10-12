@@ -210,9 +210,6 @@ jobs:
       - name: Sign image (keyless) -- GHCR
         # Sign by digest, not by the mutable tags above -- a tag can be
         # repointed later, but the digest is what was actually just pushed.
-        # Cosign writes the signature into the same repo as the ref it
-        # signs, so GHCR and Docker Hub each need their own sign call even
-        # though they share the same digest.
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
         env:
           IMAGE: ${{ inputs.image }}
@@ -220,9 +217,49 @@ jobs:
 
       - name: Sign image (keyless) -- Docker Hub
         if: steps.dockerhub.outputs.push == 'true'
-        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+        # Sign the Docker Hub ref directly. `cosign copy --only=sig` copies
+        # nothing for cosign v3 OCI-referrer signatures yet exits 0, which
+        # would publish an unsigned image under a green run, so it is not
+        # used. Signing the same digest a second time makes Rekor answer
+        # 409 "equivalent entry already exists"; that is the only failure
+        # tolerated here, and the verify gate below decides whether both
+        # images are actually signed.
+        shell: bash
+        run: |
+          set -uo pipefail
+          out="$(cosign sign --yes "${IMAGE}@${DIGEST}" 2>&1)" && rc=0 || rc=$?
+          echo "$out"
+          if [ "$rc" -ne 0 ]; then
+            if echo "$out" | grep -Eqi '409|already exists'; then
+              echo "::notice::Rekor entry already exists for this digest; relying on the verify gate."
+            else
+              exit "$rc"
+            fi
+          fi
         env:
           IMAGE: ${{ inputs.dockerhub-image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - name: Verify signatures (hard gate)
+        # Fails the job if either pushed image lacks a valid keyless
+        # signature from this reusable workflow.
+        run: |
+          set -euo pipefail
+          refs="${GHCR_IMAGE}@${DIGEST}"
+          if [ "${DH_PUSH}" = "true" ]; then
+            refs="${refs} ${DH_IMAGE}@${DIGEST}"
+          fi
+          for ref in ${refs}; do
+            echo "Verifying ${ref}"
+            cosign verify \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp '^https://github\.com/mechubsec/mecmcp/\.github/workflows/reusable-release-image\.yml@' \
+              "${ref}" > /dev/null
+          done
+        env:
+          GHCR_IMAGE: ${{ inputs.image }}
+          DH_IMAGE: ${{ inputs.dockerhub-image }}
+          DH_PUSH: ${{ steps.dockerhub.outputs.push }}
           DIGEST: ${{ steps.build.outputs.digest }}
 
       - name: Derive Docker Hub repository name
@@ -234,6 +271,12 @@ jobs:
 
       - name: Push Docker Hub repo overview
         if: steps.dockerhub.outputs.push == 'true'
+        # Runs last, after signing and the image/SBOM/provenance push above,
+        # so this step's failure never skips those. Updating a repo overview
+        # needs a Docker Hub token scope beyond push; a token without it
+        # 401s here. That's a cosmetic metadata gap, not a failed release,
+        # so it must not fail the job.
+        continue-on-error: true
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
         with:
           username: ${{ secrets.dockerhub-username }}
