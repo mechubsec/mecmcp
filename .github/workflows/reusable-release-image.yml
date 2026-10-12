@@ -222,9 +222,8 @@ jobs:
         # would publish an unsigned image under a green run, so it is not
         # used. Signing the same digest a second time makes Rekor answer
         # 409 "equivalent entry already exists"; that is the only failure
-        # tolerated here (the signature is still attached to the ref), and
-        # the verify gate below is the hard check that both images are
-        # actually signed.
+        # tolerated here, and the verify gate below decides whether both
+        # images are actually signed.
         shell: bash
         run: |
           set -uo pipefail
@@ -243,7 +242,7 @@ jobs:
 
       - name: Verify signatures (hard gate)
         # Fails the job if either pushed image lacks a valid keyless
-        # signature from this org's GitHub Actions workflows.
+        # signature from this reusable workflow.
         run: |
           set -euo pipefail
           refs="${GHCR_IMAGE}@${DIGEST}"
@@ -254,7 +253,7 @@ jobs:
             echo "Verifying ${ref}"
             cosign verify \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              --certificate-identity-regexp '^https://github\.com/mechubsec/[^/]+/\.github/workflows/.+@refs/(tags|heads)/.+$' \
+              --certificate-identity-regexp '^https://github\.com/mechubsec/mecmcp/\.github/workflows/reusable-release-image\.yml@' \
               "${ref}" > /dev/null
           done
         env:
