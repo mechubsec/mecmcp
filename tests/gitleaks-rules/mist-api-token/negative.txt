@@ -1,0 +1,3 @@
+headers = {"Authorization": "Token 1234567890abcdef1234567890abcdef1234567890abcdef1234567890"}  # github API client
+MIST_API_TOKEN=short
+# mist integration placeholder, token to be set later
