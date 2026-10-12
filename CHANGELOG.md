@@ -35,8 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after a successful push** (MEC-2782). Signing the same image digest a
   second time for Docker Hub was hitting a Rekor `409` ("equivalent entry
   already exists") and failing the job after the image was already
-  published; the workflow now copies the GHCR signature onto the Docker
-  Hub ref instead of re-signing. The Docker Hub repo-overview update is
+  published; the workflow now signs the Docker Hub ref, tolerates only the
+  already-exists response, and runs a hard `cosign verify` gate on both
+  registries so an unsigned image fails the job. The Docker Hub repo-overview update is
   also now non-fatal (`continue-on-error`), since a token scoped for
   pushes only, without repo-metadata write access, otherwise failed the
   whole release after the image, signature, SBOM and provenance had

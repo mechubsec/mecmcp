@@ -215,22 +215,52 @@ jobs:
           IMAGE: ${{ inputs.image }}
           DIGEST: ${{ steps.build.outputs.digest }}
 
-      - name: Copy signature to Docker Hub
+      - name: Sign image (keyless) -- Docker Hub
         if: steps.dockerhub.outputs.push == 'true'
-        # GHCR and Docker Hub hold the same bytes at the same digest, so a
-        # second `cosign sign` of that digest produces the same Rekor entry
-        # (same signed subject, same signing identity) and gets rejected
-        # with a 409 "equivalent entry already exists" -- Rekor is correctly
-        # refusing to double-log an identical statement, not reporting a
-        # problem. `cosign copy` attaches the signature (and any SBOM/
-        # provenance attestation buildx produced) already proven for GHCR
-        # onto the Docker Hub ref directly, with no second signing round
-        # and so no duplicate-entry conflict. `-f` makes a re-run of this
-        # job idempotent.
-        run: cosign copy -f --only=sig,att,sbom "${SRC}@${DIGEST}" "${DST}@${DIGEST}"
+        # Sign the Docker Hub ref directly. `cosign copy --only=sig` copies
+        # nothing for cosign v3 OCI-referrer signatures yet exits 0, which
+        # would publish an unsigned image under a green run, so it is not
+        # used. Signing the same digest a second time makes Rekor answer
+        # 409 "equivalent entry already exists"; that is the only failure
+        # tolerated here (the signature is still attached to the ref), and
+        # the verify gate below is the hard check that both images are
+        # actually signed.
+        shell: bash
+        run: |
+          set -uo pipefail
+          out="$(cosign sign --yes "${IMAGE}@${DIGEST}" 2>&1)" && rc=0 || rc=$?
+          echo "$out"
+          if [ "$rc" -ne 0 ]; then
+            if echo "$out" | grep -Eqi '409|already exists'; then
+              echo "::notice::Rekor entry already exists for this digest; relying on the verify gate."
+            else
+              exit "$rc"
+            fi
+          fi
         env:
-          SRC: ${{ inputs.image }}
-          DST: ${{ inputs.dockerhub-image }}
+          IMAGE: ${{ inputs.dockerhub-image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - name: Verify signatures (hard gate)
+        # Fails the job if either pushed image lacks a valid keyless
+        # signature from this org's GitHub Actions workflows.
+        run: |
+          set -euo pipefail
+          refs="${GHCR_IMAGE}@${DIGEST}"
+          if [ "${DH_PUSH}" = "true" ]; then
+            refs="${refs} ${DH_IMAGE}@${DIGEST}"
+          fi
+          for ref in ${refs}; do
+            echo "Verifying ${ref}"
+            cosign verify \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp '^https://github\.com/mechubsec/[^/]+/\.github/workflows/.+@refs/(tags|heads)/.+$' \
+              "${ref}" > /dev/null
+          done
+        env:
+          GHCR_IMAGE: ${{ inputs.image }}
+          DH_IMAGE: ${{ inputs.dockerhub-image }}
+          DH_PUSH: ${{ steps.dockerhub.outputs.push }}
           DIGEST: ${{ steps.build.outputs.digest }}
 
       - name: Derive Docker Hub repository name
