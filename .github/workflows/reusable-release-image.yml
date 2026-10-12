@@ -210,19 +210,27 @@ jobs:
       - name: Sign image (keyless) -- GHCR
         # Sign by digest, not by the mutable tags above -- a tag can be
         # repointed later, but the digest is what was actually just pushed.
-        # Cosign writes the signature into the same repo as the ref it
-        # signs, so GHCR and Docker Hub each need their own sign call even
-        # though they share the same digest.
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
         env:
           IMAGE: ${{ inputs.image }}
           DIGEST: ${{ steps.build.outputs.digest }}
 
-      - name: Sign image (keyless) -- Docker Hub
+      - name: Copy signature to Docker Hub
         if: steps.dockerhub.outputs.push == 'true'
-        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+        # GHCR and Docker Hub hold the same bytes at the same digest, so a
+        # second `cosign sign` of that digest produces the same Rekor entry
+        # (same signed subject, same signing identity) and gets rejected
+        # with a 409 "equivalent entry already exists" -- Rekor is correctly
+        # refusing to double-log an identical statement, not reporting a
+        # problem. `cosign copy` attaches the signature (and any SBOM/
+        # provenance attestation buildx produced) already proven for GHCR
+        # onto the Docker Hub ref directly, with no second signing round
+        # and so no duplicate-entry conflict. `-f` makes a re-run of this
+        # job idempotent.
+        run: cosign copy -f --only=sig,att,sbom "${SRC}@${DIGEST}" "${DST}@${DIGEST}"
         env:
-          IMAGE: ${{ inputs.dockerhub-image }}
+          SRC: ${{ inputs.image }}
+          DST: ${{ inputs.dockerhub-image }}
           DIGEST: ${{ steps.build.outputs.digest }}
 
       - name: Derive Docker Hub repository name
@@ -234,6 +242,12 @@ jobs:
 
       - name: Push Docker Hub repo overview
         if: steps.dockerhub.outputs.push == 'true'
+        # Runs last, after signing and the image/SBOM/provenance push above,
+        # so this step's failure never skips those. Updating a repo overview
+        # needs a Docker Hub token scope beyond push; a token without it
+        # 401s here. That's a cosmetic metadata gap, not a failed release,
+        # so it must not fail the job.
+        continue-on-error: true
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
         with:
           username: ${{ secrets.dockerhub-username }}

@@ -27,6 +27,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [0.28.1] - 2026-10-12
+
+### Fixed
+
+- **ci: `reusable-release-image.yml` no longer fails a Docker Hub release
+  after a successful push** (MEC-2782). Signing the same image digest a
+  second time for Docker Hub was hitting a Rekor `409` ("equivalent entry
+  already exists") and failing the job after the image was already
+  published; the workflow now copies the GHCR signature onto the Docker
+  Hub ref instead of re-signing. The Docker Hub repo-overview update is
+  also now non-fatal (`continue-on-error`), since a token scoped for
+  pushes only, without repo-metadata write access, otherwise failed the
+  whole release after the image, signature, SBOM and provenance had
+  already shipped.
+
 ## [0.28.0] - 2026-10-09
 
 ### Added
