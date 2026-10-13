@@ -69,6 +69,12 @@ description = "Mist x_passphrase field"
 regex = '''x_passphrase["']?\s*[:=]\s*["']?[^"'\s,}]{8,}'''
 tags = ["mist", "secret"]
 
+[[rules]]
+id = "mist-api-token"
+description = "Mist API token (MIST_API_TOKEN/mist_apitoken assignment or Authorization: Token header in Mist context)"
+regex = '''(?i:mist_api_?token)["']?\s*[:=]\s*["']?[A-Za-z0-9]{20,}|(?i:mist)[^\n]{0,80}Authorization:\s*Token\s+[A-Za-z0-9]{60,}|Authorization:\s*Token\s+[A-Za-z0-9]{60,}[^\n]{0,80}(?i:mist)'''
+tags = ["mist", "secret"]
+
 # The rule regexes above are literal strings that match themselves. Without
 # this, every repo's own gitleaks config file would flag as a leak.
 [allowlist]
