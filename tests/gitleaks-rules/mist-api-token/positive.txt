@@ -1,2 +1,3 @@
 MIST_API_TOKEN=AbCdEfGhIjKlMnOpQrStUvWx  // gitleaks:allow
-curl -H "Authorization: Token 1234567890abcdef1234567890abcdef1234567890abcdef1234567890" https://api.mist.com/api/v1/self  // gitleaks:allow
+curl -H "Authorization: Token 1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab" https://api.mist.com/api/v1/self  // gitleaks:allow
+curl -H "Authorization: Token 1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab" # mist org  // gitleaks:allow
