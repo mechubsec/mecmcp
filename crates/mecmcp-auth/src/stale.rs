@@ -396,12 +396,7 @@ mod tests {
         );
 
         // Should only find the two actually retired files
-        assert_eq!(
-            stale.len(),
-            2,
-            "Expected 2 stale files, got {}",
-            stale.len()
-        );
+        assert_eq!(stale.len(), 2, "Expected exactly 2 stale files");
 
         // Verify they're the right ones
         let stale_names: Vec<_> = stale
