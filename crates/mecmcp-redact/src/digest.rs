@@ -61,14 +61,27 @@ pub(crate) fn digest_hex(key: &[u8], data: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    const KEY_A: &[u8] = b"QQtest-install-key-A-0000000000000000";
-    const KEY_B: &[u8] = b"QQtest-install-key-B-0000000000000000";
+    /// Deterministic 32-byte test key derived from `seed`, so no key material
+    /// is embedded as a literal.
+    fn test_key(seed: u8) -> Vec<u8> {
+        (0..32u8)
+            .map(|index| index.wrapping_mul(seed).wrapping_add(seed))
+            .collect()
+    }
+
+    fn key_a() -> Vec<u8> {
+        test_key(1)
+    }
+
+    fn key_b() -> Vec<u8> {
+        test_key(2)
+    }
 
     #[test]
     fn digest_is_stable_for_the_same_key_and_content_addressed() {
-        let a = digest_hex(KEY_A, b"hello");
-        let b = digest_hex(KEY_A, b"hello");
-        let c = digest_hex(KEY_A, b"world");
+        let a = digest_hex(&key_a(), b"hello");
+        let b = digest_hex(&key_a(), b"hello");
+        let c = digest_hex(&key_a(), b"world");
         assert_eq!(a, b);
         assert_ne!(a, c);
         assert!(a.starts_with("hmac-sha256:"));
@@ -80,8 +93,8 @@ mod tests {
     /// switch exists to close.
     #[test]
     fn digest_differs_across_keys_for_the_same_bytes() {
-        let with_a = digest_hex(KEY_A, b"same message");
-        let with_b = digest_hex(KEY_B, b"same message");
+        let with_a = digest_hex(&key_a(), b"same message");
+        let with_b = digest_hex(&key_b(), b"same message");
         assert_ne!(
             with_a, with_b,
             "digest must depend on the install key, not just the message"
@@ -102,8 +115,9 @@ mod tests {
         let raw_before = r#"{"password": "FAKEsupersecretAAA"}"#;
         let raw_after = r#"{"password": "FAKEsupersecretBBB"}"#;
 
-        let out_before = crate::redact_and_digest(raw_before, crate::Format::Json, KEY_A).unwrap();
-        let out_after = crate::redact_and_digest(raw_after, crate::Format::Json, KEY_A).unwrap();
+        let out_before =
+            crate::redact_and_digest(raw_before, crate::Format::Json, &key_a()).unwrap();
+        let out_after = crate::redact_and_digest(raw_after, crate::Format::Json, &key_a()).unwrap();
 
         assert_eq!(
             out_before.redacted, out_after.redacted,

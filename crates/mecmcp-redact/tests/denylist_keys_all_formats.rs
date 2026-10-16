@@ -56,11 +56,11 @@ fn every_spec_key_is_redacted_in_json() {
         let got = redact_json_str(&input).unwrap();
         assert!(
             !got.contains(secret),
-            "spec key '{spec_key}' (field '{field}') leaked in JSON: {got}"
+            "spec key '{spec_key}' (field '{field}') leaked in JSON"
         );
         assert!(
             got.contains("r1.example.net"),
-            "unrelated field must survive: {got}"
+            "unrelated field must survive"
         );
     }
 }
@@ -74,11 +74,11 @@ fn every_spec_key_is_redacted_in_xml() {
         let got = redact_xml_str(&input).unwrap();
         assert!(
             !got.contains(secret),
-            "spec key '{spec_key}' (field '{field}') leaked in XML: {got}"
+            "spec key '{spec_key}' (field '{field}') leaked in XML"
         );
         assert!(
             got.contains("r1.example.net"),
-            "unrelated element must survive: {got}"
+            "unrelated element must survive"
         );
     }
 }
@@ -90,11 +90,11 @@ fn every_spec_key_is_redacted_in_text() {
         let got = redact_text(&input);
         assert!(
             !got.contains(secret),
-            "spec key '{spec_key}' (field '{field}') leaked in text: {got}"
+            "spec key '{spec_key}' (field '{field}') leaked in text"
         );
         assert!(
             got.contains("r1.example.net"),
-            "unrelated line must survive: {got}"
+            "unrelated line must survive"
         );
     }
 }

@@ -257,15 +257,25 @@ pub fn redact_and_digest(
 mod tests {
     use super::*;
 
-    const TEST_DIGEST_KEY: &[u8] = b"QQtest-install-digest-key-0000000000000000";
+    /// Deterministic 32-byte test key derived from `seed`, so no key material
+    /// is embedded as a literal.
+    fn test_key(seed: u8) -> Vec<u8> {
+        (0..32u8)
+            .map(|index| index.wrapping_mul(seed).wrapping_add(seed))
+            .collect()
+    }
+
+    fn digest_key() -> Vec<u8> {
+        test_key(7)
+    }
 
     #[test]
     fn redact_and_digest_digest_matches_direct_digest_of_raw_input() {
         let raw = r#"{"password": "FAKEsupersecret123", "hostname": "r1.example.net"}"#;
-        let out = redact_and_digest(raw, Format::Json, TEST_DIGEST_KEY).unwrap();
+        let out = redact_and_digest(raw, Format::Json, &digest_key()).unwrap();
         assert_eq!(
             out.digest,
-            digest::digest_hex(TEST_DIGEST_KEY, raw.as_bytes())
+            digest::digest_hex(&digest_key(), raw.as_bytes())
         );
         assert!(!out.redacted.contains("FAKEsupersecret123"));
     }
@@ -276,20 +286,20 @@ mod tests {
     #[test]
     fn redact_and_digest_digest_depends_on_the_key() {
         let raw = r#"{"community": "FAKEcommunity123"}"#;
-        let a = redact_and_digest(raw, Format::Json, b"QQkey-a-0000000000000000000000000").unwrap();
-        let b = redact_and_digest(raw, Format::Json, b"QQkey-b-0000000000000000000000000").unwrap();
+        let a = redact_and_digest(raw, Format::Json, &test_key(1)).unwrap();
+        let b = redact_and_digest(raw, Format::Json, &test_key(2)).unwrap();
         assert_ne!(a.digest, b.digest);
     }
 
     #[test]
     fn redact_and_digest_rejects_malformed_json_rather_than_guessing() {
-        let err = redact_and_digest("{not json", Format::Json, TEST_DIGEST_KEY).unwrap_err();
+        let err = redact_and_digest("{not json", Format::Json, &digest_key()).unwrap_err();
         assert!(matches!(err, RedactError::InvalidJson(_)));
     }
 
     #[test]
     fn redact_and_digest_rejects_malformed_xml_rather_than_guessing() {
-        let err = redact_and_digest("<unclosed>", Format::Xml, TEST_DIGEST_KEY).unwrap_err();
+        let err = redact_and_digest("<unclosed>", Format::Xml, &digest_key()).unwrap_err();
         assert!(matches!(err, RedactError::InvalidXml(_)));
     }
 
@@ -298,13 +308,13 @@ mod tests {
     /// low-entropy secrets in all but name.
     #[test]
     fn redact_and_digest_rejects_an_empty_digest_key() {
-        let err = redact_and_digest("hello", Format::Text, b"").unwrap_err();
+        let err = redact_and_digest("hello", Format::Text, &Vec::new()).unwrap_err();
         assert!(matches!(err, RedactError::WeakDigestKey(0)));
     }
 
     #[test]
     fn redact_and_digest_rejects_a_digest_key_shorter_than_the_minimum() {
-        let err = redact_and_digest("hello", Format::Text, b"short-key").unwrap_err();
+        let err = redact_and_digest("hello", Format::Text, &test_key(9)[..9]).unwrap_err();
         assert!(matches!(err, RedactError::WeakDigestKey(9)));
     }
 

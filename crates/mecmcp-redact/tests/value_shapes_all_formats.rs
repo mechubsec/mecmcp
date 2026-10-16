@@ -68,12 +68,12 @@ fn f7_pem_marker_anywhere_in_value_is_redacted_under_an_unlisted_key() {
     let json_pem = format!("-----BEGIN PRIVATE KEY-----\\n{secret}\\n-----END PRIVATE KEY-----"); // gitleaks:allow
     let json_input = format!(r#"{{"{UNKNOWN_FIELD}": "{json_pem}"}}"#);
     let got = redact_json_str(&json_input).unwrap();
-    assert!(!got.contains(secret), "PEM leaked in JSON: {got}");
+    assert!(!got.contains(secret), "PEM leaked in JSON");
 
     let xml_pem = format!("-----BEGIN PRIVATE KEY-----\n{secret}\n-----END PRIVATE KEY-----");
     let xml_input = format!("<{UNKNOWN_FIELD}>{xml_pem}</{UNKNOWN_FIELD}>");
     let got = redact_xml_str(&xml_input).unwrap();
-    assert!(!got.contains(secret), "PEM leaked in XML: {got}");
+    assert!(!got.contains(secret), "PEM leaked in XML");
 }
 
 #[test]

@@ -41,7 +41,7 @@ fn add_creates_token_and_returns_secret() {
 
     // Capture stdout to verify secret is printed
     let result = run(action, &[], KNOWN_TOOLS);
-    assert!(result.is_ok(), "add failed: {result:?}");
+    assert!(result.is_ok(), "token add command failed");
 
     // Verify the token was stored
     let store_file = TokenStoreFile::<mecmcp_auth::NoGrant>::load(&tokens_file).unwrap();
@@ -656,7 +656,7 @@ mod grant_lifecycle {
             Err(TokenCommandError::InvalidArgument(message)) => {
                 assert!(message.contains("invalid grant"), "got: {message}");
             }
-            other => panic!("expected InvalidArgument, got {other:?}"),
+            _ => panic!("expected InvalidArgument"),
         }
         assert!(
             !tokens_file.exists(),

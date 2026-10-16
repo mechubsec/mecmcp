@@ -396,16 +396,7 @@ mod tests {
         );
 
         // Should only find the two actually retired files
-        assert_eq!(
-            stale.len(),
-            2,
-            "Expected 2 stale files, got {}: {:?}",
-            stale.len(),
-            stale
-                .iter()
-                .map(|s| s.path.file_name().unwrap().to_string_lossy())
-                .collect::<Vec<_>>()
-        );
+        assert_eq!(stale.len(), 2, "Expected exactly 2 stale files");
 
         // Verify they're the right ones
         let stale_names: Vec<_> = stale
@@ -466,7 +457,7 @@ mod dedup_tests {
             .count();
         assert_eq!(
             occurrences, 1,
-            "server.old.key must appear exactly once, got {occurrences}: {found:?}"
+            "server.old.key must appear exactly once, got {occurrences}"
         );
     }
 }
