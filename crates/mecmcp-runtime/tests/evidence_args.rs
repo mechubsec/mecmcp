@@ -88,7 +88,7 @@ fn a_configured_endpoint_produces_a_pipeline_config() {
     assert_eq!(config.sink.verify_password.expose(), "verify-secret");
     assert!(
         !config.run_id.is_empty() && config.run_id != config.server_id,
-        "each process lifetime needs its own run id: {config:?}"
+        "each process lifetime needs its own run id"
     );
 }
 
@@ -408,7 +408,7 @@ fn run_ids_sort_in_creation_order() {
         let next = args.into_config().unwrap().unwrap().run_id;
         assert!(
             next > previous,
-            "run ids must not sort below their predecessor: {next} after {previous}"
+            "run ids must not sort below their predecessor"
         );
         previous = next;
     }

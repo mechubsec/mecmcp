@@ -399,12 +399,8 @@ mod tests {
         assert_eq!(
             stale.len(),
             2,
-            "Expected 2 stale files, got {}: {:?}",
-            stale.len(),
-            stale
-                .iter()
-                .map(|s| s.path.file_name().unwrap().to_string_lossy())
-                .collect::<Vec<_>>()
+            "Expected 2 stale files, got {}",
+            stale.len()
         );
 
         // Verify they're the right ones
@@ -466,7 +462,7 @@ mod dedup_tests {
             .count();
         assert_eq!(
             occurrences, 1,
-            "server.old.key must appear exactly once, got {occurrences}: {found:?}"
+            "server.old.key must appear exactly once, got {occurrences}"
         );
     }
 }

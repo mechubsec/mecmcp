@@ -566,6 +566,14 @@ pub fn validate_principal_for_digest(field_name: &'static str, value: &str) -> R
 mod preview_binding_tests {
     use super::*;
 
+    /// Deterministic 32-byte test key derived from `seed`, so no key material
+    /// is embedded as a literal.
+    fn test_key(seed: u8) -> Vec<u8> {
+        (0..32u8)
+            .map(|index| index.wrapping_mul(seed).wrapping_add(seed))
+            .collect()
+    }
+
     /// A fresh HMAC key for a single test, generated at runtime rather than
     /// a committed literal — nothing here is a credential, so there should
     /// be nothing for a secret scanner to flag.
@@ -650,7 +658,7 @@ mod preview_binding_tests {
     #[test]
     fn a_different_key_is_a_different_approval() {
         let a = compute_approval_digest_v6(
-            b"key-a",
+            &test_key(1),
             "cs1",
             "sha256:plan",
             Some("sha256:preview-a"),
@@ -659,7 +667,7 @@ mod preview_binding_tests {
             1_700_000_000,
         );
         let b = compute_approval_digest_v6(
-            b"key-b",
+            &test_key(2),
             "cs1",
             "sha256:plan",
             Some("sha256:preview-a"),
@@ -676,7 +684,7 @@ mod preview_binding_tests {
     #[test]
     fn verification_fails_without_the_correct_key() {
         let digest = compute_approval_digest_v6(
-            b"the-real-key",
+            &test_key(3),
             "cs1",
             "sha256:plan",
             Some("sha256:preview"),
@@ -685,7 +693,7 @@ mod preview_binding_tests {
             1_700_000_000,
         );
         assert!(verify_approval_digest_v6(
-            b"the-real-key",
+            &test_key(3),
             "cs1",
             "sha256:plan",
             Some("sha256:preview"),
@@ -695,7 +703,7 @@ mod preview_binding_tests {
             &digest,
         ));
         assert!(!verify_approval_digest_v6(
-            b"a-forged-key",
+            &test_key(4),
             "cs1",
             "sha256:plan",
             Some("sha256:preview"),
@@ -713,7 +721,7 @@ mod preview_binding_tests {
         let v5 =
             compute_approval_digest_v5("cs1", "sha256:plan", None, "alice", "bob", 1_700_000_000);
         let v6 = compute_approval_digest_v6(
-            b"key",
+            &test_key(5),
             "cs1",
             "sha256:plan",
             None,

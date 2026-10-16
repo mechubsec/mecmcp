@@ -73,7 +73,7 @@ fn no_denylisted_key_fixture_secret_survives_any_format() {
             let got = redact(&input, format);
             assert!(
                 !got.contains(&secret),
-                "denylisted key '{key}' (field '{field}') leaked in {}: {got}",
+                "denylisted key '{key}' (field '{field}') leaked in {}",
                 format_name(format)
             );
         }
@@ -151,7 +151,7 @@ fn no_denylisted_key_fixture_secret_survives_any_format_in_its_hyphenated_vendor
             let got = redact(&input, format);
             assert!(
                 !got.contains(&secret),
-                "vendor-spelled key '{hyphenated}' leaked in {}: {got}",
+                "vendor-spelled key '{hyphenated}' leaked in {}",
                 format_name(format)
             );
         }
@@ -167,7 +167,7 @@ fn no_value_shape_fixture_secret_survives_any_format_under_an_unlisted_key() {
             let got = redact(&input, format);
             assert!(
                 !got.contains(secret),
-                "shape fixture #{i} ('{secret}') leaked in {}: {got}",
+                "shape fixture #{i} leaked in {}",
                 format_name(format)
             );
         }
