@@ -10,7 +10,11 @@
 //! instead of emitting a best-effort partial result.
 
 use crate::RedactError;
-use crate::denylist::{is_bgp_community_tag, is_bgp_scope_key, is_denylisted_key, normalize};
+use crate::denylist::{
+    is_bgp_community_tag, is_bgp_scope_key, is_denylisted_key, is_inert_session_value,
+    is_session_config_name, normalize,
+};
+use crate::profile::Opts;
 use crate::shape::looks_like_secret_value;
 use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesRef, BytesStart, BytesText, Event};
@@ -28,7 +32,7 @@ const PLACEHOLDER: &[u8] = b"[REDACTED]";
 /// this crate never falls back to returning the input unredacted just
 /// because it could not be understood.
 pub fn redact(input: &str) -> Result<String, RedactError> {
-    redact_impl(input, &|_| false, false)
+    redact_impl(input, &|_| false, Opts::NONE)
 }
 
 /// Same as [`redact`], but `extra_exact_elem` names additional element local
@@ -41,7 +45,7 @@ pub(crate) fn redact_with(
     input: &str,
     extra_exact_elem: &dyn Fn(&str) -> bool,
 ) -> Result<String, RedactError> {
-    redact_impl(input, extra_exact_elem, false)
+    redact_impl(input, extra_exact_elem, Opts::NONE)
 }
 
 /// The XML counterpart of [`crate::redact_json_value_with_profile`]: redact
@@ -57,17 +61,13 @@ pub(crate) fn redact_with_profile(
     input: &str,
     profile: &crate::Profile,
 ) -> Result<String, RedactError> {
-    redact_impl(
-        input,
-        &|_| false,
-        crate::profile::bgp_route_communities(profile),
-    )
+    redact_impl(input, &|_| false, crate::profile::opts(profile))
 }
 
 fn redact_impl(
     input: &str,
     extra_exact_elem: &dyn Fn(&str) -> bool,
-    bgp_route_communities: bool,
+    opts: Opts,
 ) -> Result<String, RedactError> {
     let mut reader = Reader::from_str(input);
     reader.config_mut().trim_text(false);
@@ -97,7 +97,7 @@ fn redact_impl(
                 &mut text_run,
                 &tag_stack,
                 extra_exact_elem,
-                bgp_route_communities,
+                opts,
             )?;
         }
         match event {
@@ -112,8 +112,7 @@ fn redact_impl(
             }
             Event::Start(e) => {
                 tag_stack.push(local_name(e.name()).to_vec());
-                let rewritten =
-                    redact_attributes(&e, &tag_stack, extra_exact_elem, bgp_route_communities)?;
+                let rewritten = redact_attributes(&e, &tag_stack, extra_exact_elem, opts)?;
                 writer
                     .write_event(Event::Start(rewritten))
                     .map_err(|e| RedactError::InvalidXml(e.to_string()))?;
@@ -127,8 +126,7 @@ fn redact_impl(
                 // attributes even though the non-empty `<community
                 // name="..."></community>` form does (N4).
                 tag_stack.push(local_name(e.name()));
-                let rewritten =
-                    redact_attributes(&e, &tag_stack, extra_exact_elem, bgp_route_communities)?;
+                let rewritten = redact_attributes(&e, &tag_stack, extra_exact_elem, opts)?;
                 tag_stack.pop();
                 writer
                     .write_event(Event::Empty(rewritten))
@@ -162,12 +160,8 @@ fn redact_impl(
             }
             Event::CData(e) => {
                 let decoded = e.into_inner().into_owned();
-                let ancestor_is_secret = any_ancestor_secret(
-                    &tag_stack,
-                    &decoded,
-                    extra_exact_elem,
-                    bgp_route_communities,
-                );
+                let ancestor_is_secret =
+                    any_ancestor_secret(&tag_stack, &decoded, extra_exact_elem, opts);
                 let out = if ancestor_is_secret || looks_like_secret_value(&decoded) {
                     quick_xml::events::BytesCData::new(
                         String::from_utf8_lossy(PLACEHOLDER).into_owned(),
@@ -261,13 +255,14 @@ pub(crate) fn validate(input: &str) -> Result<(), RedactError> {
 /// vendor profile opting an element name into `extra_exact_elem` treats it
 /// as unconditionally sensitive.
 ///
-/// `bgp_route_communities` gates whether the exemption is consulted at
-/// all — see [`crate::profile::Profile::with_bgp_route_communities`].
+/// `opts` gates which exemptions are consulted at all — see
+/// [`crate::profile::Profile::with_bgp_route_communities`] and
+/// [`crate::profile::Profile::with_session_config_values`].
 fn any_ancestor_secret(
     tag_stack: &[Vec<u8>],
     value: &str,
     extra_exact_elem: &dyn Fn(&str) -> bool,
-    bgp_route_communities: bool,
+    opts: Opts,
 ) -> bool {
     tag_stack.iter().enumerate().any(|(i, name)| {
         let name = String::from_utf8_lossy(name);
@@ -277,7 +272,13 @@ fn any_ancestor_secret(
         if !is_denylisted_key(&name) {
             return false;
         }
-        !(bgp_route_communities && is_bgp_route_community_ancestor(tag_stack, i, value))
+        if opts.session_config_values
+            && is_session_config_name(&name)
+            && is_inert_session_value(value)
+        {
+            return false;
+        }
+        !(opts.bgp_route_communities && is_bgp_route_community_ancestor(tag_stack, i, value))
     })
 }
 
@@ -322,7 +323,7 @@ fn redact_attributes<'a>(
     start: &BytesStart<'a>,
     tag_stack: &[Vec<u8>],
     extra_exact_elem: &dyn Fn(&str) -> bool,
-    bgp_route_communities: bool,
+    opts: Opts,
 ) -> Result<BytesStart<'a>, RedactError> {
     let mut out = BytesStart::new(start.name().as_ref().to_owned());
     for attr in start.attributes() {
@@ -332,8 +333,7 @@ fn redact_attributes<'a>(
             .normalized_value(quick_xml::XmlVersion::Implicit1_0)
             .map_err(|e| RedactError::InvalidXml(e.to_string()))?
             .into_owned();
-        let ancestor_is_secret =
-            any_ancestor_secret(tag_stack, &value, extra_exact_elem, bgp_route_communities);
+        let ancestor_is_secret = any_ancestor_secret(tag_stack, &value, extra_exact_elem, opts);
         let redacted_value =
             if ancestor_is_secret || is_denylisted_key(&key) || looks_like_secret_value(&value) {
                 String::from_utf8_lossy(PLACEHOLDER).into_owned()
@@ -361,13 +361,12 @@ fn flush_text_run(
     text_run: &mut Option<String>,
     tag_stack: &[Vec<u8>],
     extra_exact_elem: &dyn Fn(&str) -> bool,
-    bgp_route_communities: bool,
+    opts: Opts,
 ) -> Result<(), RedactError> {
     let Some(joined) = text_run.take() else {
         return Ok(());
     };
-    let ancestor_is_secret =
-        any_ancestor_secret(tag_stack, &joined, extra_exact_elem, bgp_route_communities);
+    let ancestor_is_secret = any_ancestor_secret(tag_stack, &joined, extra_exact_elem, opts);
     let out = if ancestor_is_secret || looks_like_secret_value(&joined) {
         BytesText::from_escaped(escape_text(&String::from_utf8_lossy(PLACEHOLDER))).into_owned()
     } else {
