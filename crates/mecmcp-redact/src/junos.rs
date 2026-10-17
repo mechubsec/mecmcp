@@ -65,6 +65,20 @@ fn is_extra_secret_element(local_name: &str) -> bool {
     REDACT_LOG_KEYS.contains(&local_name) && !is_denylisted_key(local_name)
 }
 
+/// Junos configuration keywords that contain `session` but are not secrets
+/// (`then log session-init`, `limit-session`, ...). Exact local-name match
+/// against a closed vocabulary; the shared denylist's `session` substring
+/// entry would otherwise redact the element's own text and its whole
+/// subtree. The waiver is value-aware (see `xml::any_ancestor_secret`): it
+/// only applies to empty or numeric values, and every descendant element and
+/// every non-numeric value is still judged on its own.
+fn is_session_keyword_element(local_name: &str) -> bool {
+    matches!(
+        local_name,
+        "session-init" | "session-close" | "limit-session"
+    )
+}
+
 /// Redact a Junos NETCONF/XML support-bundle artefact.
 ///
 /// Identical to [`crate::redact_xml_str`] except that the Junos-specific
@@ -81,7 +95,18 @@ pub fn redact_xml(input: &str) -> Result<String, RedactError> {
         xml::validate(input)?;
         return Ok(input.to_string());
     }
-    xml::redact_with(input, &is_extra_secret_element)
+    xml::redact_with(input, &is_extra_secret_element, &is_session_keyword_element)
+}
+
+/// Redact a JSON value in place with the Junos-specific keyword waiver: the
+/// closed `session` vocabulary of [`redact_xml`] is kept when its value is
+/// benign (null, bool, number, empty or digits-only string); every other
+/// value, nested secret and real `session*` key is still redacted.
+pub fn redact_json_value(value: &mut serde_json::Value) {
+    if matches!(active(), RedactionPolicy::DisabledByOperator { .. }) {
+        return;
+    }
+    crate::json::redact_with_waiver(value, &is_session_keyword_element);
 }
 
 /// Redact a Junos non-XML support-bundle artefact (`/var/log/*` files,
@@ -1080,5 +1105,102 @@ mod tests {
         let line = r#"audit: cmd="set snmp community FAKEstructured""#;
         let got = redact_log_text(line);
         assert!(!got.contains("FAKEstructured"), "got: {got}");
+    }
+
+    #[test]
+    fn session_keyword_elements_pass_through_without_truncating_the_document() {
+        let xml = "<configuration><security><screen><ids-option><name>s1</name>\
+<limit-session><source-ip-based>100</source-ip-based>\
+<destination-ip-based>200</destination-ip-based></limit-session></ids-option></screen>\
+<policies><policy><name>p</name><then><log><session-init/><session-close/></log>\
+<permit/></then></policy></policies></security></configuration>";
+        let got = redact_xml(xml).unwrap();
+        assert_eq!(got, xml);
+    }
+
+    #[test]
+    fn session_keyword_element_with_pretty_printed_whitespace_is_kept() {
+        let xml = "<limit-session>\n  <source-ip-based>100</source-ip-based>\n</limit-session>";
+        assert_eq!(redact_xml(xml).unwrap(), xml);
+    }
+
+    #[test]
+    fn non_numeric_text_under_a_session_keyword_element_is_still_redacted() {
+        let got = redact_xml("<session-init>FAKEtoken123</session-init>").unwrap();
+        assert!(!got.contains("FAKEtoken123"), "got: {got}");
+        let got = redact_xml("<limit-session>FAKEtoken123</limit-session>").unwrap();
+        assert!(!got.contains("FAKEtoken123"), "got: {got}");
+    }
+
+    #[test]
+    fn secrets_nested_in_a_session_keyword_element_are_still_redacted() {
+        let got = redact_xml(
+            "<limit-session><password>FAKEpw</password><secret>FAKEs</secret></limit-session>",
+        )
+        .unwrap();
+        assert!(
+            !got.contains("FAKEpw") && !got.contains("FAKEs"),
+            "got: {got}"
+        );
+    }
+
+    #[test]
+    fn real_session_elements_are_still_redacted() {
+        for xml in [
+            "<session>FAKEsess1</session>",
+            "<session-id>FAKEsess1</session-id>",
+            "<session-token>FAKEsess1</session-token>",
+            "<session-key>FAKEsess1</session-key>",
+            "<session-count>FAKEsess1</session-count>",
+            "<session><token>FAKEsess1</token></session>",
+        ] {
+            let got = redact_xml(xml).unwrap();
+            assert!(!got.contains("FAKEsess1"), "{xml} -> {got}");
+        }
+    }
+
+    #[test]
+    fn json_session_keywords_pass_through_with_benign_values() {
+        let mut v = serde_json::json!({
+            "limit-session": {"source-ip-based": 100, "destination-ip-based": "200"},
+            "then": {"log": {"session-init": [null], "session-close": [null]}},
+            "after": "kept"
+        });
+        let want = v.clone();
+        redact_json_value(&mut v);
+        assert_eq!(v, want);
+    }
+
+    #[test]
+    #[allow(clippy::indexing_slicing)]
+    fn json_session_keyword_with_secret_content_is_still_redacted() {
+        let mut v = serde_json::json!({"limit-session": "FAKEabc"});
+        redact_json_value(&mut v);
+        assert_eq!(v["limit-session"], "[REDACTED]");
+        let mut v = serde_json::json!({"limit-session": {"password": "FAKEpw"}});
+        redact_json_value(&mut v);
+        assert_eq!(v["limit-session"]["password"], "[REDACTED]");
+        let mut v = serde_json::json!({"limit-session": {"note": "FAKEabc"}});
+        redact_json_value(&mut v);
+        assert_eq!(v["limit-session"]["note"], "[REDACTED]");
+    }
+
+    #[test]
+    #[allow(clippy::indexing_slicing)]
+    fn json_real_session_keys_are_still_redacted() {
+        for key in [
+            "session",
+            "session-id",
+            "session-token",
+            "session-key",
+            "session-count",
+        ] {
+            let mut v = serde_json::json!({ key: "FAKEsess1" });
+            redact_json_value(&mut v);
+            assert_eq!(v[key], "[REDACTED]", "{key}");
+        }
+        let mut v = serde_json::json!({"limit-session": {"session-id": 4242}});
+        redact_json_value(&mut v);
+        assert_eq!(v["limit-session"]["session-id"], "[REDACTED]");
     }
 }
