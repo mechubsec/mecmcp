@@ -145,6 +145,20 @@ fn redact_inner(
     }
 }
 
+/// Whether `v` carries no secret-shaped content for a session-named key:
+/// containers are inert only if every descendant is inert (fail closed),
+/// and scalars must be empty or a bare
+/// small integer (see [`is_inert_session_value`]).
+fn is_inert_session_json_value(v: &Value) -> bool {
+    match v {
+        Value::Null | Value::Bool(_) => true,
+        Value::Array(a) => a.iter().all(is_inert_session_json_value),
+        Value::Object(m) => m.values().all(is_inert_session_json_value),
+        Value::Number(n) => n.is_u64() || n.is_i64(),
+        Value::String(s) => is_inert_session_value(s),
+    }
+}
+
 /// A denylisted key's value: strings and numbers become the placeholder
 /// string outright (a denylisted key is redacted regardless of shape).
 /// Objects and arrays are walked recursively rather than nuked wholesale, so
@@ -155,17 +169,6 @@ fn redact_inner(
 /// two levels down (`secrets.wifi`, `pre_shared_keys[0]`) must not survive
 /// just because its own immediate key or shape is not independently
 /// suspicious.
-/// Whether `v` carries no secret-shaped content for a session-named key:
-/// containers are walked per child, and scalars must be empty or a bare
-/// small integer (see [`is_inert_session_value`]).
-fn is_inert_session_json_value(v: &Value) -> bool {
-    match v {
-        Value::Null | Value::Bool(_) | Value::Object(_) | Value::Array(_) => true,
-        Value::Number(n) => n.is_u64() || n.is_i64(),
-        Value::String(s) => is_inert_session_value(s),
-    }
-}
-
 fn redact_leaf(v: &Value) -> Value {
     match v {
         Value::Object(map) => Value::Object(

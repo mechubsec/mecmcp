@@ -93,3 +93,17 @@ fn json_real_session_secrets_are_still_masked() {
         assert!(!s.contains(leak), "{leak} leaked: {s}");
     }
 }
+
+#[test]
+fn json_nested_free_text_under_session_names_is_masked() {
+    let mut v = json!({
+        "limit-session": {"description": "corp-fw-01 10.1.2.3"},
+        "session-init": {"x": {"y": "hunter2"}},
+        "session-close": ["corp-fw-02", "other"]
+    });
+    redact_json_value_with_profile(&mut v, &ON);
+    let s = v.to_string();
+    for leak in ["corp-fw-01", "10.1.2.3", "hunter2", "corp-fw-02", "other"] {
+        assert!(!s.contains(leak), "{leak} leaked: {s}");
+    }
+}
