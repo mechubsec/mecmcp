@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.28.2] - 2026-10-17
 
+### Added
+
+- **mecmcp-redact: new opt-in profile setting for structured output**
+  (mecmcp#541). Off by default; existing behaviour is unchanged.
+
 ### Fixed
 
 - **mecmcp-redact: structured output now preserves non-secret Junos
