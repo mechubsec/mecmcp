@@ -18,7 +18,7 @@ pub(crate) const PLACEHOLDER: &str = "[REDACTED]";
 
 /// Redact `value` in place.
 pub fn redact(value: &mut Value) {
-    redact_inner(value, None, false, &[], false);
+    redact_inner(value, None, false, &[], false, &|_| false);
 }
 
 /// Redact `value` in place, except that a key whose normalized form appears
@@ -35,7 +35,41 @@ pub(crate) fn redact_with_exemptions(
     exempt: &[&str],
     bgp_route_communities: bool,
 ) {
-    redact_inner(value, None, false, exempt, bgp_route_communities);
+    redact_inner(value, None, false, exempt, bgp_route_communities, &|_| {
+        false
+    });
+}
+
+/// Redact `value` in place like [`redact`], except that a key for which
+/// `waive` returns true is not treated as denylisted when its value is benign
+/// (null, bool, number, or empty/digits-only string); a container value under
+/// such a key is walked with each child judged on its own key, and any
+/// non-benign scalar left inside it is masked. This is the value-aware
+/// counterpart of the XML path's keyword waiver.
+pub(crate) fn redact_with_waiver(value: &mut Value, waive: &dyn Fn(&str) -> bool) {
+    redact_inner(value, None, false, &[], false, waive);
+}
+
+/// Scalar with no secret-bearing content of its own: a counter or limit.
+fn is_benign_scalar(value: &Value) -> bool {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => true,
+        Value::String(s) => {
+            let v = s.trim();
+            v.is_empty() || v.bytes().all(|b| b.is_ascii_digit())
+        }
+        Value::Array(_) | Value::Object(_) => false,
+    }
+}
+
+/// Mask every scalar leaf under `value` that is not benign.
+fn mask_non_benign(value: &mut Value) {
+    match value {
+        Value::Object(map) => map.values_mut().for_each(mask_non_benign),
+        Value::Array(items) => items.iter_mut().for_each(mask_non_benign),
+        leaf if is_benign_scalar(leaf) => {}
+        leaf => *leaf = Value::String(PLACEHOLDER.to_string()),
+    }
 }
 
 /// Whether every string leaf under `value` looks like BGP community-tag
@@ -98,6 +132,7 @@ fn redact_inner(
     under_bgp: bool,
     exempt: &[&str],
     bgp_route_communities: bool,
+    waive: &dyn Fn(&str) -> bool,
 ) {
     match value {
         Value::Object(map) => {
@@ -105,7 +140,14 @@ fn redact_inner(
             for (key, v) in map.iter_mut() {
                 let child_under_bgp = under_bgp || is_bgp_scope_key(key);
                 if exempt.contains(&normalize(key).as_str()) {
-                    redact_inner(v, Some(key), child_under_bgp, exempt, bgp_route_communities);
+                    redact_inner(
+                        v,
+                        Some(key),
+                        child_under_bgp,
+                        exempt,
+                        bgp_route_communities,
+                        waive,
+                    );
                 } else {
                     let is_bgp_field = bgp_route_communities
                         && is_bgp_community_field(key, under_bgp)
@@ -113,17 +155,44 @@ fn redact_inner(
                     let is_secret = (is_denylisted_key(key)
                         || is_wep_keys_field(key, parent_key, sibling_type.as_deref()))
                         && !is_bgp_field;
-                    if is_secret {
+                    if is_secret
+                        && waive(key)
+                        && !is_wep_keys_field(key, parent_key, sibling_type.as_deref())
+                    {
+                        redact_inner(
+                            v,
+                            Some(key),
+                            child_under_bgp,
+                            exempt,
+                            bgp_route_communities,
+                            waive,
+                        );
+                        mask_non_benign(v);
+                    } else if is_secret {
                         *v = redact_leaf(v);
                     } else {
-                        redact_inner(v, Some(key), child_under_bgp, exempt, bgp_route_communities);
+                        redact_inner(
+                            v,
+                            Some(key),
+                            child_under_bgp,
+                            exempt,
+                            bgp_route_communities,
+                            waive,
+                        );
                     }
                 }
             }
         }
         Value::Array(items) => {
             for item in items.iter_mut() {
-                redact_inner(item, parent_key, under_bgp, exempt, bgp_route_communities);
+                redact_inner(
+                    item,
+                    parent_key,
+                    under_bgp,
+                    exempt,
+                    bgp_route_communities,
+                    waive,
+                );
             }
         }
         Value::String(s) => {

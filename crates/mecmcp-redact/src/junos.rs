@@ -98,6 +98,17 @@ pub fn redact_xml(input: &str) -> Result<String, RedactError> {
     xml::redact_with(input, &is_extra_secret_element, &is_session_keyword_element)
 }
 
+/// Redact a JSON value in place with the Junos-specific keyword waiver: the
+/// closed `session` vocabulary of [`redact_xml`] is kept when its value is
+/// benign (null, bool, number, empty or digits-only string); every other
+/// value, nested secret and real `session*` key is still redacted.
+pub fn redact_json_value(value: &mut serde_json::Value) {
+    if matches!(active(), RedactionPolicy::DisabledByOperator { .. }) {
+        return;
+    }
+    crate::json::redact_with_waiver(value, &is_session_keyword_element);
+}
+
 /// Redact a Junos non-XML support-bundle artefact (`/var/log/*` files,
 /// `request support information` tech-support text). Always succeeds — there
 /// is no parse step to fail on free-form text.
@@ -1146,5 +1157,50 @@ mod tests {
             let got = redact_xml(xml).unwrap();
             assert!(!got.contains("FAKEsess1"), "{xml} -> {got}");
         }
+    }
+
+    #[test]
+    fn json_session_keywords_pass_through_with_benign_values() {
+        let mut v = serde_json::json!({
+            "limit-session": {"source-ip-based": 100, "destination-ip-based": "200"},
+            "then": {"log": {"session-init": [null], "session-close": [null]}},
+            "after": "kept"
+        });
+        let want = v.clone();
+        redact_json_value(&mut v);
+        assert_eq!(v, want);
+    }
+
+    #[test]
+    #[allow(clippy::indexing_slicing)]
+    fn json_session_keyword_with_secret_content_is_still_redacted() {
+        let mut v = serde_json::json!({"limit-session": "FAKEabc"});
+        redact_json_value(&mut v);
+        assert_eq!(v["limit-session"], "[REDACTED]");
+        let mut v = serde_json::json!({"limit-session": {"password": "FAKEpw"}});
+        redact_json_value(&mut v);
+        assert_eq!(v["limit-session"]["password"], "[REDACTED]");
+        let mut v = serde_json::json!({"limit-session": {"note": "FAKEabc"}});
+        redact_json_value(&mut v);
+        assert_eq!(v["limit-session"]["note"], "[REDACTED]");
+    }
+
+    #[test]
+    #[allow(clippy::indexing_slicing)]
+    fn json_real_session_keys_are_still_redacted() {
+        for key in [
+            "session",
+            "session-id",
+            "session-token",
+            "session-key",
+            "session-count",
+        ] {
+            let mut v = serde_json::json!({ key: "FAKEsess1" });
+            redact_json_value(&mut v);
+            assert_eq!(v[key], "[REDACTED]", "{key}");
+        }
+        let mut v = serde_json::json!({"limit-session": {"session-id": 4242}});
+        redact_json_value(&mut v);
+        assert_eq!(v["limit-session"]["session-id"], "[REDACTED]");
     }
 }
