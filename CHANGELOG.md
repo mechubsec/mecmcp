@@ -27,6 +27,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [0.28.2] - 2026-10-17
+
+### Added
+
+- **mecmcp-redact: new opt-in profile setting for structured output**
+  (mecmcp#541). Off by default; existing behaviour is unchanged.
+
+### Fixed
+
+- **mecmcp-redact: structured output now preserves non-secret Junos
+  configuration keywords** (mecmcp#543). Configuration keywords that are not
+  secret values were being redacted from structured output; they are now kept,
+  so downstream servers return usable configuration data. Secret values remain
+  redacted.
+
 ## [0.28.1] - 2026-10-12
 
 ### Fixed
