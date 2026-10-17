@@ -50,6 +50,7 @@ pub struct Profile {
     wholesale_redact_keys: &'static [&'static str],
     key_exemptions: &'static [&'static str],
     bgp_route_communities: bool,
+    session_config_values: bool,
 }
 
 impl Profile {
@@ -83,6 +84,7 @@ impl Profile {
             wholesale_redact_keys,
             key_exemptions,
             bgp_route_communities: false,
+            session_config_values: false,
         }
     }
 
@@ -99,6 +101,20 @@ impl Profile {
     #[must_use]
     pub const fn with_bgp_route_communities(mut self) -> Self {
         self.bgp_route_communities = true;
+        self
+    }
+
+    /// Opt this profile into value-aware handling of `session`-named
+    /// configuration fields: a small closed set of operational names
+    /// (`limit-session`, `session-init`, `session-close`, and `*-session-*`
+    /// counters built only from a fixed vocabulary) survives redaction when
+    /// its value is empty or a bare integer. Any other `session`-named field
+    /// (`session-id`, `session-token`, bare `session`, ...) and any
+    /// non-integer value under one of these names is still redacted. Off by
+    /// default; applies to both the JSON and XML paths.
+    #[must_use]
+    pub const fn with_session_config_values(mut self) -> Self {
+        self.session_config_values = true;
         self
     }
 
@@ -169,19 +185,30 @@ const fn check_normalized(entry: &str) {
 /// so a denylisted descendant or a secret-shaped leaf is still caught.
 pub fn redact_json_value_with_profile(value: &mut Value, profile: &Profile) {
     redact_wholesale_fields(value, profile.wholesale_redact_keys);
-    crate::json::redact_with_exemptions(
-        value,
-        profile.key_exemptions,
-        profile.bgp_route_communities,
-    );
+    crate::json::redact_with_exemptions(value, profile.key_exemptions, opts(profile));
 }
 
-/// The [`Profile::bgp_route_communities`] flag, read by
-/// [`crate::xml::redact_with_profile`] — the XML path has no equivalent of
-/// `wholesale_redact_keys`/`key_exemptions` yet, so this is the only profile
-/// setting it consults.
-pub(crate) fn bgp_route_communities(profile: &Profile) -> bool {
-    profile.bgp_route_communities
+/// Per-profile exemption flags, read by [`crate::xml::redact_with_profile`]
+/// and [`crate::json::redact_with_exemptions`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Opts {
+    pub(crate) bgp_route_communities: bool,
+    pub(crate) session_config_values: bool,
+}
+
+impl Opts {
+    /// No exemptions: the generic scan.
+    pub(crate) const NONE: Self = Self {
+        bgp_route_communities: false,
+        session_config_values: false,
+    };
+}
+
+pub(crate) fn opts(profile: &Profile) -> Opts {
+    Opts {
+        bgp_route_communities: profile.bgp_route_communities,
+        session_config_values: profile.session_config_values,
+    }
 }
 
 /// Replace every value under a [`Profile::wholesale_redact_keys`] key with
