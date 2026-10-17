@@ -9,8 +9,9 @@
 
 use crate::denylist::{
     is_bgp_community_field, is_bgp_community_tag, is_bgp_scope_key, is_denylisted_key,
-    is_wep_keys_field, normalize,
+    is_inert_session_value, is_session_config_name, is_wep_keys_field, normalize,
 };
+use crate::profile::Opts;
 use crate::shape::looks_like_secret_value;
 use serde_json::Value;
 
@@ -18,7 +19,7 @@ pub(crate) const PLACEHOLDER: &str = "[REDACTED]";
 
 /// Redact `value` in place.
 pub fn redact(value: &mut Value) {
-    redact_inner(value, None, false, &[], false, &|_| false);
+    redact_inner(value, None, false, &[], Opts::NONE, &|_| false);
 }
 
 /// Redact `value` in place, except that a key whose normalized form appears
@@ -27,17 +28,11 @@ pub fn redact(value: &mut Value) {
 /// caught), only the key-name match is suppressed. `exempt` entries must
 /// already be normalized (see [`crate::profile::Profile::new`]).
 ///
-/// `bgp_route_communities` is [`crate::profile::Profile::with_bgp_route_communities`]'s
+/// `opts.bgp_route_communities` is [`crate::profile::Profile::with_bgp_route_communities`]'s
 /// flag: only when set does a `community` field under a `bgp` scope get the
 /// routing-policy exemption below.
-pub(crate) fn redact_with_exemptions(
-    value: &mut Value,
-    exempt: &[&str],
-    bgp_route_communities: bool,
-) {
-    redact_inner(value, None, false, exempt, bgp_route_communities, &|_| {
-        false
-    });
+pub(crate) fn redact_with_exemptions(value: &mut Value, exempt: &[&str], opts: Opts) {
+    redact_inner(value, None, false, exempt, opts, &|_| false);
 }
 
 /// Redact `value` in place like [`redact`], except that a key for which
@@ -46,8 +41,13 @@ pub(crate) fn redact_with_exemptions(
 /// such a key is walked with each child judged on its own key, and any
 /// non-benign scalar left inside it is masked. This is the value-aware
 /// counterpart of the XML path's keyword waiver.
+///
+/// Independent of [`crate::profile::Profile::with_session_config_values`]:
+/// that flag fails closed (a non-inert value under a session-config name is
+/// redacted wholesale) and is off unless a profile opts in. This waiver is
+/// the Junos path's closed keyword set and keeps benign siblings.
 pub(crate) fn redact_with_waiver(value: &mut Value, waive: &dyn Fn(&str) -> bool) {
-    redact_inner(value, None, false, &[], false, waive);
+    redact_inner(value, None, false, &[], Opts::NONE, waive);
 }
 
 /// Scalar with no secret-bearing content of its own: a counter or limit.
@@ -124,14 +124,20 @@ fn looks_like_bgp_community_value(value: &Value) -> bool {
 /// takes — a key whose normalized form appears in it is never treated as
 /// denylisted, but its value is still walked.
 ///
-/// `bgp_route_communities` gates the BGP exemption itself — see
+/// `opts` gates the BGP and session-value exemptions themselves — see
 /// [`redact_with_exemptions`].
+///
+/// `waive` is the Junos keyword waiver from [`redact_with_waiver`]. It is
+/// consulted only when the profile session flag did not already decide the
+/// key: a non-inert value under an opted-in session-config name is redacted
+/// wholesale (fail closed), and a waived key otherwise keeps benign scalars
+/// while masking the rest.
 fn redact_inner(
     value: &mut Value,
     parent_key: Option<&str>,
     under_bgp: bool,
     exempt: &[&str],
-    bgp_route_communities: bool,
+    opts: Opts,
     waive: &dyn Fn(&str) -> bool,
 ) {
     match value {
@@ -140,59 +146,40 @@ fn redact_inner(
             for (key, v) in map.iter_mut() {
                 let child_under_bgp = under_bgp || is_bgp_scope_key(key);
                 if exempt.contains(&normalize(key).as_str()) {
-                    redact_inner(
-                        v,
-                        Some(key),
-                        child_under_bgp,
-                        exempt,
-                        bgp_route_communities,
-                        waive,
-                    );
+                    redact_inner(v, Some(key), child_under_bgp, exempt, opts, waive);
                 } else {
-                    let is_bgp_field = bgp_route_communities
+                    let is_bgp_field = opts.bgp_route_communities
                         && is_bgp_community_field(key, under_bgp)
                         && looks_like_bgp_community_value(v);
+                    let session_named = opts.session_config_values && is_session_config_name(key);
+                    let session_inert = session_named && is_inert_session_json_value(v);
                     let is_secret = (is_denylisted_key(key)
                         || is_wep_keys_field(key, parent_key, sibling_type.as_deref()))
-                        && !is_bgp_field;
-                    if is_secret
+                        && !is_bgp_field
+                        && !session_inert;
+                    // Profile session flag fails closed: a non-inert value
+                    // under a session-config name is redacted wholesale, even
+                    // when a keyword waiver would keep benign siblings.
+                    let session_fail_closed = session_named && !session_inert;
+                    if session_fail_closed {
+                        *v = redact_leaf(v);
+                    } else if is_secret
                         && waive(key)
                         && !is_wep_keys_field(key, parent_key, sibling_type.as_deref())
                     {
-                        redact_inner(
-                            v,
-                            Some(key),
-                            child_under_bgp,
-                            exempt,
-                            bgp_route_communities,
-                            waive,
-                        );
+                        redact_inner(v, Some(key), child_under_bgp, exempt, opts, waive);
                         mask_non_benign(v);
                     } else if is_secret {
                         *v = redact_leaf(v);
                     } else {
-                        redact_inner(
-                            v,
-                            Some(key),
-                            child_under_bgp,
-                            exempt,
-                            bgp_route_communities,
-                            waive,
-                        );
+                        redact_inner(v, Some(key), child_under_bgp, exempt, opts, waive);
                     }
                 }
             }
         }
         Value::Array(items) => {
             for item in items.iter_mut() {
-                redact_inner(
-                    item,
-                    parent_key,
-                    under_bgp,
-                    exempt,
-                    bgp_route_communities,
-                    waive,
-                );
+                redact_inner(item, parent_key, under_bgp, exempt, opts, waive);
             }
         }
         Value::String(s) => {
@@ -210,6 +197,20 @@ fn redact_inner(
             }
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+/// Whether `v` carries no secret-shaped content for a session-named key:
+/// containers are inert only if every descendant is inert (fail closed),
+/// and scalars must be empty or a bare
+/// small integer (see [`is_inert_session_value`]).
+fn is_inert_session_json_value(v: &Value) -> bool {
+    match v {
+        Value::Null | Value::Bool(_) => true,
+        Value::Array(a) => a.iter().all(is_inert_session_json_value),
+        Value::Object(m) => m.values().all(is_inert_session_json_value),
+        Value::Number(n) => n.is_u64() || n.is_i64(),
+        Value::String(s) => is_inert_session_value(s),
     }
 }
 

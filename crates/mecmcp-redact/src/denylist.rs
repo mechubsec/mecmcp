@@ -99,6 +99,87 @@ pub fn is_wep_keys_field(key: &str, parent_key: Option<&str>, sibling_type: Opti
     parent_key.is_some_and(|p| normalize(p) == "auth")
 }
 
+/// Words a `session` counter/limit field name may be built from, besides
+/// `session`/`sessions` itself. Closed on purpose: a name with any other word
+/// (`id`, `token`, `data`, `value`, ...) stays denylisted.
+const SESSION_NAME_WORDS: &[&str] = &[
+    "flow",
+    "active",
+    "count",
+    "counter",
+    "counters",
+    "current",
+    "max",
+    "maximum",
+    "total",
+    "failed",
+    "invalid",
+    "valid",
+    "created",
+    "closed",
+    "allocated",
+    "peak",
+    "limit",
+    "per",
+    "ip",
+    "source",
+    "destination",
+    "tcp",
+    "udp",
+    "icmp",
+    "in",
+    "out",
+    "half",
+    "open",
+    "idle",
+    "rate",
+    "ager",
+    "aged",
+    "burst",
+    "drop",
+    "dropped",
+    "rejected",
+    "denied",
+    "allowed",
+];
+
+/// Whether `name` is an operational `session` configuration or counter field
+/// name rather than possible session secret material: `limit-session`,
+/// `session-init`, `session-close`, or a lowercase `-`/`_`-separated name of
+/// `session`/`sessions` plus only [`SESSION_NAME_WORDS`] (`sessions-active`,
+/// `flow-session-count`). A bare `session`/`sessions` is not eligible.
+///
+/// Only a *name* test; callers must also check the value with
+/// [`is_inert_session_value`], and must gate it behind a vendor profile.
+#[must_use]
+pub(crate) fn is_session_config_name(name: &str) -> bool {
+    if matches!(
+        normalize(name).as_str(),
+        "limitsession" | "sessioninit" | "sessionclose"
+    ) {
+        return true;
+    }
+    let mut has_session = false;
+    let mut words = 0;
+    for w in name.split(['-', '_']) {
+        words += 1;
+        match w {
+            "session" | "sessions" => has_session = true,
+            w if SESSION_NAME_WORDS.contains(&w) => {}
+            _ => return false,
+        }
+    }
+    has_session && words > 1
+}
+
+/// A value too plain to be session secret material: empty/whitespace
+/// (container or flag element) or a bare integer of at most 12 digits.
+#[must_use]
+pub(crate) fn is_inert_session_value(value: &str) -> bool {
+    let v = value.trim();
+    v.is_empty() || (v.len() <= 12 && v.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Whether `key` is the BGP configuration scope that [`is_bgp_community_field`]
 /// looks for among a value's ancestors.
 #[must_use]
@@ -412,6 +493,44 @@ mod tests {
                 !is_bgp_community_tag(not_tag),
                 "'{not_tag}' should not look BGP-shaped"
             );
+        }
+    }
+
+    #[test]
+    fn session_config_names_are_a_closed_set() {
+        for ok in [
+            "limit-session",
+            "session-init",
+            "session-close",
+            "sessions-active",
+            "flow-session-count",
+            "max_sessions",
+        ] {
+            assert!(is_session_config_name(ok), "{ok}");
+        }
+        for bad in [
+            "session",
+            "sessions",
+            "session-id",
+            "session_token",
+            "sessionId",
+            "session-hash",
+            "session-data",
+            "session-key",
+            "auth-session",
+            "x-session",
+        ] {
+            assert!(!is_session_config_name(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn inert_session_values_are_empty_or_small_integers() {
+        for ok in ["", "  ", "0", "65535", "\n    "] {
+            assert!(is_inert_session_value(ok), "{ok:?}");
+        }
+        for bad in ["abc", "1234567890123", "12a", "session-init", "-1", "1.5"] {
+            assert!(!is_inert_session_value(bad), "{bad:?}");
         }
     }
 
