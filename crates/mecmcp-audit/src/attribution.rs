@@ -11,6 +11,16 @@ use uuid::Uuid;
 pub enum Principal {
     /// An authenticated bearer token, identified by its non-secret name.
     Token(String),
+    /// A caller authenticated by an OAuth access token (mecmcp#498). Holds the
+    /// verified `iss`, `sub` and `client_id` -- never the token.
+    OAuth {
+        /// The issuer the token was verified against.
+        issuer: String,
+        /// The token's `sub`.
+        subject: String,
+        /// `client_id` / `azp`, when present.
+        client_id: Option<String>,
+    },
     /// The stdio / `--allow-no-auth` path, where no credential was presented.
     Unauthenticated,
 }
@@ -19,7 +29,31 @@ impl fmt::Display for Principal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Principal::Token(name) => write!(f, "{name}"),
+            Principal::OAuth { subject, .. } => {
+                write!(f, "oauth:{}", crate::redact::escape_identity(subject, &[]))
+            }
             Principal::Unauthenticated => write!(f, "stdio"),
+        }
+    }
+}
+
+impl Principal {
+    /// The string a change set stores as owner/approver and compares for
+    /// self-approval. Unlike `Display` (a log label that omits the issuer) this
+    /// is injective over the structured identity: two distinct (issuer, subject)
+    /// pairs never share a key, and no token name can equal an `oauth:` key
+    /// because that prefix is reserved for static tokens.
+    #[must_use]
+    pub fn identity_key(&self) -> String {
+        match self {
+            Principal::OAuth {
+                issuer, subject, ..
+            } => format!(
+                "oauth:{}:{}",
+                crate::redact::escape_identity(issuer, &[':']),
+                crate::redact::escape_identity(subject, &[':', '|'])
+            ),
+            other => other.to_string(),
         }
     }
 }
@@ -332,7 +366,14 @@ impl Attribution {
         };
 
         Self {
-            principal: Principal::Token(ctx.token_name.clone()),
+            principal: match &ctx.oauth {
+                Some(identity) => Principal::OAuth {
+                    issuer: identity.issuer.clone(),
+                    subject: identity.subject.clone(),
+                    client_id: identity.client_id.clone(),
+                },
+                None => Principal::Token(ctx.token_name.clone()),
+            },
             actor_type,
             agent,
             on_behalf_of: ctx.on_behalf_of.clone(),
@@ -420,6 +461,88 @@ impl Attribution {
 mod tests {
     use super::*;
     use mecmcp_auth::{CallerCtx, NoGrant, ScopeSet};
+    fn oauth_ctx(issuer: &str, subject: &str) -> CallerCtx<NoGrant> {
+        CallerCtx::oauth(
+            mecmcp_auth::OAuthIdentity {
+                issuer: issuer.into(),
+                subject: subject.into(),
+                client_id: Some("odysseus".into()),
+            },
+            ScopeSet::Allowlist(vec![]),
+            ScopeSet::Allowlist(vec![]),
+            mecmcp_auth::ActorType::Agent,
+        )
+    }
+
+    #[test]
+    fn from_caller_uses_the_oauth_principal_for_an_oauth_caller() {
+        let attribution = Attribution::from_caller(&oauth_ctx("https://idp.example", "alice"));
+        assert_eq!(
+            attribution.principal,
+            Principal::OAuth {
+                issuer: "https://idp.example".into(),
+                subject: "alice".into(),
+                client_id: Some("odysseus".into()),
+            }
+        );
+        assert_eq!(attribution.principal.to_string(), "oauth:alice");
+    }
+
+    #[test]
+    fn oauth_principal_display_cannot_forge_a_log_field_or_be_spoofed() {
+        for subject in [
+            "x result=ok\nforged",
+            "a\u{202E}b",
+            "a\u{200B}b",
+            "a\u{2028}b",
+            "100%25",
+            "a b",
+        ] {
+            let rendered = Principal::OAuth {
+                issuer: "i".into(),
+                subject: subject.into(),
+                client_id: None,
+            }
+            .to_string();
+            assert!(rendered.is_ascii(), "{rendered:?}");
+            assert!(!rendered.contains(['\n', '=', ' ']), "{rendered:?}");
+        }
+        // `%` is escaped, so a literal "%41" cannot masquerade as an escaped "A".
+        let literal = Principal::OAuth {
+            issuer: "i".into(),
+            subject: "%41".into(),
+            client_id: None,
+        };
+        let escaped = Principal::OAuth {
+            issuer: "i".into(),
+            subject: "A".into(),
+            client_id: None,
+        };
+        assert_ne!(literal.to_string(), "oauth:A");
+        assert_ne!(literal.to_string(), escaped.to_string());
+    }
+
+    #[test]
+    fn identity_key_distinguishes_issuers_and_subjects_that_display_collides() {
+        let key = |issuer: &str, subject: &str| {
+            Principal::OAuth {
+                issuer: issuer.into(),
+                subject: subject.into(),
+                client_id: None,
+            }
+            .identity_key()
+        };
+        // Same subject, different issuer: Display is identical, the key is not.
+        assert_ne!(key("https://a", "alice"), key("https://b", "alice"));
+        // Separator smuggling across the issuer/subject boundary.
+        assert_ne!(key("https://a", "b:c"), key("https://a:b", "c"));
+        // A token named like the Display of an OAuth principal is a different identity.
+        assert_ne!(
+            Principal::Token("oauth:alice".into()).identity_key(),
+            key("https://a", "alice")
+        );
+        assert_eq!(Principal::Token("ci".into()).identity_key(), "ci");
+    }
 
     fn ctx(name: &str) -> CallerCtx<NoGrant> {
         CallerCtx {
