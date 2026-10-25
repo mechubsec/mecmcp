@@ -8,6 +8,7 @@ use mecmcp_auth::{ActorType, ScopeSet};
 use mecmcp_oidc::is_scope_token;
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::Path;
 
 const MAX_FILE_BYTES: u64 = 64 * 1024;
@@ -43,10 +44,38 @@ struct MapFile {
     version: u32,
     #[serde(default)]
     actor_type: ActorType,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "unique_keys")]
     scopes: BTreeMap<String, GrantSpec>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "unique_keys")]
     roles: BTreeMap<String, GrantSpec>,
+}
+
+/// Deserialize a table, refusing a repeated key: serde's map impl lets the last copy win,
+/// so a pasted-then-edited block would silently be governed by the unedited copy.
+fn unique_keys<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, GrantSpec>, D::Error> {
+    struct UniqueKeys;
+    impl<'de> serde::de::Visitor<'de> for UniqueKeys {
+        type Value = BTreeMap<String, GrantSpec>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a map of names to grants")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut access: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut table = BTreeMap::new();
+            while let Some((name, spec)) = access.next_entry::<String, GrantSpec>()? {
+                if table.contains_key(&name) {
+                    return Err(serde::de::Error::custom(format!("duplicate key {name:?}")));
+                }
+                table.insert(name, spec);
+            }
+            Ok(table)
+        }
+    }
+    deserializer.deserialize_map(UniqueKeys)
 }
 
 /// What a verified token is allowed to do on this server.
@@ -93,17 +122,21 @@ impl OAuthScopeMap {
             ));
         }
         for (name, spec) in &file.scopes {
-            if !is_scope_token(name) {
+            // `*` would read as a default entry; it is only ever an exact-match literal.
+            if !is_scope_token(name) || name == "*" {
                 return Err(ScopeMapError::Invalid(format!(
-                    "scope key {name:?} is not a valid scope-token"
+                    "scope key {name:?} is not a valid scope-token (and may not be \"*\")"
                 )));
             }
             validate_spec(name, spec)?;
         }
         for (name, spec) in &file.roles {
-            if name.is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+            // Printable ASCII only (space allowed: IdP group names use it), so no control,
+            // zero-width or bidi character can make two role names look alike.
+            let printable = name.bytes().all(|byte| matches!(byte, 0x20..=0x7E));
+            if name.is_empty() || name.len() > 128 || !printable || name == "*" {
                 return Err(ScopeMapError::Invalid(format!(
-                    "role key {name:?} is out of range"
+                    "role key {name:?} must be 1-128 bytes of printable ASCII and not \"*\""
                 )));
             }
             validate_spec(name, spec)?;
@@ -120,12 +153,16 @@ impl OAuthScopeMap {
     /// # Errors
     /// Returns a [`ScopeMapError`] if the file is unreadable, oversized, or invalid.
     pub fn load(path: &Path) -> Result<Self, ScopeMapError> {
-        let metadata =
-            std::fs::metadata(path).map_err(|error| ScopeMapError::Io(error.to_string()))?;
-        if metadata.len() > MAX_FILE_BYTES {
+        // Bounded read, not a metadata length: FIFOs and /dev or /proc files report 0.
+        let file =
+            std::fs::File::open(path).map_err(|error| ScopeMapError::Io(error.to_string()))?;
+        let mut bytes = Vec::new();
+        file.take(MAX_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| ScopeMapError::Io(error.to_string()))?;
+        if bytes.len() as u64 > MAX_FILE_BYTES {
             return Err(ScopeMapError::TooLarge);
         }
-        let bytes = std::fs::read(path).map_err(|error| ScopeMapError::Io(error.to_string()))?;
         Self::from_json(&bytes)
     }
 
@@ -175,6 +212,11 @@ fn validate_spec(name: &str, spec: &GrantSpec) -> Result<(), ScopeMapError> {
         .map_err(|error| ScopeMapError::Invalid(format!("{name}: {error}")))
 }
 
+/// Union of two grants. A tools `Wildcard` absorbs any allowlist, and a tools wildcard
+/// excludes write tools at enforcement (`ScopeSet::allows_tool`). So a token holding both
+/// a `["*"]` mapping and a mapping that names a write tool ends up *without* that write
+/// tool. Deliberate and fail-safe: `ScopeSet` cannot express "wildcard plus these write
+/// tools", and narrowing is the safe direction. Grant write tools from a non-wildcard entry.
 fn union(accumulated: ScopeSet, next: &ScopeSet) -> ScopeSet {
     match (accumulated, next) {
         (ScopeSet::Wildcard, _) | (_, ScopeSet::Wildcard) => ScopeSet::Wildcard,
@@ -345,6 +387,107 @@ mod tests {
             map().scopes_supported(),
             vec!["junos:none", "junos:ops", "junos:read"]
         );
+    }
+
+    fn refusal(json: &str) -> String {
+        OAuthScopeMap::from_json(json.as_bytes())
+            .unwrap_err()
+            .to_string()
+    }
+
+    fn table(count: usize) -> String {
+        (0..count)
+            .map(|index| format!(r#""k{index}":{{"tools":["t"],"devices":["d"]}}"#))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    #[test]
+    fn duplicate_keys_are_refused() {
+        let scopes = r#"{"version":1,"scopes":{
+            "junos:read":{"tools":["get_junos_config"],"devices":["srx-1"]},
+            "junos:read":{"tools":["*"],"devices":["*"]}}}"#;
+        let roles = r#"{"version":1,"roles":{
+            "netops":{"tools":["t"],"devices":["d"]},
+            "netops":{"tools":["*"],"devices":["*"]}}}"#;
+        for json in [scopes, roles] {
+            assert!(refusal(json).contains("duplicate key"), "{json}");
+        }
+    }
+
+    #[test]
+    fn a_star_key_is_refused() {
+        assert!(
+            refusal(r#"{"version":1,"scopes":{"*":{"tools":["t"],"devices":["d"]}}}"#)
+                .contains("scope key")
+        );
+        assert!(
+            refusal(r#"{"version":1,"roles":{"*":{"tools":["t"],"devices":["d"]}}}"#)
+                .contains("role key")
+        );
+    }
+
+    #[test]
+    fn role_keys_must_be_printable_ascii() {
+        let long = "r".repeat(129);
+        for bad in [
+            "",
+            long.as_str(),
+            r"net\u200bops",
+            r"net\u202eops",
+            r"net\nops",
+            r"net\u00f6ps",
+        ] {
+            let json =
+                format!(r#"{{"version":1,"roles":{{"{bad}":{{"tools":["t"],"devices":["d"]}}}}}}"#);
+            assert!(refusal(&json).contains("role key"), "{bad:?}");
+        }
+        let json = r#"{"version":1,"roles":{"Domain Admins":{"tools":["t"],"devices":["d"]}}}"#;
+        let map = OAuthScopeMap::from_json(json.as_bytes()).unwrap();
+        assert!(map.map(&[], &strings(&["Domain Admins"])).is_some());
+    }
+
+    #[test]
+    fn each_table_is_capped_at_256_entries() {
+        for name in ["scopes", "roles"] {
+            let at_cap = format!(r#"{{"version":1,"{name}":{{{}}}}}"#, table(256));
+            assert!(
+                OAuthScopeMap::from_json(at_cap.as_bytes()).is_ok(),
+                "{name}"
+            );
+            let over = format!(r#"{{"version":1,"{name}":{{{}}}}}"#, table(257));
+            assert!(refusal(&over).contains("more than 256"), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_tools_wildcard_absorbs_an_explicit_write_tool_grant() {
+        let json = r#"{"version":1,"scopes":{
+            "junos:admin":{"tools":["*"],"devices":["*"]},
+            "junos:write":{"tools":["load_and_commit_config"],"devices":["srx-1"]}}}"#;
+        let map = OAuthScopeMap::from_json(json.as_bytes()).unwrap();
+        let write_tools = ["load_and_commit_config"];
+        let alone = map.map(&strings(&["junos:write"]), &[]).unwrap();
+        assert!(
+            alone
+                .tools
+                .allows_tool("load_and_commit_config", &write_tools)
+        );
+        let both = map
+            .map(&strings(&["junos:admin", "junos:write"]), &[])
+            .unwrap();
+        assert_eq!(both.tools, ScopeSet::Wildcard);
+        assert!(
+            !both
+                .tools
+                .allows_tool("load_and_commit_config", &write_tools)
+        );
+    }
+
+    #[test]
+    fn load_bounds_a_file_that_reports_no_length() {
+        let error = OAuthScopeMap::load(Path::new("/dev/zero")).unwrap_err();
+        assert!(matches!(error, ScopeMapError::TooLarge), "{error}");
     }
 
     #[test]
