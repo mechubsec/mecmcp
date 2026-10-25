@@ -18,7 +18,7 @@ test-util = []
 
 [dependencies]
 anyhow      = "1"
-clap        = { version = "4", features = ["derive"] }
+clap        = { version = "4", features = ["derive", "env"] }
 getrandom   = { workspace = true }
 http        = "1"
 mecmcp-audit = { version = "0.28.3", path = "../mecmcp-audit" }

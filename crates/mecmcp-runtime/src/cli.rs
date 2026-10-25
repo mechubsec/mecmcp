@@ -16,6 +16,33 @@ pub enum Transport {
     StreamableHttp,
 }
 
+/// Which tools a server lists in `tools/list` (mecmcp#547).
+///
+/// Listing only: `Compact` shortens the list to a server's dispatcher tools,
+/// it does not stop a caller invoking a named tool it already knows. Per-call
+/// scope checks stay the authorization.
+#[derive(Debug, Clone, Copy, Default, ValueEnum, PartialEq, Eq)]
+pub enum ToolMode {
+    /// Every tool the caller's scope allows.
+    #[default]
+    Full,
+    /// Only the server's compact set (its dispatchers), still scope-filtered.
+    Compact,
+}
+
+/// The `--tool-mode` flag, for a server to `#[command(flatten)]` into its own
+/// CLI.
+///
+/// Kept off [`Cli`] on purpose: junos and sdc parse their own argument types,
+/// and junos and mist build `Cli` with a struct literal, so a new `Cli` field
+/// would break them without reaching the servers that need it.
+#[derive(Debug, Clone, Copy, Default, clap::Args, PartialEq, Eq)]
+pub struct ToolModeArgs {
+    /// Tools to list: `full`, or `compact` for the server's dispatchers only.
+    #[arg(long, value_enum, env = "MCP_TOOL_MODE", default_value = "full")]
+    pub tool_mode: ToolMode,
+}
+
 /// Parse the shared CLI, reporting the consumer's own identity.
 ///
 /// The shared `Cli` carries no version of its own, so a consumer parsing it
@@ -1130,6 +1157,22 @@ mod tests {
     fn parses_streamable_http() {
         let cli = Cli::parse_from(["test-server", "-t", "streamable-http"]);
         assert_eq!(cli.transport, Transport::StreamableHttp);
+    }
+
+    #[test]
+    fn parses_tool_mode() {
+        #[derive(Parser)]
+        struct ServerCli {
+            #[command(flatten)]
+            mode: ToolModeArgs,
+        }
+        let parse = |args: &[&str]| ServerCli::try_parse_from(args).map(|cli| cli.mode.tool_mode);
+        assert_eq!(parse(&["server"]).ok(), Some(ToolMode::Full));
+        assert_eq!(
+            parse(&["server", "--tool-mode", "compact"]).ok(),
+            Some(ToolMode::Compact)
+        );
+        assert!(parse(&["server", "--tool-mode", "dynamic"]).is_err());
     }
 
     #[test]
