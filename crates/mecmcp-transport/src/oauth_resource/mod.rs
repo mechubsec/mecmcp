@@ -6,7 +6,13 @@ mod scope_map;
 pub use metadata::{metadata_document, metadata_router};
 pub use scope_map::{MappedAuthority, OAuthScopeMap, ScopeMapError};
 
-use mecmcp_oidc::{ResourceUri, ResourceUriError};
+use mecmcp_auth::{CallerCtx, Grant, OAuthIdentity};
+use mecmcp_oidc::{
+    KeySource, OidcConfig, ResourceUri, ResourceUriError, TokenProfile, TokenVerifier,
+    VerificationFailure,
+};
+use std::marker::PhantomData;
+use std::sync::Arc;
 
 /// Why an [`OAuthResourceConfig`] was refused.
 #[derive(Debug, thiserror::Error)]
@@ -28,6 +34,8 @@ pub struct OAuthResourceConfig {
     resource: ResourceUri,
     audience: Option<String>,
     scope_map: OAuthScopeMap,
+    role_claim: String,
+    require_at_jwt_typ: bool,
 }
 
 impl OAuthResourceConfig {
@@ -60,6 +68,8 @@ impl OAuthResourceConfig {
             resource: ResourceUri::parse(resource)?,
             audience: None,
             scope_map,
+            role_claim: "roles".to_owned(),
+            require_at_jwt_typ: false,
         })
     }
 
@@ -68,6 +78,20 @@ impl OAuthResourceConfig {
     #[must_use]
     pub fn with_audience(mut self, audience: &str) -> Self {
         self.audience = Some(audience.to_owned());
+        self
+    }
+
+    /// The token claim carrying role/group names (default `roles`).
+    #[must_use]
+    pub fn with_role_claim(mut self, claim: &str) -> Self {
+        self.role_claim = claim.to_owned();
+        self
+    }
+
+    /// Require the RFC 9068 `typ: at+jwt` header (default off: many IdPs omit it).
+    #[must_use]
+    pub fn with_require_at_jwt_typ(mut self, required: bool) -> Self {
+        self.require_at_jwt_typ = required;
         self
     }
 
@@ -96,6 +120,111 @@ impl OAuthResourceConfig {
     pub fn scope_map(&self) -> &OAuthScopeMap {
         &self.scope_map
     }
+
+    /// The token claim carrying role/group names.
+    #[must_use]
+    pub fn role_claim(&self) -> &str {
+        &self.role_claim
+    }
+
+    /// Whether the `typ: at+jwt` header is required.
+    #[must_use]
+    pub fn require_at_jwt_typ(&self) -> bool {
+        self.require_at_jwt_typ
+    }
+}
+
+/// Why OAuth authentication did not produce a caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OAuthRejection {
+    /// The token failed verification. The code is stable and safe to log
+    /// (`VerificationFailure::reason_code`, `invalid_subject` or `invalid_client_id`).
+    Invalid(&'static str),
+    /// The token verified but maps to no tools: the caller is known and granted nothing.
+    Unmapped(OAuthIdentity),
+    /// Verification could not be completed (IdP keys unavailable, timed out, or the
+    /// verifier is saturated). The token is not judged invalid.
+    Unavailable(&'static str),
+}
+
+/// OAuth 2.1 resource-server authentication for one server.
+pub struct OAuthResource<G: Grant> {
+    config: OAuthResourceConfig,
+    verifier: TokenVerifier,
+    _grant: PhantomData<fn() -> G>,
+}
+
+impl<G: Grant> OAuthResource<G> {
+    /// Build the verifier from `config`; JWKS and discovery are fetched through `source`
+    /// (pass `Arc::new(HttpKeySource::new(client))` in production, a fixture in tests).
+    #[must_use]
+    pub fn new(config: OAuthResourceConfig, source: Arc<dyn KeySource>) -> Self {
+        let mut oidc = OidcConfig::new(config.issuer(), config.audience(), config.role_claim());
+        oidc.token_profile = TokenProfile::AccessToken {
+            require_at_jwt_typ: config.require_at_jwt_typ(),
+        };
+        Self {
+            verifier: TokenVerifier::new(oidc, source),
+            config,
+            _grant: PhantomData,
+        }
+    }
+
+    /// The configuration this resource was built from.
+    #[must_use]
+    pub fn config(&self) -> &OAuthResourceConfig {
+        &self.config
+    }
+
+    /// The RFC 9728 router for this resource (merge outside the bearer boundary).
+    pub fn metadata_router(&self) -> axum::Router {
+        metadata_router(&self.config)
+    }
+
+    /// Verify `token` and map it to a caller.
+    ///
+    /// The token is read, never stored: the returned context carries only the verified
+    /// issuer, subject and client id.
+    ///
+    /// # Errors
+    /// See [`OAuthRejection`].
+    pub async fn authenticate(&self, token: &str) -> Result<CallerCtx<G>, OAuthRejection> {
+        let claims = match self.verifier.verify(token).await {
+            Ok(claims) => claims,
+            Err(VerificationFailure::KeysUnavailable { .. }) => {
+                return Err(OAuthRejection::Unavailable("keys_unavailable"));
+            }
+            Err(failure) => return Err(OAuthRejection::Invalid(failure.reason_code())),
+        };
+        // `sub` becomes the rate-limit key and the change-set identity, and `client_id`
+        // reaches audit text: neither may carry spaces, controls or bidi/format characters.
+        if !valid_identity_part(&claims.subject) {
+            return Err(OAuthRejection::Invalid("invalid_subject"));
+        }
+        if !claims.client_id.as_deref().is_some_and(valid_identity_part) {
+            return Err(OAuthRejection::Invalid("invalid_client_id"));
+        }
+        let identity = OAuthIdentity {
+            issuer: self.config.issuer().to_owned(),
+            subject: claims.subject,
+            client_id: claims.client_id,
+        };
+        let Some(authority) = self.config.scope_map().map(&claims.scopes, &claims.roles) else {
+            return Err(OAuthRejection::Unmapped(identity));
+        };
+        Ok(CallerCtx::oauth(
+            identity,
+            authority.devices,
+            authority.tools,
+            authority.actor_type,
+        ))
+    }
+}
+
+/// 1-128 bytes of printable ASCII without spaces.
+fn valid_identity_part(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 128 && value.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
 #[cfg(test)]

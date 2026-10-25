@@ -50,7 +50,8 @@ pub use auth::{
 pub use client_info::{ClientExtras, ClientInfo, RequestProvenance};
 #[cfg(feature = "oauth-resource")]
 pub use oauth_resource::{
-    MappedAuthority, OAuthConfigError, OAuthResourceConfig, OAuthScopeMap, ScopeMapError,
+    MappedAuthority, OAuthConfigError, OAuthRejection, OAuthResource, OAuthResourceConfig,
+    OAuthScopeMap, ScopeMapError,
 };
 
 // Internal types and functions exported only for testing
