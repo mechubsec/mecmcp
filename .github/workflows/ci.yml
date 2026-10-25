@@ -56,14 +56,17 @@ jobs:
         # that CI does not open is a test that does not exist.
         run: cargo test --workspace --locked --features mecmcp-audit/test-util,mecmcp-changeset/test-util,mecmcp-transport/test-util
 
-      - name: Run verified-approver tests
+      - name: Run verified-approver and oauth-resource tests
         # `verified-approver` is not in the workspace --all-features test run above
         # (combining it with `otel` hits a one-process rustls CryptoProvider
         # conflict), so a plain --workspace run never executes the approver
         # assertion suite -- including the replay-inside-leeway and JWT-leak
         # regression tests -- and nothing would notice if it broke. Run it here,
-        # isolated from `otel`, so it still gates merges.
-        run: cargo test --locked -p mecmcp-transport --features test-util,verified-approver
+        # isolated from `otel`, so it still gates merges. oauth-resource links the
+        # same `mecmcp-oidc` HTTP stack as `verified-approver`, so it is kept out of
+        # the workspace `--all-features` test run for the same `otel` CryptoProvider
+        # reason.
+        run: cargo test --locked -p mecmcp-transport --features test-util,verified-approver,oauth-resource
 
       - name: Build documentation
         run: cargo doc --workspace --no-deps --locked
@@ -106,6 +109,10 @@ jobs:
 
       - name: Check workspace at MSRV
         run: cargo check --workspace --all-targets
+
+      - name: Check oauth-resource at MSRV
+        # The feature is off in the workspace check above, so its code never compiles there.
+        run: cargo check -p mecmcp-transport --all-targets --features oauth-resource,test-util
 
   conformance:
     name: Conformance fixtures
