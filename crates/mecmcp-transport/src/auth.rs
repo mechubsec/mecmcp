@@ -24,6 +24,10 @@ pub enum BearerAuthError {
     /// Realm contains characters that cannot appear in HTTP header values.
     #[error("realm contains invalid characters: {0}")]
     InvalidRealm(&'static str),
+    /// The resource-metadata URL is not an absolute http(s) URL, or contains
+    /// characters that could break out of the quoted challenge parameter.
+    #[error("resource_metadata URL is invalid: {0}")]
+    InvalidResourceMetadata(&'static str),
 }
 
 /// Callback type converting an opaque credential into a grant-bearing caller.
@@ -113,6 +117,7 @@ impl<G: Grant> BearerAuthenticator<G> {
 pub struct BearerResponseProfile {
     realm: String,
     style: BearerResponseStyle,
+    resource_metadata: Option<String>,
 }
 
 /// Response detail level.
@@ -149,6 +154,7 @@ impl BearerResponseProfile {
         Ok(Self {
             realm: validate_realm(realm.into())?,
             style: BearerResponseStyle::Detailed,
+            resource_metadata: None,
         })
     }
 
@@ -201,7 +207,34 @@ impl BearerResponseProfile {
         Ok(Self {
             realm: validate_realm(realm.into())?,
             style: BearerResponseStyle::Compact,
+            resource_metadata: None,
         })
+    }
+
+    /// Advertise an RFC 9728 protected-resource-metadata document in every 401
+    /// challenge as `resource_metadata="<url>"`, so an OAuth client can discover
+    /// the authorization server from the failure.
+    ///
+    /// # Errors
+    /// Returns [`BearerAuthError::InvalidResourceMetadata`] unless `url` is an
+    /// absolute `http(s)` URL of printable ASCII with no quote or backslash (the
+    /// same header-safety rule the realm gets). The value is always emitted inside
+    /// a quoted-string, so other URL-legal characters (`,;'*{}`) are safe.
+    pub fn with_resource_metadata(
+        mut self,
+        url: impl Into<String>,
+    ) -> Result<Self, BearerAuthError> {
+        let url = url.into();
+        if let Some(reason) = header_unsafe_reason(&url) {
+            return Err(BearerAuthError::InvalidResourceMetadata(reason));
+        }
+        if !(url.starts_with("https://") || url.starts_with("http://")) {
+            return Err(BearerAuthError::InvalidResourceMetadata(
+                "not an absolute http(s) URL",
+            ));
+        }
+        self.resource_metadata = Some(url);
+        Ok(self)
     }
 
     /// Compact profile returning `invalid_token` for every 401.
@@ -1150,13 +1183,24 @@ fn unauthorized(profile: &BearerResponseProfile, description: &str) -> Response 
     match profile.style {
         BearerResponseStyle::Detailed => response(
             StatusCode::UNAUTHORIZED,
-            format!(r#"Bearer realm="{}""#, profile.realm),
+            challenge_base(profile),
             json!({
                 "error": "invalid_request",
                 "error_description": description,
             }),
         ),
         BearerResponseStyle::Compact => invalid_token(profile),
+    }
+}
+
+/// `Bearer realm="R"` plus, when configured, `resource_metadata="U"`.
+fn challenge_base(profile: &BearerResponseProfile) -> String {
+    match &profile.resource_metadata {
+        Some(url) => format!(
+            r#"Bearer realm="{}", resource_metadata="{url}""#,
+            profile.realm
+        ),
+        None => format!(r#"Bearer realm="{}""#, profile.realm),
     }
 }
 
@@ -1174,11 +1218,11 @@ fn invalid_token(profile: &BearerResponseProfile) -> Response {
     };
     let challenge = match profile.style {
         BearerResponseStyle::Detailed => format!(
-            r#"Bearer realm="{}", error="invalid_token", error_description="The access token is invalid""#,
-            profile.realm
+            r#"{}, error="invalid_token", error_description="The access token is invalid""#,
+            challenge_base(profile)
         ),
         BearerResponseStyle::Compact => {
-            format!(r#"Bearer realm="{}", error="invalid_token""#, profile.realm)
+            format!(r#"{}, error="invalid_token""#, challenge_base(profile))
         }
     };
     response(StatusCode::UNAUTHORIZED, challenge, body)
@@ -1358,21 +1402,29 @@ async fn normalize_body_limit_response(_request: Request, next: Next) -> Respons
 /// without echoing the offending bytes (to avoid logging credentials if a
 /// credential is passed by mistake).
 fn validate_realm(realm: String) -> Result<String, BearerAuthError> {
-    for byte in realm.bytes() {
+    match header_unsafe_reason(&realm) {
+        Some(reason) => Err(BearerAuthError::InvalidRealm(reason)),
+        None => Ok(realm),
+    }
+}
+
+/// Why `value` cannot be interpolated into a quoted challenge parameter, if so.
+fn header_unsafe_reason(value: &str) -> Option<&'static str> {
+    for byte in value.bytes() {
         if byte == b'"' {
-            return Err(BearerAuthError::InvalidRealm("contains quotes"));
+            return Some("contains quotes");
         }
         if byte == b'\\' {
-            return Err(BearerAuthError::InvalidRealm("contains backslashes"));
+            return Some("contains backslashes");
         }
         if byte.is_ascii_control() {
-            return Err(BearerAuthError::InvalidRealm("contains control characters"));
+            return Some("contains control characters");
         }
         if !byte.is_ascii() {
-            return Err(BearerAuthError::InvalidRealm("contains non-ASCII"));
+            return Some("contains non-ASCII");
         }
     }
-    Ok(realm)
+    None
 }
 
 #[cfg(test)]
