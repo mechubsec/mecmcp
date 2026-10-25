@@ -32,6 +32,11 @@ impl KeySource for FixedSource {
         Ok(DiscoveryDocument {
             issuer: issuer.to_owned(),
             jwks_uri: format!("{issuer}/jwks"),
+            authorization_endpoint: None,
+            token_endpoint: None,
+            end_session_endpoint: None,
+            code_challenge_methods_supported: Vec::new(),
+            id_token_signing_alg_values_supported: Vec::new(),
         })
     }
 
