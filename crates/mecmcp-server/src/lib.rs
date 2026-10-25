@@ -64,7 +64,7 @@ mod xml_json;
 
 pub use authorize::{
     AuthorizationError, audit_scope, authorize_call, authorize_target, authorize_tool,
-    caller_from_extensions, filter_tools_for_scope,
+    caller_from_extensions, filter_tools_for_mode, filter_tools_for_scope,
 };
 pub use mecmcp_redact::Untrusted;
 pub use xml_json::{XmlProjectionError, xml_to_json};

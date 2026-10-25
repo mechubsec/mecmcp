@@ -184,6 +184,26 @@ pub fn filter_tools_for_scope<G: Grant>(
         .collect()
 }
 
+/// Shorten `tools/list` to a server's compact set (mecmcp#547).
+///
+/// `None` (full mode) returns `tools` unchanged; `Some(compact)` keeps only the
+/// names in `compact`. Apply it before [`filter_tools_for_scope`]: it only
+/// removes tools, so the pair never lists one the caller's scope denies.
+/// A compact set naming a tool the server lacks just lists nothing for it.
+#[must_use]
+pub fn filter_tools_for_mode(
+    tools: Vec<rmcp::model::Tool>,
+    compact: Option<&[&str]>,
+) -> Vec<rmcp::model::Tool> {
+    let Some(compact) = compact else {
+        return tools;
+    };
+    tools
+        .into_iter()
+        .filter(|tool| compact.contains(&tool.name.as_ref()))
+        .collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -381,5 +401,26 @@ mod tests {
         // stdio sees everything, consistent with the `None` rule above.
         let all = filter_tools_for_scope::<NoGrant>(tools, None, WRITE_TOOLS);
         assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn compact_mode_never_lists_what_scope_denies() {
+        fn tool(name: &'static str) -> rmcp::model::Tool {
+            rmcp::model::Tool::new(name, "", std::sync::Arc::new(serde_json::Map::new()))
+        }
+        let tools = vec![tool("get_config"), tool("apply_change_set"), tool("search")];
+        let compact: &[&str] = &["search", "apply_change_set"];
+
+        assert_eq!(filter_tools_for_mode(tools.clone(), None).len(), 3);
+
+        // The write tool is in the compact set, but a reader still never sees it.
+        let reader = caller(ScopeSet::Wildcard, ScopeSet::Wildcard);
+        let visible = filter_tools_for_scope(
+            filter_tools_for_mode(tools, Some(compact)),
+            Some(&reader),
+            WRITE_TOOLS,
+        );
+        let names: Vec<&str> = visible.iter().map(|tool| tool.name.as_ref()).collect();
+        assert_eq!(names, ["search"]);
     }
 }
