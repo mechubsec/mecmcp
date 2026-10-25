@@ -83,6 +83,13 @@ test-util = ["dep:ureq"]
 # (`approver_assertion_not_configured`); only the verifier itself goes away.
 verified-approver = ["dep:mecmcp-oidc"]
 
+# Gates OAuth 2.1 resource-server mode (mecmcp#498): RFC 9728 metadata, JWT access-token
+# authentication as a second step after the static token store, and the claim -> scope map.
+# Off by default for the same reason as `verified-approver`: it links `mecmcp-oidc` and its
+# reqwest/rustls client into every server that does not need it. With the feature off the
+# bearer middleware is unchanged.
+oauth-resource = ["dep:mecmcp-oidc"]
+
 # `router_integration.rs` drives the router through `test_client::McpClient`,
 # which only exists behind `test-util`.
 [[test]]
@@ -94,6 +101,11 @@ required-features = ["test-util"]
 [[test]]
 name = "approver_assertion"
 required-features = ["verified-approver"]
+
+# `oauth_resource.rs` drives signed-JWT requests through the real bearer boundary.
+[[test]]
+name = "oauth_resource"
+required-features = ["oauth-resource", "test-util"]
 
 [dev-dependencies]
 # Test-only: signs ephemeral RSA JWTs for the approver-assertion integration
