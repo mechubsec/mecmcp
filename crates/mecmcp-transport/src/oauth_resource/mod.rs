@@ -1,7 +1,9 @@
 //! OAuth 2.1 resource-server mode (mecmcp#498). See `docs/OAUTH.md`.
 
+mod metadata;
 mod scope_map;
 
+pub use metadata::{metadata_document, metadata_router};
 pub use scope_map::{MappedAuthority, OAuthScopeMap, ScopeMapError};
 
 use mecmcp_oidc::{ResourceUri, ResourceUriError};
