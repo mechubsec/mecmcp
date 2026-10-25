@@ -29,31 +29,20 @@ impl fmt::Display for Principal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Principal::Token(name) => write!(f, "{name}"),
-            Principal::OAuth { subject, .. } => {
-                write!(f, "oauth:{}", crate::redact::escape_identity(subject, &[]))
-            }
-            Principal::Unauthenticated => write!(f, "stdio"),
-        }
-    }
-}
-
-impl Principal {
-    /// The string a change set stores as owner/approver and compares for
-    /// self-approval. Unlike `Display` (a log label that omits the issuer) this
-    /// is injective over the structured identity: two distinct (issuer, subject)
-    /// pairs never share a key, and no token name can equal an `oauth:` key
-    /// because that prefix is reserved for static tokens.
-    #[must_use]
-    pub fn identity_key(&self) -> String {
-        match self {
+            // Display IS the identity key: downstream servers store
+            // `principal.to_string()` as the change-set owner, so it must be
+            // injective over (issuer, subject) or two-person control fails open.
+            // Both parts escape ':' and '|' (the digest separator); the
+            // `oauth:` prefix is reserved from static token names.
             Principal::OAuth {
                 issuer, subject, ..
-            } => format!(
+            } => write!(
+                f,
                 "oauth:{}:{}",
-                crate::redact::escape_identity(issuer, &[':']),
+                crate::redact::escape_identity(issuer, &[':', '|']),
                 crate::redact::escape_identity(subject, &[':', '|'])
             ),
-            other => other.to_string(),
+            Principal::Unauthenticated => write!(f, "stdio"),
         }
     }
 }
@@ -485,7 +474,10 @@ mod tests {
                 client_id: Some("odysseus".into()),
             }
         );
-        assert_eq!(attribution.principal.to_string(), "oauth:alice");
+        assert_eq!(
+            attribution.principal.to_string(),
+            "oauth:https%3A//idp.example:alice"
+        );
     }
 
     #[test]
@@ -523,25 +515,21 @@ mod tests {
     }
 
     #[test]
-    fn identity_key_distinguishes_issuers_and_subjects_that_display_collides() {
+    fn display_distinguishes_issuers_and_subjects() {
         let key = |issuer: &str, subject: &str| {
             Principal::OAuth {
                 issuer: issuer.into(),
                 subject: subject.into(),
                 client_id: None,
             }
-            .identity_key()
+            .to_string()
         };
-        // Same subject, different issuer: Display is identical, the key is not.
+        // Same subject, different issuer must not share an owner string.
         assert_ne!(key("https://a", "alice"), key("https://b", "alice"));
         // Separator smuggling across the issuer/subject boundary.
         assert_ne!(key("https://a", "b:c"), key("https://a:b", "c"));
-        // A token named like the Display of an OAuth principal is a different identity.
-        assert_ne!(
-            Principal::Token("oauth:alice".into()).identity_key(),
-            key("https://a", "alice")
-        );
-        assert_eq!(Principal::Token("ci".into()).identity_key(), "ci");
+        // `|` in the issuer is escaped like the subject's.
+        assert!(!key("https://a|b", "c").contains('|'));
     }
 
     fn ctx(name: &str) -> CallerCtx<NoGrant> {

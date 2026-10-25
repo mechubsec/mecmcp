@@ -71,7 +71,7 @@ impl ApproverIdentity {
     /// constructor for `OidcVerified`; see its doc comment for why.
     #[must_use]
     pub fn from_attribution(attribution: &mecmcp_audit::Attribution) -> Self {
-        let principal = attribution.principal.identity_key();
+        let principal = attribution.principal.to_string();
         match &attribution.verified_approver {
             Some(approver) => Self::OidcVerified(OidcVerifiedFields {
                 principal,

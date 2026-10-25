@@ -334,7 +334,10 @@ mod tests {
             let mut scope = AuditScope::from_caller(&ctx, "get_device_list", "read", vec![]);
             scope.succeed();
         });
-        assert!(out.contains("caller=oauth:alice"), "{out}");
+        assert!(
+            out.contains("caller=oauth:https%3A//idp.example:alice"),
+            "{out}"
+        );
         assert!(out.contains("oauth_subject=alice"), "{out}");
         assert!(out.contains("oauth_client_id=odysseus"), "{out}");
         assert!(out.contains("oauth_issuer=https://idp.example"), "{out}");
@@ -372,9 +375,16 @@ mod tests {
             let mut scope = AuditScope::from_caller(&ctx("ci"), "get_device_list", "read", vec![]);
             scope.succeed();
         });
-        assert!(out.contains("oauth_subject="), "{out}");
-        assert!(!out.contains("oauth_subject=ci"), "{out}");
-        assert!(!out.contains("oauth_issuer=h"), "{out}");
+        for field in ["oauth_issuer", "oauth_subject", "oauth_client_id"] {
+            let value = out
+                .split(&format!("{field}="))
+                .nth(1)
+                .unwrap_or_else(|| panic!("{field} missing: {out}"));
+            assert!(
+                value.is_empty() || value.starts_with(' '),
+                "{field} must be empty: {out}"
+            );
+        }
     }
 
     #[test]
