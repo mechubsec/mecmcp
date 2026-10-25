@@ -27,6 +27,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [0.28.3] - 2026-10-25
+
+### Added
+
+- **mecmcp-server: coded tool errors with a structured body** (mecmcp#547).
+  `ToolErrorCode` (`invalid_argument`, `unauthorized`, `not_found`,
+  `rate_limited`, `upstream_unavailable`, `outcome_unknown`) with a fixed
+  `retryable` hint, and `tool_error_coded` /
+  `tool_error_coded_with_untrusted_detail`. The text block is unchanged from
+  `tool_error` / `tool_error_with_untrusted_detail`; `structuredContent` adds
+  `{code, message, retryable}`. `outcome_unknown` is never retryable, so a
+  mutation that timed out after it was sent is not replayed. Existing helpers
+  are unchanged.
+
+### Security
+
+- **deps: lockfile bumps for five RustSec advisories.** rustls-webpki 0.103.16
+  (RUSTSEC-2026-0382), webpki-root-certs 1.0.11 (RUSTSEC-2026-0383), ctutils
+  0.4.5 (RUSTSEC-2026-0385), tokio 1.53.3 (RUSTSEC-2026-0386) (mecmcp#548), and
+  crypto-bigint 0.7.6 (RUSTSEC-2026-0387) (mecmcp#550).
+
+### Changed
+
+- **deps:** rmcp 3.5.1 → 3.6.0 and arc-swap 1.9.2 → 1.9.3 (mecmcp#549).
+
 ## [0.28.2] - 2026-10-17
 
 ### Added
