@@ -32,6 +32,7 @@ fn provenance_fields_flow_from_meta_to_audit_attribution() {
         model_id: Some("claude-opus-5"),
         session_id: Some("01JXYZ123456789".to_owned()),
         request_id: uuid::Uuid::new_v4(),
+        oauth: None,
     };
 
     let captured = run_with_capture(|| {
@@ -74,6 +75,7 @@ fn missing_provenance_fields_work() {
         model_id: None,
         session_id: None,
         request_id: uuid::Uuid::new_v4(),
+        oauth: None,
     };
 
     let captured = run_with_capture(|| {
@@ -120,6 +122,7 @@ fn provenance_populated_in_both_attribution_arms() {
         model_id: Some("claude-opus-5"),
         session_id: Some("01JVERIFIED".to_owned()),
         request_id: uuid::Uuid::new_v4(),
+        oauth: None,
     };
 
     let captured_verified = run_with_capture(|| {
@@ -157,6 +160,7 @@ fn provenance_populated_in_both_attribution_arms() {
         model_id: Some("claude-opus-5"),
         session_id: Some("01JFALLBACK".to_owned()),
         request_id: uuid::Uuid::new_v4(),
+        oauth: None,
     };
 
     let captured_fallback = run_with_capture(|| {

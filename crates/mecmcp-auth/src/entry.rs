@@ -268,6 +268,13 @@ impl<G: Grant> TokenEntry<G> {
                 self.name
             )));
         }
+        if self.name.starts_with(crate::oauth::OAUTH_TOKEN_NAME_PREFIX) {
+            return Err(EntryError::Invalid(format!(
+                "token name '{}' uses the reserved '{}' prefix",
+                self.name,
+                crate::oauth::OAUTH_TOKEN_NAME_PREFIX
+            )));
+        }
         self.devices
             .validate("devices")
             .map_err(|source| EntryError::Scope {
@@ -647,6 +654,17 @@ mod tests {
         let json = serde_json::to_string(&entry).expect("serialize");
         let round_tripped: TokenEntry = serde_json::from_str(&json).expect("parse");
         assert_eq!(round_tripped.oidc_subject, entry.oidc_subject);
+    }
+
+    #[test]
+    fn the_oauth_name_prefix_is_reserved() {
+        let mut entry: TokenEntry = serde_json::from_str(JUNOS_SHAPE).expect("parse");
+        entry.name = "oauth:alice".to_owned();
+        let error = entry
+            .validate()
+            .expect_err("oauth: names must be refused")
+            .to_string();
+        assert!(error.contains("reserved"), "{error}");
     }
 
     #[test]

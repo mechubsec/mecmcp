@@ -110,6 +110,7 @@ fn from_caller_never_invents_an_approver_or_change_set() {
         model_id: None,
         session_id: None,
         request_id: uuid::Uuid::nil(),
+        oauth: None,
     };
 
     let attribution = Attribution::from_caller(&ctx);

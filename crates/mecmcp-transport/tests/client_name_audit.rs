@@ -24,6 +24,7 @@ fn emit_correlated_events(client_name: Option<&'static str>) {
         model_id: None,
         session_id: None,
         request_id: uuid::Uuid::new_v4(),
+        oauth: None,
     };
 
     // Transport event (emitted by bearer_preflight_middleware)
@@ -150,6 +151,7 @@ fn client_name_round_trips_from_caller_ctx_to_audit_event() {
         model_id: None,
         session_id: None,
         request_id: uuid::Uuid::new_v4(),
+        oauth: None,
     };
 
     let captured = run_with_capture(|| {

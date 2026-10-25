@@ -299,6 +299,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         }
     }
 
@@ -638,6 +639,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let out = run_with_capture(|| {
             let mut a = AuditScope::from_caller(&ctx, "commit_config", "commit", vec!["r1".into()]);

@@ -55,6 +55,7 @@ fn caller(client_name: Option<&'static str>) -> CallerCtx<NoGrant> {
         model_id: None,
         session_id: None,
         request_id: uuid::Uuid::new_v4(),
+        oauth: None,
     }
 }
 
@@ -170,6 +171,7 @@ fn authenticated_caller() -> CallerCtx<TestGrant> {
         model_id: None,
         session_id: None,
         request_id: uuid::Uuid::new_v4(),
+        oauth: None,
     }
 }
 

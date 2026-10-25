@@ -437,6 +437,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         }
     }
 
@@ -707,6 +708,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let a = Attribution::from_caller(&ctx);
 
@@ -766,6 +768,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let a = Attribution::from_caller(&ctx);
 
@@ -798,6 +801,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let a = Attribution::from_caller(&c);
         assert_eq!(a.actor_type, ActorType::Unknown);
@@ -828,6 +832,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let a = Attribution::from_caller(&c);
         assert_eq!(a.actor_type, ActorType::Agent);
@@ -860,6 +865,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let a = Attribution::from_caller(&c);
         assert_eq!(
@@ -894,6 +900,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let a = Attribution::from_caller(&c);
         assert_eq!(

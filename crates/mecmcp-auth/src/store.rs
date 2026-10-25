@@ -167,6 +167,9 @@ pub struct CallerCtx<G: Grant = NoGrant> {
     /// would make the ID identify nothing — build a fresh context per request,
     /// as the middleware does (mecmcp#269).
     pub request_id: Uuid,
+    /// Set when this caller was authenticated by an OAuth access token rather than a
+    /// static token. Holds the issuer, subject and client id only; **never the token**.
+    pub oauth: Option<crate::oauth::OAuthIdentity>,
 }
 
 impl<G: Grant> From<&TokenEntry<G>> for CallerCtx<G> {
@@ -189,11 +192,43 @@ impl<G: Grant> From<&TokenEntry<G>> for CallerCtx<G> {
             // once per request, so this is the point at which "one request"
             // is a fact rather than an assumption (mecmcp#269).
             request_id: Uuid::new_v4(),
+            oauth: None,
         }
     }
 }
 
 impl<G: Grant> CallerCtx<G> {
+    /// Build the context for a caller authenticated by an OAuth access token.
+    ///
+    /// The scopes come from the server's own scope map, never from the token. No vendor
+    /// grant is attached (`grant: None`): a grant is vendor-specific and a token's claims
+    /// cannot mint one, so OAuth callers cannot use grant-gated mutations in this version.
+    #[must_use]
+    pub fn oauth(
+        identity: crate::oauth::OAuthIdentity,
+        devices: ScopeSet,
+        tools: ScopeSet,
+        actor_type: crate::ActorType,
+    ) -> Self {
+        Self {
+            token_name: identity.token_name(),
+            devices,
+            tools,
+            grant: None,
+            provider: None,
+            provider_tier: None,
+            on_behalf_of: None,
+            actor_type,
+            oidc_subject: None,
+            verified_approver: None,
+            client_name: None,
+            model_id: None,
+            session_id: None,
+            request_id: Uuid::new_v4(),
+            oauth: Some(identity),
+        }
+    }
+
     /// The scope of targets this caller may address.
     ///
     /// The same scope as [`devices`](Self::devices), under the target-neutral
@@ -241,6 +276,7 @@ pub fn filter_target_names<G: Grant>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oauth::OAuthIdentity;
     use crate::token::TokenSecret;
 
     fn entry_named(name: &str) -> (String, TokenEntry) {
@@ -261,6 +297,69 @@ mod tests {
             oidc_subject: None,
         };
         (plaintext, entry)
+    }
+
+    #[test]
+    fn oauth_constructor_carries_identity_and_no_write_authority() {
+        let identity = OAuthIdentity {
+            issuer: "https://idp.example".to_owned(),
+            subject: "alice".to_owned(),
+            client_id: Some("odysseus".to_owned()),
+        };
+        let ctx: CallerCtx = CallerCtx::oauth(
+            identity.clone(),
+            ScopeSet::Allowlist(vec!["srx-1".to_owned()]),
+            ScopeSet::Allowlist(vec!["get_device_list".to_owned()]),
+            crate::ActorType::Agent,
+        );
+        assert_eq!(ctx.oauth, Some(identity));
+        assert_eq!(ctx.token_name, "oauth:alice");
+        assert!(
+            ctx.grant.is_none(),
+            "OAuth callers never hold a vendor grant"
+        );
+        assert!(ctx.verified_approver.is_none());
+        assert!(ctx.oidc_subject.is_none());
+        assert_eq!(ctx.actor_type, crate::ActorType::Agent);
+    }
+
+    #[test]
+    fn a_token_entry_context_has_no_oauth_identity() {
+        let (_, entry) = entry_named("ci");
+        assert!(CallerCtx::from(&entry).oauth.is_none());
+    }
+
+    /// Exhaustive destructuring: a future `token`/`bearer`/`jwt` field makes this
+    /// stop compiling, which is the point. The caller context must never hold the credential.
+    #[test]
+    fn caller_ctx_has_no_credential_field() {
+        let ctx: CallerCtx = CallerCtx::oauth(
+            OAuthIdentity {
+                issuer: "i".into(),
+                subject: "s".into(),
+                client_id: None,
+            },
+            ScopeSet::Allowlist(vec![]),
+            ScopeSet::Allowlist(vec![]),
+            crate::ActorType::Unknown,
+        );
+        let CallerCtx {
+            token_name: _,
+            devices: _,
+            tools: _,
+            grant: _,
+            provider: _,
+            provider_tier: _,
+            on_behalf_of: _,
+            actor_type: _,
+            oidc_subject: _,
+            verified_approver: _,
+            client_name: _,
+            model_id: _,
+            session_id: _,
+            request_id: _,
+            oauth: _,
+        } = ctx;
     }
 
     #[test]
@@ -339,6 +438,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let visible =
             filter_device_names(Some(&ctx), vec!["edge-fw".to_owned(), "core-fw".to_owned()]);
@@ -362,6 +462,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let names = vec!["tenant-a".to_owned(), "tenant-b".to_owned()];
 
@@ -399,6 +500,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let visible = filter_device_names(Some(&ctx), vec!["edge-fw".to_owned()]);
         assert!(visible.is_empty());
@@ -423,6 +525,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let names = vec!["edge-fw".to_owned(), "core-fw".to_owned()];
         let visible = filter_device_names(Some(&ctx), names.clone());
