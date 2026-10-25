@@ -244,6 +244,51 @@ async fn an_unmapped_or_absent_scope_is_a_verified_token_that_grants_nothing() {
 }
 
 #[tokio::test]
+async fn smuggled_scopes_do_not_escalate() {
+    let key = generate_test_key(KID);
+    let (junos, _) = resource_for(JUNOS, &key);
+
+    // Tab / newline are not delimiters (RFC 6749 uses SP only): one invalid token, dropped.
+    for injected in [
+        "junos:read\tpanos:read",
+        "junos:read\npanos:read",
+        "junos:read,panos:read",
+    ] {
+        let token = sign(&key, &claims(json!(JUNOS), injected));
+        assert!(
+            matches!(
+                junos.authenticate(&token).await.expect_err("refused"),
+                OAuthRejection::Unmapped(_)
+            ),
+            "{injected:?}"
+        );
+    }
+
+    // A space *inside* an `scp` array element is not split into two scopes.
+    let mut array_claims = claims(json!(JUNOS), "");
+    let object = array_claims.as_object_mut().expect("object");
+    object.remove("scope");
+    object.insert("scp".to_owned(), json!(["junos:read panos:read"]));
+    let token = sign(&key, &array_claims);
+    assert!(matches!(
+        junos.authenticate(&token).await.expect_err("refused"),
+        OAuthRejection::Unmapped(_)
+    ));
+
+    // The legitimate scope still works beside a hostile one, and gains nothing from it
+    // (`panos:read` alone is mapped on this server, so it must not leak in via the tab).
+    let token = sign(
+        &key,
+        &claims(json!(JUNOS), "junos:read junos:admin\tpanos:read"),
+    );
+    let caller = junos.authenticate(&token).await.expect("junos:read maps");
+    assert_eq!(
+        caller.tools,
+        ScopeSet::Allowlist(vec!["get_junos_config".to_owned()])
+    );
+}
+
+#[tokio::test]
 async fn a_configured_role_claim_maps_too() {
     let key = generate_test_key(KID);
     let (junos, _) = resource_for(JUNOS, &key);
@@ -310,6 +355,57 @@ async fn at_jwt_typ_is_required_only_when_configured() {
     )
     .expect("sign");
     assert!(strict.authenticate(&typed).await.is_ok());
+}
+
+#[tokio::test]
+async fn a_symmetric_algorithm_confusion_attempt_is_refused() {
+    let key = generate_test_key(KID);
+    let (junos, _) = resource_for(JUNOS, &key);
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+    header.kid = Some(KID.to_owned());
+    let forged = jsonwebtoken::encode(
+        &header,
+        &claims(json!(JUNOS), "junos:read"),
+        &EncodingKey::from_secret(b"anything-an-attacker-can-compute"),
+    )
+    .expect("sign");
+    assert_eq!(
+        junos.authenticate(&forged).await.expect_err("refused"),
+        OAuthRejection::Invalid("unsupported_algorithm")
+    );
+}
+
+#[tokio::test]
+async fn other_verification_failures_keep_distinct_reason_codes() {
+    let key = generate_test_key(KID);
+    let other_key = generate_test_key(KID);
+    let (junos, _) = resource_for(JUNOS, &key);
+
+    let mut expired = claims(json!(JUNOS), "junos:read");
+    expired["exp"] = json!(now() - 3600);
+    let mut wrong_issuer = claims(json!(JUNOS), "junos:read");
+    wrong_issuer["iss"] = json!("https://evil.example");
+    let mut no_client = claims(json!(JUNOS), "junos:read");
+    no_client
+        .as_object_mut()
+        .expect("object")
+        .remove("client_id");
+
+    let cases = [
+        (sign(&key, &expired), "expired"),
+        (sign(&key, &wrong_issuer), "wrong_issuer"),
+        (
+            sign(&other_key, &claims(json!(JUNOS), "junos:read")),
+            "invalid_signature",
+        ),
+        (sign(&key, &no_client), "missing_claim"),
+    ];
+    for (token, reason) in cases {
+        assert_eq!(
+            junos.authenticate(&token).await.expect_err("refused"),
+            OAuthRejection::Invalid(reason)
+        );
+    }
 }
 
 #[tokio::test]
