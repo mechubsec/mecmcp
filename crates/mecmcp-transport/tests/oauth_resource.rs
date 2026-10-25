@@ -244,6 +244,126 @@ async fn an_unmapped_or_absent_scope_is_a_verified_token_that_grants_nothing() {
 }
 
 #[tokio::test]
+async fn a_configured_role_claim_maps_too() {
+    let key = generate_test_key(KID);
+    let (junos, _) = resource_for(JUNOS, &key);
+    let mut with_role = claims(json!(JUNOS), "junos:read");
+    with_role["roles"] = json!(["netops"]);
+    let caller = junos
+        .authenticate(&sign(&key, &with_role))
+        .await
+        .expect("maps");
+    assert_eq!(
+        caller.tools,
+        ScopeSet::Allowlist(vec![
+            "get_junos_config".to_owned(),
+            "get_device_list".to_owned()
+        ])
+    );
+
+    // `with_role_claim` moves the claim: `roles` is then ignored, `groups` is read.
+    let (grouped, _) = resource_from(config_for(JUNOS).with_role_claim("groups"), &key);
+    let mut role_only = claims(json!(JUNOS), "");
+    role_only["roles"] = json!(["netops"]);
+    assert!(matches!(
+        grouped
+            .authenticate(&sign(&key, &role_only))
+            .await
+            .expect_err("roles ignored"),
+        OAuthRejection::Unmapped(_)
+    ));
+    role_only["groups"] = json!(["netops"]);
+    let caller = grouped
+        .authenticate(&sign(&key, &role_only))
+        .await
+        .expect("groups maps");
+    assert_eq!(
+        caller.tools,
+        ScopeSet::Allowlist(vec!["get_device_list".to_owned()])
+    );
+}
+
+#[tokio::test]
+async fn at_jwt_typ_is_required_only_when_configured() {
+    let key = generate_test_key(KID);
+    let (lenient, _) = resource_for(JUNOS, &key);
+    let (strict, _) = resource_from(config_for(JUNOS).with_require_at_jwt_typ(true), &key);
+    let plain = sign(&key, &claims(json!(JUNOS), "junos:read"));
+    assert!(
+        lenient.authenticate(&plain).await.is_ok(),
+        "default: typ JWT accepted"
+    );
+    assert_eq!(
+        strict
+            .authenticate(&plain)
+            .await
+            .expect_err("typ JWT refused"),
+        OAuthRejection::Invalid("wrong_token_type")
+    );
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some(KID.to_owned());
+    header.typ = Some("at+jwt".to_owned());
+    let typed = jsonwebtoken::encode(
+        &header,
+        &claims(json!(JUNOS), "junos:read"),
+        &key.encoding_key,
+    )
+    .expect("sign");
+    assert!(strict.authenticate(&typed).await.is_ok());
+}
+
+#[tokio::test]
+async fn a_subject_that_could_forge_an_identity_key_is_refused() {
+    let key = generate_test_key(KID);
+    let (junos, _) = resource_for(JUNOS, &key);
+    for subject in [
+        "",
+        "alice bob",
+        "alice\nbob",
+        &"a".repeat(129),
+        "alice\u{202e}nimda",
+        "\u{e5}lice",
+        "alice\u{200b}",
+    ] {
+        let mut hostile = claims(json!(JUNOS), "junos:read");
+        hostile["sub"] = json!(subject);
+        assert_eq!(
+            junos
+                .authenticate(&sign(&key, &hostile))
+                .await
+                .expect_err("refused"),
+            OAuthRejection::Invalid("invalid_subject"),
+            "{subject:?}"
+        );
+    }
+}
+
+/// `client_id` reaches audit text and `CallerCtx` verbatim; bidi/format characters are
+/// refused here rather than trusted to every later renderer's escaping.
+#[tokio::test]
+async fn a_client_id_with_invisible_characters_is_refused() {
+    let key = generate_test_key(KID);
+    let (junos, _) = resource_for(JUNOS, &key);
+    for client in [
+        "odysseus\u{202e}",
+        "\u{200b}odysseus",
+        "ody sseus",
+        "\u{f6}dysseus",
+    ] {
+        let mut hostile = claims(json!(JUNOS), "junos:read");
+        hostile["client_id"] = json!(client);
+        assert_eq!(
+            junos
+                .authenticate(&sign(&key, &hostile))
+                .await
+                .expect_err("refused"),
+            OAuthRejection::Invalid("invalid_client_id"),
+            "{client:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn the_caller_context_does_not_contain_the_token() {
     let key = generate_test_key(KID);
     let (junos, _) = resource_for(JUNOS, &key);
@@ -256,4 +376,36 @@ async fn the_caller_context_does_not_contain_the_token() {
             "a token segment leaked into CallerCtx: {segment}"
         );
     }
+}
+
+/// An IdP that cannot be reached.
+struct DownSource;
+
+#[async_trait::async_trait]
+impl KeySource for DownSource {
+    async fn fetch_discovery(&self, _issuer: &str) -> Result<DiscoveryDocument, FetchError> {
+        Err(FetchError::HttpStatus {
+            what: "discovery",
+            status: 503,
+        })
+    }
+    async fn fetch_jwks(&self, _jwks_uri: &str) -> Result<JwkSet, FetchError> {
+        Err(FetchError::HttpStatus {
+            what: "jwks",
+            status: 503,
+        })
+    }
+}
+
+/// An unreachable IdP is "cannot judge", never "invalid token" (503, not 401).
+#[tokio::test]
+async fn unreachable_keys_are_unavailable_not_invalid() {
+    let key = generate_test_key(KID);
+    let junos: OAuthResource<TestGrant> =
+        OAuthResource::new(config_for(JUNOS), Arc::new(DownSource));
+    let token = sign(&key, &claims(json!(JUNOS), "junos:read"));
+    assert_eq!(
+        junos.authenticate(&token).await.expect_err("refused"),
+        OAuthRejection::Unavailable("keys_unavailable")
+    );
 }
