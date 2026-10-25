@@ -68,6 +68,11 @@ jobs:
       - name: Build documentation
         run: cargo doc --workspace --no-deps --locked
 
+      - name: Check fuzz targets compile
+        # fuzz/ is outside the workspace, so nothing above builds it; a target
+        # went uncompilable after a DiscoveryDocument field change unnoticed.
+        run: cargo check --locked --manifest-path fuzz/Cargo.toml --bins
+
   msrv:
     # mecmcp-auth is a library consumed by two binaries, so an accidental MSRV
     # bump breaks them rather than this repo. That makes it exactly the wrong
