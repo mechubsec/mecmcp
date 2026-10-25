@@ -66,8 +66,8 @@ pub mod fetch;
 pub mod verify;
 
 pub use cache::CacheConfig;
-pub use claims::VerifiedClaims;
+pub use claims::{VerifiedClaims, is_scope_token};
 pub use discovery::DiscoveryDocument;
 pub use error::{FetchError, VerificationFailure};
 pub use fetch::{HttpKeySource, KeySource};
-pub use verify::{OidcConfig, TokenVerifier, VerifyOptions};
+pub use verify::{OidcConfig, TokenProfile, TokenVerifier, VerifyOptions};

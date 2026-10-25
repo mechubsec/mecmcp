@@ -10,7 +10,9 @@ use serde::Deserialize;
 use subtle::ConstantTimeEq;
 
 use crate::cache::{CacheConfig, KeyCache};
-use crate::claims::{VerifiedClaims, extract_display_name, extract_roles};
+use crate::claims::{
+    VerifiedClaims, extract_client_id, extract_display_name, extract_roles, extract_scopes,
+};
 use crate::error::VerificationFailure;
 use crate::fetch::KeySource;
 
@@ -37,6 +39,22 @@ pub struct VerifyOptions<'a> {
     pub expected_azp: Option<&'a str>,
 }
 
+/// Which JWT profile a [`TokenVerifier`] enforces beyond the common checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TokenProfile {
+    /// OIDC ID-token / assertion style: the pre-existing behaviour.
+    #[default]
+    IdToken,
+    /// RFC 9068 JWT access token. Additionally requires `jti` and a client id
+    /// (`client_id`, else `azp`).
+    AccessToken {
+        /// Also require the `typ` header to be `at+jwt` or `application/at+jwt`.
+        /// Off by default because some IdPs (Keycloak by default) sign access
+        /// tokens with `typ: JWT`; recommended wherever the IdP supports it.
+        require_at_jwt_typ: bool,
+    },
+}
+
 /// Static configuration for one issuer's resource-server verification.
 #[derive(Debug, Clone)]
 pub struct OidcConfig {
@@ -58,6 +76,8 @@ pub struct OidcConfig {
     /// human's name in a UI leave it off. Browser-login relying parties that
     /// need a greeting ("Welcome, Alice") opt in by setting this to `true`.
     pub include_display_name: bool,
+    /// Which JWT profile to enforce. Defaults to [`TokenProfile::IdToken`].
+    pub token_profile: TokenProfile,
 }
 
 impl OidcConfig {
@@ -75,6 +95,7 @@ impl OidcConfig {
             leeway: Duration::from_secs(60),
             cache: CacheConfig::default(),
             include_display_name: false,
+            token_profile: TokenProfile::default(),
         }
     }
 }
@@ -160,6 +181,16 @@ impl TokenVerifier {
         let header = jsonwebtoken::decode_header(token)
             .map_err(|error| VerificationFailure::Malformed(error.to_string()))?;
 
+        if matches!(
+            self.config.token_profile,
+            TokenProfile::AccessToken {
+                require_at_jwt_typ: true
+            }
+        ) && !is_at_jwt_typ(header.typ.as_deref())
+        {
+            return Err(VerificationFailure::WrongTokenType);
+        }
+
         // The keys lookup happens before signature verification: an IdP that
         // is unreachable must fail closed with a distinct reason, not be
         // reported as an ordinary signature failure once no key can be found.
@@ -198,6 +229,17 @@ impl TokenVerifier {
 
         let roles = extract_roles(&token_data.claims.extra, &self.config.role_claim);
 
+        let scopes = extract_scopes(&token_data.claims.extra);
+        let client_id = extract_client_id(&token_data.claims.extra);
+        if matches!(self.config.token_profile, TokenProfile::AccessToken { .. }) {
+            if token_data.claims.jti.is_none() {
+                return Err(VerificationFailure::MissingClaim("jti".to_owned()));
+            }
+            if client_id.is_none() {
+                return Err(VerificationFailure::MissingClaim("client_id".to_owned()));
+            }
+        }
+
         let issued_at = token_data
             .claims
             .iat
@@ -216,8 +258,17 @@ impl TokenVerifier {
             auth_time: token_data.claims.auth_time,
             jwt_id: token_data.claims.jti,
             display_name,
+            scopes,
+            client_id,
         })
     }
+}
+
+/// RFC 9068 s2.1: `at+jwt`, or the full media type, compared case-insensitively.
+fn is_at_jwt_typ(typ: Option<&str>) -> bool {
+    typ.is_some_and(|value| {
+        value.eq_ignore_ascii_case("at+jwt") || value.eq_ignore_ascii_case("application/at+jwt")
+    })
 }
 
 /// Asymmetric signature algorithms this verifier accepts. A resource server
@@ -1022,5 +1073,198 @@ mod tests {
         };
         let result = verifier.verify_with(&token, &options).await;
         assert!(result.is_ok());
+    }
+
+    fn access_claims() -> serde_json::Value {
+        serde_json::json!({
+            "sub": "alice",
+            "iss": ISSUER,
+            "aud": AUDIENCE,
+            "exp": now() + 3600,
+            "iat": now() - 60,
+            "jti": "at-1",
+            "client_id": "odysseus",
+            "scope": "junos:read junos:write",
+            "roles": ["netops"],
+        })
+    }
+
+    fn access_verifier(key: &TestKey, require_typ: bool) -> TokenVerifier {
+        let mut config = OidcConfig::new(ISSUER, AUDIENCE, "roles");
+        config.token_profile = TokenProfile::AccessToken {
+            require_at_jwt_typ: require_typ,
+        };
+        let jwks = JwkSet {
+            keys: vec![key.jwk.clone()],
+        };
+        TokenVerifier::new(config, Arc::new(FixtureSource { jwks }))
+    }
+
+    fn sign_with_typ(key: &TestKey, claims: &serde_json::Value, typ: &str) -> String {
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        header.kid = Some(KID.to_owned());
+        header.typ = Some(typ.to_owned());
+        jsonwebtoken::encode(&header, claims, &key.encoding_key).expect("token signing")
+    }
+
+    #[tokio::test]
+    async fn access_token_scopes_and_client_id_are_extracted() {
+        let key = generate_test_key(KID);
+        let token = sign_token(&key, &access_claims(), KID);
+        let claims = access_verifier(&key, false)
+            .verify(&token)
+            .await
+            .expect("access token must verify");
+        assert_eq!(claims.scopes, vec!["junos:read", "junos:write"]);
+        assert_eq!(claims.client_id.as_deref(), Some("odysseus"));
+        assert_eq!(claims.roles, vec!["netops"]);
+    }
+
+    #[tokio::test]
+    async fn azp_is_the_client_id_when_client_id_is_absent() {
+        let key = generate_test_key(KID);
+        let mut claims = access_claims();
+        claims.as_object_mut().expect("object").remove("client_id");
+        claims["azp"] = serde_json::json!("keycloak-client");
+        let token = sign_token(&key, &claims, KID);
+        let verified = access_verifier(&key, false)
+            .verify(&token)
+            .await
+            .expect("verifies");
+        assert_eq!(verified.client_id.as_deref(), Some("keycloak-client"));
+    }
+
+    #[tokio::test]
+    async fn scp_array_is_accepted_and_an_element_containing_a_space_is_dropped() {
+        let key = generate_test_key(KID);
+        let mut claims = access_claims();
+        claims.as_object_mut().expect("object").remove("scope");
+        // "junos:read junos:admin" as ONE array element must not be split into two
+        // scopes, and must not survive as one either: it is not a scope-token.
+        claims["scp"] =
+            serde_json::json!(["junos:read", "junos:read junos:admin", 7, "junos:write"]);
+        let token = sign_token(&key, &claims, KID);
+        let verified = access_verifier(&key, false)
+            .verify(&token)
+            .await
+            .expect("verifies");
+        assert_eq!(verified.scopes, vec!["junos:read", "junos:write"]);
+    }
+
+    #[tokio::test]
+    async fn a_non_string_non_array_scope_claim_yields_no_scopes() {
+        let key = generate_test_key(KID);
+        let mut claims = access_claims();
+        claims["scope"] = serde_json::json!(5);
+        let token = sign_token(&key, &claims, KID);
+        let verified = access_verifier(&key, false)
+            .verify(&token)
+            .await
+            .expect("verifies");
+        assert!(verified.scopes.is_empty());
+    }
+
+    /// The ID-token profile is unchanged: no `jti` and no client id still verify.
+    #[tokio::test]
+    async fn id_token_profile_still_accepts_a_token_without_jti_or_client_id() {
+        let key = generate_test_key(KID);
+        let jwks = JwkSet {
+            keys: vec![key.jwk.clone()],
+        };
+        let verifier = verifier_for(jwks);
+        let token = sign_token(&key, &valid_claims(), KID);
+        let verified = verifier
+            .verify(&token)
+            .await
+            .expect("ID-token path unchanged");
+        assert!(verified.client_id.is_none());
+        assert!(verified.jwt_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn access_profile_requires_a_client_id() {
+        let key = generate_test_key(KID);
+        let mut claims = access_claims();
+        claims.as_object_mut().expect("object").remove("client_id");
+        let token = sign_token(&key, &claims, KID);
+        let error = access_verifier(&key, false)
+            .verify(&token)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            VerificationFailure::MissingClaim("client_id".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn access_profile_requires_a_jti() {
+        let key = generate_test_key(KID);
+        let mut claims = access_claims();
+        claims.as_object_mut().expect("object").remove("jti");
+        let token = sign_token(&key, &claims, KID);
+        let error = access_verifier(&key, false)
+            .verify(&token)
+            .await
+            .unwrap_err();
+        assert_eq!(error, VerificationFailure::MissingClaim("jti".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn at_jwt_typ_is_enforced_only_when_configured() {
+        let key = generate_test_key(KID);
+        let strict = access_verifier(&key, true);
+        let lax = access_verifier(&key, false);
+
+        let plain_jwt = sign_with_typ(&key, &access_claims(), "JWT");
+        assert_eq!(
+            strict.verify(&plain_jwt).await.unwrap_err(),
+            VerificationFailure::WrongTokenType
+        );
+        assert!(lax.verify(&plain_jwt).await.is_ok());
+
+        for accepted in ["at+jwt", "AT+JWT", "application/at+jwt"] {
+            let token = sign_with_typ(&key, &access_claims(), accepted);
+            assert!(
+                strict.verify(&token).await.is_ok(),
+                "typ {accepted:?} must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn is_scope_token_follows_rfc_6749_section_3_3() {
+        use crate::claims::is_scope_token;
+        assert!(is_scope_token("junos:read"));
+        assert!(is_scope_token("https://example.com/scope"));
+        assert!(!is_scope_token(""));
+        assert!(!is_scope_token("two words"));
+        assert!(!is_scope_token("quo\"te"));
+        assert!(!is_scope_token("back\\slash"));
+        assert!(!is_scope_token("tab\there"));
+        assert!(!is_scope_token("caf\u{e9}"));
+        assert!(!is_scope_token(&"a".repeat(129)));
+    }
+
+    #[tokio::test]
+    async fn scopes_are_deduplicated_and_capped() {
+        let key = generate_test_key(KID);
+        let many: Vec<String> = (0..100).map(|index| format!("s{index}")).collect();
+        let mut claims = access_claims();
+        claims["scope"] = serde_json::json!(format!("a a {}", many.join(" ")));
+        let token = sign_token(&key, &claims, KID);
+        let verified = access_verifier(&key, false)
+            .verify(&token)
+            .await
+            .expect("verifies");
+        assert_eq!(verified.scopes.len(), 64);
+        assert_eq!(
+            verified
+                .scopes
+                .iter()
+                .filter(|scope| scope.as_str() == "a")
+                .count(),
+            1
+        );
     }
 }
