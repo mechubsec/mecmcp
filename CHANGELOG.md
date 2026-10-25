@@ -27,17 +27,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
-## [Unreleased]
+## [0.28.4] - 2026-10-25
 
 ### Added
 
 - **mecmcp-runtime / mecmcp-server: tool-mode switch** (mecmcp#547).
   `ToolModeArgs`, a `--tool-mode full|compact` flag (env `MCP_TOOL_MODE`,
   default `full`) for each server to flatten into its own CLI (not added to
-  `Cli`, so no consumer breaks), and `filter_tools_for_mode`, which shortens `tools/list` to a
-  server's own compact (dispatcher) set. Apply it before
+  `Cli`, so no consumer breaks), and `filter_tools_for_mode`, which shortens
+  `tools/list` to a server's own compact (dispatcher) set. Apply it before
   `filter_tools_for_scope`; it only removes tools, so it never widens a
   token's view. Listing only: calls are still authorized per scope.
+
+### Changed
+
+- **fuzz: lockfile refreshed and gated in CI** (#553). `fuzz/Cargo.lock`
+  was stale at mecmcp 0.25.0 and carried seven advisories the main audit
+  never saw; it is now audited by the security workflow, and CI checks the
+  fuzz targets compile (one had drifted behind `DiscoveryDocument`).
 
 ## [0.28.3] - 2026-10-25
 
