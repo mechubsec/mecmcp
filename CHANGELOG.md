@@ -27,6 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [Unreleased]
+
+### Added
+
+- Static `tokens.json` entries accept `device_selectors`, the same grammar and semantics as
+  the OAuth scope map (narrows `devices`; `null` refused; one attribute snapshot per
+  authentication; an unlabelled device never matches). Opt in with
+  `CallerCtx::from_entry_with_attributes`; `CallerCtx::from(&entry)` grants no devices to a
+  selector entry. `token add --device-selector` (repeatable) and
+  `TokenStoreFile::add_with_selectors` (#400).
+
 ## [0.29.4] - 2026-10-26
 
 ### Added

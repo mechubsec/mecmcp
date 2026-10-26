@@ -1320,6 +1320,12 @@ pub enum TokenAction {
         /// to. Required if `--oidc-issuer` is set.
         #[arg(long)]
         oidc_subject: Option<String>,
+        /// Attribute selector narrowing `--devices` to inventory devices whose attributes
+        /// match (`site=emea-*`, `vendor=junos`, `tag=pci`); repeat to AND several
+        /// (mecmcp#400). Needs a server that supplies device attributes; otherwise the
+        /// token addresses no devices.
+        #[arg(long = "device-selector")]
+        device_selector: Vec<String>,
         /// Send SIGHUP to this pid after writing.
         #[arg(long)]
         server_pid: Option<i32>,
@@ -1992,6 +1998,7 @@ mod composition_tests {
             on_behalf_of: None,
             actor_type: mecmcp_auth::ActorType::Human,
             oidc_subject: None,
+            device_selectors: None,
         };
         mecmcp_auth::TokenStore::try_new(vec![entry]).expect("store")
     }

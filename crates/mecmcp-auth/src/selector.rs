@@ -237,6 +237,26 @@ impl SelectorSet {
     pub fn matches(&self, attrs: &DeviceAttrs) -> bool {
         self.0.iter().all(|selector| selector.matches(attrs))
     }
+
+    /// The devices `scope` names that also satisfy every selector, judged against one
+    /// attribute `snapshot`. Selectors only narrow: the result never holds a name `scope`
+    /// does not allow, and a device absent from the snapshot (or without the attribute)
+    /// matches nothing.
+    #[must_use]
+    pub fn narrow(
+        &self,
+        scope: &crate::ScopeSet,
+        snapshot: &[(String, DeviceAttrs)],
+    ) -> crate::ScopeSet {
+        let mut names: Vec<String> = snapshot
+            .iter()
+            .filter(|(name, attrs)| scope.allows(name) && self.matches(attrs))
+            .map(|(name, _)| name.clone())
+            .collect();
+        names.sort();
+        names.dedup();
+        crate::ScopeSet::Allowlist(names)
+    }
 }
 
 /// A live view of device attributes. Implemented by a consumer over its inventory; called on

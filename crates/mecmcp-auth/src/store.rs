@@ -196,10 +196,31 @@ pub struct CallerCtx<G: Grant = NoGrant> {
 }
 
 impl<G: Grant> From<&TokenEntry<G>> for CallerCtx<G> {
+    /// Equivalent to [`CallerCtx::from_entry_with_attributes`] with no attribute source, so
+    /// an entry carrying `device_selectors` addresses no devices through this path.
     fn from(entry: &TokenEntry<G>) -> Self {
+        Self::from_entry_with_attributes(entry, None)
+    }
+}
+
+impl<G: Grant> CallerCtx<G> {
+    /// Build the context for a static token, resolving its `device_selectors` against
+    /// `attributes` (mecmcp#400). The opt-in counterpart of OAuth's `with_device_attributes`:
+    /// a server that labels its devices passes its live inventory here on each
+    /// authentication.
+    ///
+    /// The attribute snapshot is read **once**, so every selector is judged against one
+    /// inventory generation. Fails closed: with selectors but no source, an unlabelled
+    /// device, or a result over [`MAX_SCOPE_NAMES`](crate::MAX_SCOPE_NAMES) (never
+    /// truncated), the token addresses no devices. A token without selectors is unchanged.
+    #[must_use]
+    pub fn from_entry_with_attributes(
+        entry: &TokenEntry<G>,
+        attributes: Option<&dyn crate::DeviceAttributeSource>,
+    ) -> Self {
         Self {
             token_name: entry.name.clone(),
-            devices: entry.devices.clone(),
+            devices: effective_devices(entry, attributes),
             tools: entry.tools.clone(),
             grant: entry.grant.clone(),
             provider: entry.provider.clone(),
@@ -218,9 +239,7 @@ impl<G: Grant> From<&TokenEntry<G>> for CallerCtx<G> {
             oauth: None,
         }
     }
-}
 
-impl<G: Grant> CallerCtx<G> {
     /// Build the context for a caller authenticated by an OAuth access token.
     ///
     /// The scopes come from the server's own scope map, never from the token. No vendor
@@ -262,6 +281,26 @@ impl<G: Grant> CallerCtx<G> {
     }
 }
 
+fn effective_devices<G: Grant>(
+    entry: &TokenEntry<G>,
+    attributes: Option<&dyn crate::DeviceAttributeSource>,
+) -> ScopeSet {
+    let Some(expressions) = &entry.device_selectors else {
+        return entry.devices.clone();
+    };
+    let Ok(selectors) = crate::SelectorSet::compile(expressions) else {
+        return ScopeSet::Allowlist(Vec::new());
+    };
+    let snapshot = attributes
+        .map(crate::DeviceAttributeSource::device_attributes)
+        .unwrap_or_default();
+    let narrowed = selectors.narrow(&entry.devices, &snapshot);
+    if narrowed.validate("devices").is_err() {
+        return ScopeSet::Allowlist(Vec::new());
+    }
+    narrowed
+}
+
 /// Filter inventory device names down to what this caller may see.
 ///
 /// Filtering starts from the inventory names, never from the scope entries, so
@@ -297,6 +336,7 @@ pub fn filter_target_names<G: Grant>(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::oauth::OAuthIdentity;
@@ -318,6 +358,7 @@ mod tests {
             on_behalf_of: None,
             actor_type: crate::ActorType::Human,
             oidc_subject: None,
+            device_selectors: None,
         };
         (plaintext, entry)
     }
@@ -573,5 +614,165 @@ mod tests {
         let names = vec!["edge-fw".to_owned(), "core-fw".to_owned()];
         let visible = filter_device_names(Some(&ctx), names.clone());
         assert_eq!(visible, names, "a wildcard device scope must not filter");
+    }
+
+    // ---- device selectors on static tokens (mecmcp#400) ----
+
+    use crate::selector::{DeviceAttributeSource, DeviceAttrs};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A fixed inventory that counts how often it is read.
+    struct Fleet(Vec<(String, DeviceAttrs)>, AtomicUsize);
+
+    impl Fleet {
+        fn new(devices: &[(&str, &str)]) -> Self {
+            let rows = devices
+                .iter()
+                .map(|(name, site)| {
+                    let json = format!(r#"{{"site":"{site}"}}"#);
+                    ((*name).to_owned(), serde_json::from_str(&json).unwrap())
+                })
+                .collect();
+            Self(rows, AtomicUsize::new(0))
+        }
+    }
+
+    impl DeviceAttributeSource for Fleet {
+        fn device_attributes(&self) -> Vec<(String, DeviceAttrs)> {
+            self.1.fetch_add(1, Ordering::SeqCst);
+            self.0.clone()
+        }
+    }
+
+    fn selector_entry(devices: ScopeSet, selectors: &[&str]) -> TokenEntry {
+        let (_, mut entry) = entry_named("scoped");
+        entry.devices = devices;
+        entry.device_selectors = Some(selectors.iter().map(|text| (*text).to_owned()).collect());
+        entry
+    }
+
+    #[test]
+    fn selectors_narrow_the_devices_the_token_names() {
+        let fleet = Fleet::new(&[("lab-1", "lab-a"), ("prod-1", "prod-a"), ("lab-2", "lab-b")]);
+        let wild = selector_entry(ScopeSet::Wildcard, &["site=lab-*"]);
+        let ctx = CallerCtx::from_entry_with_attributes(&wild, Some(&fleet));
+        assert!(ctx.devices.allows("lab-1") && ctx.devices.allows("lab-2"));
+        assert!(!ctx.devices.allows("prod-1"));
+
+        // Selectors never add a device `devices` does not name.
+        let named = selector_entry(
+            ScopeSet::Allowlist(vec!["lab-1".to_owned()]),
+            &["site=lab-*"],
+        );
+        let ctx = CallerCtx::from_entry_with_attributes(&named, Some(&fleet));
+        assert!(ctx.devices.allows("lab-1") && !ctx.devices.allows("lab-2"));
+    }
+
+    #[test]
+    fn selectors_fail_closed_without_a_source_or_a_label() {
+        let entry = selector_entry(ScopeSet::Wildcard, &["site=*"]);
+        assert!(
+            CallerCtx::from_entry_with_attributes(&entry, None)
+                .devices
+                .is_empty()
+        );
+        // The plain `From` path is the no-source path: a consumer that has not adopted
+        // attributes must not read a selector entry as unrestricted.
+        assert!(CallerCtx::from(&entry).devices.is_empty());
+        // An unlabelled device never matches, even `site=*`.
+        let unlabelled = Fleet(
+            vec![("bare".to_owned(), DeviceAttrs::default())],
+            AtomicUsize::new(0),
+        );
+        let ctx = CallerCtx::from_entry_with_attributes(&entry, Some(&unlabelled));
+        assert!(!ctx.devices.allows("bare"));
+    }
+
+    #[test]
+    fn an_entry_without_selectors_is_unchanged_and_never_reads_the_source() {
+        let fleet = Fleet::new(&[("lab-1", "lab-a")]);
+        let (_, entry) = entry_named("plain");
+        let ctx = CallerCtx::from_entry_with_attributes(&entry, Some(&fleet));
+        assert_eq!(ctx.devices, ScopeSet::Wildcard);
+        assert_eq!(fleet.1.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn one_authentication_reads_the_attributes_once() {
+        let fleet = Fleet::new(&[("lab-1", "lab-a")]);
+        let entry = selector_entry(ScopeSet::Wildcard, &["site=lab-*", "vendor=*"]);
+        let _ = CallerCtx::from_entry_with_attributes(&entry, Some(&fleet));
+        assert_eq!(fleet.1.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn lookalike_and_case_variants_never_match_a_selector() {
+        // The isolation guarantee is the shared grammar's; this pins that the static path
+        // goes through it. Non-alphabet values cannot even be labelled, so they fail the
+        // inventory load before they can match.
+        let fleet = Fleet::new(&[
+            ("a", "EMEA-1"),
+            ("b", "emea1"),
+            ("c", "xemea-1"),
+            ("d", "emea-1"),
+        ]);
+        let entry = selector_entry(ScopeSet::Wildcard, &["site=emea-*"]);
+        let ctx = CallerCtx::from_entry_with_attributes(&entry, Some(&fleet));
+        assert_eq!(ctx.devices, ScopeSet::Allowlist(vec!["d".to_owned()]));
+        for lookalike in ["emea\u{2010}1", "emea-1\u{200b}", "\u{ff45}mea-1"] {
+            let json = format!(r#"{{"site":"{lookalike}"}}"#);
+            assert!(
+                serde_json::from_str::<DeviceAttrs>(&json).is_err(),
+                "{lookalike}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_result_over_the_scope_cap_grants_nothing_rather_than_truncating() {
+        let names: Vec<String> = (0..=crate::MAX_SCOPE_NAMES)
+            .map(|n| format!("d{n}"))
+            .collect();
+        let rows: Vec<(&str, &str)> = names.iter().map(|name| (name.as_str(), "lab-a")).collect();
+        let fleet = Fleet::new(&rows);
+        let entry = selector_entry(ScopeSet::Wildcard, &["site=lab-*"]);
+        let ctx = CallerCtx::from_entry_with_attributes(&entry, Some(&fleet));
+        assert!(ctx.devices.is_empty());
+    }
+
+    #[test]
+    fn selectors_parse_from_json_and_null_is_refused() {
+        let digest = serde_json::to_string(&entry_named("x").1.digest).unwrap();
+        let base = |extra: &str| {
+            format!(
+                r#"{{"name":"t","digest":{digest},"created_at":"2026-01-01T00:00:00Z"{extra}}}"#
+            )
+        };
+        let ok: TokenEntry =
+            serde_json::from_str(&base(r#","device_selectors":["site=lab-*"]"#)).unwrap();
+        assert_eq!(ok.device_selectors, Some(vec!["site=lab-*".to_owned()]));
+        let absent: TokenEntry = serde_json::from_str(&base("")).unwrap();
+        assert_eq!(absent.device_selectors, None);
+        assert!(serde_json::from_str::<TokenEntry>(&base(r#","device_selectors":null"#)).is_err());
+        // Round-trips, and an absent field is not written.
+        assert!(
+            !serde_json::to_string(&absent)
+                .unwrap()
+                .contains("device_selectors")
+        );
+        assert!(
+            serde_json::to_string(&ok)
+                .unwrap()
+                .contains("device_selectors")
+        );
+    }
+
+    #[test]
+    fn a_selector_that_does_not_compile_is_refused_at_construction() {
+        for bad in [&[][..], &["region=emea"], &["site="], &["site=a?"]] {
+            let (_, mut entry) = entry_named("bad");
+            entry.device_selectors = Some(bad.iter().map(|text| (*text).to_owned()).collect());
+            assert!(TokenStore::try_new(vec![entry]).is_err(), "{bad:?}");
+        }
     }
 }

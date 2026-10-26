@@ -45,6 +45,7 @@ fn token_identity_survives_a_devices_drop_policy() {
             actor_type: None,
             oidc_issuer: None,
             oidc_subject: None,
+            device_selector: Vec::new(),
             server_pid: None,
         },
         &["device1".to_owned(), "device2".to_owned()],

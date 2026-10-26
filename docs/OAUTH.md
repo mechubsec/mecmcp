@@ -227,8 +227,26 @@ attribute, e.g. a role that may touch only the EMEA lab:
   alphabet above, enforced when they are constructed, so no control, bidi, zero-width,
   fullwidth or non-ASCII lookalike can exist to match a literal or be absorbed by `*`. The
   guarantee is only as good as the inventory's `site` labels: a mislabelled or unlabelled
-  device is placed (or not placed) by the label alone. Static `tokens.json` scopes do not
-  support selectors yet, and selector scoping of verified-approver roles is not built.
+  device is placed (or not placed) by the label alone. Selector scoping of
+  verified-approver roles is not built.
+
+#### Static tokens
+
+A `tokens.json` entry may carry the same `device_selectors` (grammar, AND, narrowing and
+fail-closed rules as above; an explicit `null` is refused at load, as is an expression that
+does not compile). Mint one with `token add --device-selector 'site=emea-*'` (repeatable).
+
+```text
+{ "name": "emea-ro", "devices": ["*"], "device_selectors": ["site=emea-*"], ... }
+```
+
+Resolution is the consumer's: it builds the caller with
+`CallerCtx::from_entry_with_attributes(entry, Some(&inventory))` on each authentication
+(one attribute snapshot per call). The plain `CallerCtx::from(entry)` has no source, so a
+selector entry **grants no devices** through it: a server that has not adopted attributes
+refuses, rather than ignores, the narrowing. Upgrade every binary that reads or rewrites the
+store before adding selectors: an older build ignores the field and, on `token rotate` or
+`set-scopes`, drops it, widening the token to every device its `devices` names.
 
 ## 5. What clients see
 

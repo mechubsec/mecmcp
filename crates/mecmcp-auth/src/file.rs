@@ -336,6 +336,44 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
         oidc_subject: Option<crate::entry::OidcSubject>,
         known: &KnownNames<'_>,
     ) -> Result<TokenSecret, FileError> {
+        Self::add_with_selectors(
+            path,
+            name,
+            devices,
+            tools,
+            expires_at,
+            grant,
+            provider,
+            provider_tier,
+            on_behalf_of,
+            actor_type,
+            oidc_subject,
+            None,
+            known,
+        )
+    }
+
+    /// [`add_with_options`](Self::add_with_options) plus `device_selectors` (mecmcp#400),
+    /// kept separate so the older signature is unchanged for pinned callers.
+    ///
+    /// # Errors
+    /// As [`add_with_options`](Self::add_with_options), and if a selector does not compile.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_with_selectors(
+        path: &Path,
+        name: &str,
+        devices: ScopeSet,
+        tools: ScopeSet,
+        expires_at: Option<DateTime<Utc>>,
+        grant: Option<G>,
+        provider: Option<String>,
+        provider_tier: Option<crate::Tier>,
+        on_behalf_of: Option<String>,
+        actor_type: Option<crate::ActorType>,
+        oidc_subject: Option<crate::entry::OidcSubject>,
+        device_selectors: Option<Vec<String>>,
+        known: &KnownNames<'_>,
+    ) -> Result<TokenSecret, FileError> {
         use crate::token::TokenSecret;
 
         let (current, version) = if path.exists() {
@@ -370,6 +408,7 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
             on_behalf_of,
             actor_type: actor_type.unwrap_or(crate::ActorType::Unknown),
             oidc_subject,
+            device_selectors,
         });
 
         let updated = TokenStore::try_new(entries).map_err(|source| FileError::Store {
@@ -460,6 +499,7 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
                         on_behalf_of: entry.on_behalf_of.clone(),
                         actor_type: entry.actor_type,
                         oidc_subject: entry.oidc_subject.clone(),
+                        device_selectors: entry.device_selectors.clone(),
                     }
                 } else {
                     entry.clone()
@@ -531,6 +571,7 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
                         on_behalf_of: entry.on_behalf_of.clone(),
                         actor_type: entry.actor_type,
                         oidc_subject: entry.oidc_subject.clone(),
+                        device_selectors: entry.device_selectors.clone(),
                     }
                 } else {
                     entry.clone()
@@ -629,6 +670,7 @@ impl<G: Grant + serde::Serialize + serde::de::DeserializeOwned> TokenStoreFile<G
                         on_behalf_of: on_behalf_of.clone(),
                         actor_type: actor_type.unwrap_or_default(),
                         oidc_subject: entry.oidc_subject.clone(),
+                        device_selectors: entry.device_selectors.clone(),
                     }
                 } else {
                     entry.clone()
@@ -1521,6 +1563,68 @@ mod tests {
             entry_after.created_at >= entry_before.created_at,
             "created_at should be refreshed"
         );
+    }
+
+    #[test]
+    fn selectors_are_written_and_survive_rotation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tokens.json");
+        let known = KnownNames {
+            devices: None,
+            tools: &["get_junos_config"],
+        };
+        TokenStoreFile::<NoGrant>::add_with_selectors(
+            &path,
+            "lab",
+            ScopeSet::Wildcard,
+            ScopeSet::Allowlist(vec!["get_junos_config".to_owned()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec!["site=lab-*".to_owned()]),
+            &known,
+        )
+        .expect("add");
+        TokenStoreFile::<NoGrant>::rotate(&path, "lab", &known).expect("rotate");
+
+        let after: TokenStoreFile<NoGrant> = TokenStoreFile::load(&path).expect("load");
+        let store = after.store();
+        // Dropped on rewrite, a selector would widen the token to every device it names.
+        assert_eq!(
+            store.entries()[0].device_selectors,
+            Some(vec!["site=lab-*".to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_bad_selector_is_refused_by_add_and_leaves_no_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tokens.json");
+        let known = KnownNames {
+            devices: None,
+            tools: &[],
+        };
+        let result = TokenStoreFile::<NoGrant>::add_with_selectors(
+            &path,
+            "lab",
+            ScopeSet::Wildcard,
+            ScopeSet::Wildcard,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec!["region=emea".to_owned()]),
+            &known,
+        );
+        assert!(result.is_err());
+        assert!(!path.exists());
     }
 
     #[test]
@@ -2437,6 +2541,7 @@ mod tests {
                     on_behalf_of: None,
                     actor_type: crate::ActorType::Human,
                     oidc_subject: None,
+                    device_selectors: None,
                 }
             })
             .collect();
@@ -2810,6 +2915,7 @@ mod tests {
             on_behalf_of: None,
             actor_type: crate::ActorType::Human,
             oidc_subject: None,
+            device_selectors: None,
         };
         let entries = vec![entry];
 

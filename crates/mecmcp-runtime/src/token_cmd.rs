@@ -263,6 +263,7 @@ where
             actor_type,
             oidc_issuer,
             oidc_subject,
+            device_selector,
             server_pid,
         } => {
             let devices_scope = parse_scope(devices, "devices")?;
@@ -288,7 +289,8 @@ where
                 })?;
             }
 
-            let secret = TokenStoreFile::<G>::add_with_options(
+            let device_selectors = (!device_selector.is_empty()).then_some(device_selector);
+            let secret = TokenStoreFile::<G>::add_with_selectors(
                 &tokens_file,
                 &name,
                 devices_scope,
@@ -300,6 +302,7 @@ where
                 provenance.on_behalf_of,
                 provenance.actor_type,
                 oidc_subject,
+                device_selectors,
                 &known,
             )?;
             let mut out = std::io::stdout().lock();
