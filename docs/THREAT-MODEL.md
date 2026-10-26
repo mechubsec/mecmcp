@@ -99,9 +99,10 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
   `VerifiedApproverArgs` and build its `ChangesetCoordinator` with it, or a deployment
   that leaves `--require-verified-approver` off, still has the two-tokens gap this paragraph opened
   with. The assertion only covers *who approved*; it does not scope *what*
-  they may approve beyond the token's existing tool/device scopes, and selector-scoped
-  approver roles (cluster/node/pool/tag/controller/site) are not yet built (tracked
-  separately, see #400).
+  they may approve beyond the token's existing tool/device scopes. OAuth callers' device scopes can be
+  narrowed by inventory attribute (`site`/`vendor`/`tag`, `docs/OAUTH.md` section 4), but
+  selector-scoped *approver* roles (cluster/node/pool/controller) are not yet built
+  (tracked separately, see #400).
 - **The `jti` replay guard is durable only with `--approver-replay-store`.** With the
   flag set, each first-use `jti` is recorded (as a SHA-256, never the raw value) in an
   append log (0600, periodically compacted, not an audit record) and fsynced before the approval is granted; a failed write refuses

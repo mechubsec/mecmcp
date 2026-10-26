@@ -16,5 +16,8 @@ tempfile   = { workspace = true }
 thiserror  = { workspace = true }
 tokio      = { version = "1", features = ["sync"] }
 
+[dev-dependencies]
+mecmcp-auth = { version = "0.29.3", path = "../mecmcp-auth" }
+
 [lints]
 workspace = true

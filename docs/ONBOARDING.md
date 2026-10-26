@@ -303,8 +303,9 @@ read is refused too, and a good one spends its single-use `jti` before the
 approval it was meant for.
 
 This does not replace scoping: it verifies *who* approved, not *what* they
-may approve beyond their token's existing tool and device scopes. Selector-scoped
-approver roles are a later phase of #400 and are not built yet.
+may approve beyond their token's existing tool and device scopes. OAuth device
+scopes can be narrowed by inventory attribute (`docs/OAUTH.md` section 4);
+selector-scoped *approver* roles are a later phase of #400 and are not built yet.
 
 ### OAuth bearer tokens ([#498](https://github.com/mechubsec/mecmcp/issues/498))
 
