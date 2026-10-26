@@ -428,9 +428,10 @@ impl VerifiedApproverArgs {
         tracing::warn!(
             target: "audit",
             unbound_human_tokens = unbound,
-            "{unbound} human token(s) have no oidc_subject binding; bind each with \
-             `token add ... --oidc-issuer ... --oidc-subject ...` before enabling \
-             --require-verified-approver, which will otherwise refuse them"
+            "{unbound} human token(s) have no oidc_subject binding; bind each (`token revoke`, then \
+             `token add --oidc-issuer ... --oidc-subject ...` under the same name, and \
+             redistribute the new secret) before enabling --require-verified-approver, \
+             which will otherwise refuse them"
         );
         Some(unbound)
     }
