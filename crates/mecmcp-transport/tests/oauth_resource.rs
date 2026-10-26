@@ -1044,3 +1044,79 @@ async fn the_bearer_is_stripped_from_oauth_requests_only() {
         "static requests unchanged"
     );
 }
+
+/// Ceiling tests: `iat`/`exp` are set explicitly.
+fn lifetime_claims(issued_ago: i64, lifetime: i64) -> Value {
+    let mut token_claims = claims(json!(JUNOS), "junos:read");
+    token_claims["iat"] = json!(now() - issued_ago);
+    token_claims["exp"] = json!(now() - issued_ago + lifetime);
+    token_claims
+}
+
+fn capped_resource(key: &TestKey) -> OAuthResource<TestGrant> {
+    let ceiling = std::time::Duration::from_secs(900);
+    resource_from(config_for(JUNOS).with_max_token_lifetime(ceiling), key).0
+}
+
+#[tokio::test]
+async fn the_token_lifetime_ceiling_accepts_a_token_within_it_and_is_off_by_default() {
+    let key = generate_test_key(KID);
+    let capped = capped_resource(&key);
+    let (uncapped, _) = resource_for(JUNOS, &key);
+
+    assert!(
+        capped
+            .authenticate(&sign(&key, &lifetime_claims(10, 900)))
+            .await
+            .is_ok(),
+        "exp - iat == ceiling is accepted"
+    );
+    let long_lived = sign(&key, &lifetime_claims(10, 3600));
+    assert!(
+        uncapped.authenticate(&long_lived).await.is_ok(),
+        "no ceiling: unchanged"
+    );
+}
+
+#[tokio::test]
+async fn the_token_lifetime_ceiling_refuses_a_token_the_idp_issued_for_longer() {
+    let key = generate_test_key(KID);
+    let capped = capped_resource(&key);
+
+    // Issued 1 s past the ceiling and an hour-long exp: refused though `exp` is far off.
+    for (issued_ago, lifetime) in [(10, 901), (1000, 3600)] {
+        let token = sign(&key, &lifetime_claims(issued_ago, lifetime));
+        assert_eq!(
+            capped.authenticate(&token).await.expect_err("refused"),
+            OAuthRejection::Invalid("token_lifetime_exceeded"),
+            "{issued_ago}/{lifetime}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_token_older_than_the_ceiling_is_refused_by_exp_even_with_the_ceiling_on() {
+    let key = generate_test_key(KID);
+    let capped = capped_resource(&key);
+    // Within the ceiling at issue, but issued 2000 s ago, so past exp + the 60 s leeway.
+    let token = sign(&key, &lifetime_claims(2000, 900));
+    assert_eq!(
+        capped.authenticate(&token).await.expect_err("old"),
+        OAuthRejection::Invalid("expired")
+    );
+}
+
+#[tokio::test]
+async fn the_token_lifetime_ceiling_refuses_a_token_without_iat() {
+    let key = generate_test_key(KID);
+    let capped = capped_resource(&key);
+    let mut token_claims = lifetime_claims(10, 900);
+    token_claims.as_object_mut().expect("object").remove("iat");
+    assert_eq!(
+        capped
+            .authenticate(&sign(&key, &token_claims))
+            .await
+            .expect_err("no iat"),
+        OAuthRejection::Invalid("missing_issued_at")
+    );
+}

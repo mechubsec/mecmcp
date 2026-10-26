@@ -42,6 +42,9 @@ if let (Some(issuer), Some(resource), Some(map_path)) =
     let mut config = OAuthResourceConfig::new(issuer, resource, scope_map)?
         .with_role_claim(&oauth.oauth_role_claim)
         .with_require_at_jwt_typ(oauth.oauth_require_at_jwt_typ);
+    if let Some(secs) = oauth.oauth_max_token_lifetime_secs {
+        config = config.with_max_token_lifetime(Duration::from_secs(secs));
+    }
     if let Some(audience) = &oauth.oauth_audience {
         config = config.with_audience(audience);
     }
@@ -97,6 +100,7 @@ an error without them):
 --oauth-audience junos-client
 --oauth-role-claim groups
 --oauth-require-at-jwt-typ
+--oauth-max-token-lifetime-secs 900
 ```
 
 - `--oauth-issuer`: https with a host, and no userinfo, query or fragment; compared
@@ -110,6 +114,10 @@ an error without them):
 - `--oauth-require-at-jwt-typ`: requires the `typ: at+jwt` (or `application/at+jwt`) header. Off
   by default because some IdPs (Keycloak by default) sign access tokens with `typ: JWT`;
   turn it on wherever your IdP supports it.
+- `--oauth-max-token-lifetime-secs`: a ceiling, above zero, on how long any access token
+  is honoured: a token whose `exp - iat` exceeds it is refused (`token_lifetime_exceeded`),
+  whatever the IdP issued. Off by default. **Recommended** (900 is a sensible start): it
+  caps the revocation window described in section 6.
 
 **Audience matching is exact.** `aud` must equal the canonical resource string
 byte-for-byte (no trailing-slash or case tolerance). A multi-valued `aud` is accepted only
@@ -199,6 +207,7 @@ Every refusal logs a reason code (`oauth_rejected` for 401/403, `oauth_unavailab
 | `malformed_jwt` | JWT-shaped but undecodable |
 | `wrong_token_type` | `--oauth-require-at-jwt-typ` is on and `typ` is not `at+jwt`, or the body `typ` claim is `ID` (an ID token) |
 | `missing_claim` / `missing_issued_at` | no `jti`, client id (`client_id`/`azp`), `sub` or `iat` |
+| `token_lifetime_exceeded` | `--oauth-max-token-lifetime-secs` is set and `exp - iat` is longer than it; shorten the IdP's access-token lifetime or raise the ceiling |
 | `invalid_subject` | `sub` is not 1-128 bytes of printable ASCII without spaces |
 | `invalid_client_id` | `client_id`/`azp` is not 1-128 bytes of printable ASCII without spaces |
 | `unmapped_scope` | token valid, scope map grants no tools (403) |
@@ -216,8 +225,16 @@ Per-call audit records (`AuditScope`) for an OAuth caller carry
 
 - **One token, one server.** Exact audience binding; a token minted for the junos server
   is refused by the panos server (`wrong_audience`).
-- **Bounded theft window.** The only bound is the IdP's `exp`. There is no revocation
-  list in this version; keep access-token lifetimes short.
+- **Bounded theft and revocation window.** The server keeps no session and no revocation
+  list: it accepts the IdP's access token on every call, so a user the IdP has offboarded
+  keeps working until the token they already hold expires. The window is
+  `min(token exp, iat + --oauth-max-token-lifetime-secs)` plus the 60 s clock-skew leeway;
+  the IdP's refresh then fails, so no new token is issued. Without the ceiling the window is
+  whatever lifetime the IdP issued, so set it. A stricter IdP-side revoke (introspection) is
+  not implemented.
+- **Audit shows the mechanism.** An OAuth caller's records carry `caller=oauth:...` and
+  `oauth_issuer`/`oauth_subject` (above); a static token's carry its token name and empty
+  `oauth_*` fields; a verified approver's carry the `oidc` approver fields.
 - **No token passthrough.** The `Authorization` header is removed after authentication and
   the caller context carries no credential, only issuer, subject and client id.
 - **Token size.** The existing 4096-byte `Authorization` header cap applies, so tokens
