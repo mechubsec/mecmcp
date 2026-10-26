@@ -150,10 +150,12 @@ Lives on the server like `tokens.json`; a token cannot name its own authority. M
 - Scope keys must be RFC 6749 scope-tokens (printable ASCII, no space, `"` or `\`) of
   1-128 bytes; a longer key refuses the whole file at load.
 - A token that matches nothing, or whose union grants no tools, is refused with **403**.
-- **Wildcard never grants write tools.** `"tools": ["*"]` allows every non-write tool.
-  The union with a wildcard is the wildcard, so a token that matches **any** `["*"]` entry
-  loses the write tools named in its other entries. A token that must write may match
-  only entries without `"*"`.
+- **A tool wildcard never grants write tools.** `"tools": ["*"]` allows every non-write
+  tool. The union with a tool wildcard is the wildcard, so a token that matches **any**
+  entry whose `tools` list contains `"*"` loses the write tools named in its other
+  entries. A token that must write may match only entries without `"*"` in `tools`.
+  `"devices": ["*"]` is unaffected: an entry naming a write tool with all devices is a
+  valid all-device write grant.
 - At most 64 scopes are read from a token; any beyond that are silently dropped.
 - Role keys are 1-128 bytes of printable ASCII (spaces allowed, e.g. `Domain Admins`).
 - `actor_type` (`agent` or `unknown`) is asserted by the file for every OAuth caller. The
@@ -213,9 +215,9 @@ Per-call audit records (`AuditScope`) for an OAuth caller carry
   different owners. Rate limiting keys on `oauth:<sub>`.
 - **Write tools are granted by the scope map.** An OAuth caller gets exactly the tools its
   entries name, **write tools included** (e.g. `load_and_commit_config` above), so map
-  write tools as carefully as you would grant them in `tokens.json`. A `["*"]` wildcard
-  never grants write tools, and a token that also matches a wildcard entry loses its named
-  write tools (section 4). The exception: OAuth
+  write tools as carefully as you would grant them in `tokens.json`. A `"tools": ["*"]`
+  wildcard never grants write tools, and a token that also matches an entry with `"*"` in
+  `tools` loses its named write tools (section 4); `"devices": ["*"]` does not. The exception: OAuth
   callers hold **no vendor grant**, so grant-gated operations (e.g. PAN-OS XPath writes,
   Mist org/site writes) need a static token. They also cannot bind a verified approver, so
   they cannot approve under `--require-verified-approver`.

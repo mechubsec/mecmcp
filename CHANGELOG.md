@@ -55,7 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`docs/OAUTH.md`). `mecmcp-runtime::cli::OAuthResourceArgs` supplies the flags
   `--oauth-issuer`, `--oauth-resource`, `--oauth-scope-map`, `--oauth-audience`,
   `--oauth-role-claim` and `--oauth-require-at-jwt-typ`. OAuth callers get exactly the
-  tools their scope-map entries name, write tools included (a `["*"]` wildcard never
+  tools their scope-map entries name, write tools included (a `"tools": ["*"]` wildcard never
   grants write tools); they hold no vendor grant, so grant-gated vendor operations need a
   static token, and they cannot bind a verified approver. The scope map refuses
   `actor_type: "human"`. Tokens over about 4 KiB are not supported (the `Authorization`
