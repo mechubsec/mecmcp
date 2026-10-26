@@ -102,11 +102,15 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
   they may approve beyond the token's existing tool/device scopes, and selector-scoped
   approver roles (cluster/node/pool/tag/controller/site) are not yet built (tracked
   separately, see #400).
-- **The `jti` replay guard is in-memory only.** A server restart inside
-  `--approver-max-age-secs` (300s default) forgets which assertions have already been
-  used, so a captured-but-not-yet-expired assertion could be replayed exactly once across
-  a restart. Accepted for this phase; a durable replay store would need its own
-  consistency story this phase does not need yet.
+- **The `jti` replay guard is durable only with `--approver-replay-store`.** With the
+  flag set, each first-use `jti` is recorded (as a SHA-256, never the raw value) in an
+  append-only 0600 file and fsynced before the approval is granted; a failed write refuses
+  the approval (`replay_store_unavailable`), and a malformed file refuses startup. Without
+  it the guard is in-memory only: a restart inside `--approver-max-age-secs` (300s default)
+  forgets used assertions, so a captured-but-not-yet-expired assertion could be replayed
+  exactly once across a restart. Set the flag whenever `--require-verified-approver` is.
+  The store is a local file: it does not protect a deployment whose state directory is
+  rolled back or restored from a snapshot, and it is per-host (not shared across replicas).
 - **`owner_subject` is token-asserted, not IdP-verified.** The owner's bound
   `oidc_subject` (set via `token add --oidc-issuer/--oidc-subject`) is whatever the
   operator who ran that command typed in, not something the IdP vouches for at propose

@@ -259,8 +259,14 @@ rust-junosmcp \
   --oidc-role-claim roles --approver-role approver \
   --approver-max-age-secs 300 \
   --approval-digest-key-file /etc/jmcp/approval-digest.key \
+  --approver-replay-store /var/lib/jmcp/approver-jti.log \
   --require-verified-approver
 ```
+
+`--approver-replay-store` keeps the single-use `jti` record across restarts
+(created 0600, must be owned by the service user; without it an assertion used
+just before a restart can be replayed once until it expires). It requires
+`--oidc-issuer`, and the directory must be writable by the service.
 
 `--require-verified-approver` is the enforcement switch: with it set, a
 `human` token with no assertion cannot approve, and an owner token with no
