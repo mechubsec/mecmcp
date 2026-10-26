@@ -406,6 +406,35 @@ impl VerifiedApproverArgs {
         })
     }
 
+    /// Startup deprecation signal for the legacy human-token path (#400 phase 4).
+    ///
+    /// When an IdP is configured (`--oidc-issuer`) but `--require-verified-approver` is off,
+    /// logs one warning with the *count* of live `human` tokens that have no `oidc_subject`
+    /// binding, and returns that count; otherwise logs nothing and returns `None`. A count
+    /// of zero is not warned about. Never names a token. Call it once at startup, next to
+    /// [`validate`](Self::validate), with the loaded store. The operator, not this code,
+    /// decides when to enforce: there is no cutover.
+    pub fn warn_unbound_human_tokens<G: mecmcp_auth::Grant>(
+        &self,
+        store: &mecmcp_auth::TokenStore<G>,
+    ) -> Option<usize> {
+        if self.oidc_issuer.is_none() || self.require_verified_approver {
+            return None;
+        }
+        let unbound = store.unbound_human_count();
+        if unbound == 0 {
+            return None;
+        }
+        tracing::warn!(
+            target: "audit",
+            unbound_human_tokens = unbound,
+            "{unbound} human token(s) have no oidc_subject binding; bind each with \
+             `token add ... --oidc-issuer ... --oidc-subject ...` before enabling \
+             --require-verified-approver, which will otherwise refuse them"
+        );
+        Some(unbound)
+    }
+
     /// Cross-check these flags against the two pieces of server-specific
     /// context this crate cannot see on its own: whether a
     /// `--approval-digest-key-file` was configured, and whether the
@@ -1945,6 +1974,61 @@ mod composition_tests {
                 .validate(false, false)
                 .is_ok()
         );
+    }
+
+    fn store_with_unbound_human() -> mecmcp_auth::TokenStore {
+        let (_, digest) = mecmcp_auth::TokenSecret::mint().expect("mint");
+        let entry = mecmcp_auth::TokenEntry {
+            name: "alice-laptop".to_owned(),
+            digest,
+            devices: mecmcp_auth::ScopeSet::Wildcard,
+            tools: mecmcp_auth::ScopeSet::Wildcard,
+            created_at: std::time::UNIX_EPOCH.into(),
+            expires_at: None,
+            grant: None,
+            provider: None,
+            provider_tier: None,
+            on_behalf_of: None,
+            actor_type: mecmcp_auth::ActorType::Human,
+            oidc_subject: None,
+        };
+        mecmcp_auth::TokenStore::try_new(vec![entry]).expect("store")
+    }
+
+    #[test]
+    fn the_unbound_human_warning_fires_only_with_an_issuer_and_enforcement_off() {
+        let store = store_with_unbound_human();
+        let args = |issuer: bool, enforce: bool| VerifiedApproverArgs {
+            oidc_issuer: issuer.then(|| "https://idp.example".to_owned()),
+            require_verified_approver: enforce,
+            ..VerifiedApproverArgs::default()
+        };
+
+        let mut warned = None;
+        let logged = mecmcp_audit::testutil::run_with_capture(|| {
+            warned = args(true, false).warn_unbound_human_tokens(&store);
+        });
+        assert_eq!(warned, Some(1));
+        assert!(
+            logged.contains("1 human token(s) have no oidc_subject"),
+            "{logged}"
+        );
+        assert!(
+            !logged.contains("alice-laptop"),
+            "never names a token: {logged}"
+        );
+
+        for (issuer, enforce) in [(false, false), (true, true), (false, true)] {
+            let mut warned = Some(0);
+            let logged = mecmcp_audit::testutil::run_with_capture(|| {
+                warned = args(issuer, enforce).warn_unbound_human_tokens(&store);
+            });
+            assert_eq!(warned, None, "issuer={issuer} enforce={enforce}");
+            assert!(!logged.contains("oidc_subject"), "{logged}");
+        }
+
+        let empty = mecmcp_auth::TokenStore::<mecmcp_auth::NoGrant>::default();
+        assert_eq!(args(true, false).warn_unbound_human_tokens(&empty), None);
     }
 
     #[derive(Debug, Parser)]

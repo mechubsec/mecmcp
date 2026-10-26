@@ -37,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `min(exp, iat + N)` plus leeway. Off by default; servers must pass it through in their
   `build_oauth_resource` (one `if let` line). Tokens without `iat` were already refused.
   (#400)
+- **runtime/auth:** `VerifiedApproverArgs::warn_unbound_human_tokens` (backed by
+  `TokenStore::unbound_human_count`) logs a startup warning with the count of live `human`
+  tokens lacking an `oidc_subject` binding when `--oidc-issuer` is set but
+  `--require-verified-approver` is off. A deprecation signal only: no cutover, token-store
+  format unchanged. Servers opt in with one call after loading the store. (#400)
 
 ## [0.29.2] - 2026-10-26
 
