@@ -4,7 +4,7 @@
 //! authority. Everything here fails closed: no default entry, no implicit wildcard,
 //! no partial matching.
 
-use mecmcp_auth::{ActorType, ScopeSet};
+use mecmcp_auth::{ActorType, DeviceAttributeSource, DeviceAttrs, ScopeSet, SelectorSet};
 use mecmcp_oidc::is_scope_token;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -36,6 +36,39 @@ pub enum ScopeMapError {
 struct GrantSpec {
     tools: ScopeSet,
     devices: ScopeSet,
+    /// Optional attribute selectors (AND) that narrow `devices` to matching inventory devices.
+    #[serde(default, deserialize_with = "selectors_not_null")]
+    device_selectors: Option<Vec<String>>,
+    /// `device_selectors`, compiled at load; never read from the file.
+    #[serde(skip)]
+    compiled: Option<SelectorSet>,
+}
+
+/// Absent means "no selectors"; an explicit `null` must not silently mean the same, or an
+/// operator's broken edit would widen the entry to every device its `devices` names.
+fn selectors_not_null<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error> {
+    Vec::<String>::deserialize(deserializer).map(Some)
+}
+
+impl GrantSpec {
+    /// Devices this entry grants right now. Selectors are resolved against the live
+    /// inventory attributes, so a SIGHUP reload takes effect on the next request; an absent
+    /// source or an attribute-less device matches nothing (fail closed).
+    fn effective_devices(&self, snapshot: &[(String, DeviceAttrs)]) -> ScopeSet {
+        let Some(selectors) = &self.compiled else {
+            return self.devices.clone();
+        };
+        let mut names: Vec<String> = snapshot
+            .iter()
+            .filter(|(name, attrs)| self.devices.allows(name) && selectors.matches(attrs))
+            .map(|(name, _)| name.clone())
+            .collect();
+        names.sort();
+        names.dedup();
+        ScopeSet::Allowlist(names)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,7 +136,7 @@ impl OAuthScopeMap {
     /// # Errors
     /// Returns a [`ScopeMapError`] naming the first violated rule.
     pub fn from_json(bytes: &[u8]) -> Result<Self, ScopeMapError> {
-        let file: MapFile = serde_json::from_slice(bytes)
+        let mut file: MapFile = serde_json::from_slice(bytes)
             .map_err(|error| ScopeMapError::Json(error.to_string()))?;
         if file.version != 1 {
             return Err(ScopeMapError::Invalid(format!(
@@ -129,6 +162,16 @@ impl OAuthScopeMap {
             return Err(ScopeMapError::Invalid(
                 "the map grants nothing: define at least one scope or role".to_owned(),
             ));
+        }
+        // Compile selectors first: an expression that cannot compile fails startup.
+        for (name, spec) in file.scopes.iter_mut().chain(file.roles.iter_mut()) {
+            let Some(expressions) = &spec.device_selectors else {
+                continue;
+            };
+            spec.compiled = Some(
+                SelectorSet::compile(expressions)
+                    .map_err(|error| ScopeMapError::Invalid(format!("{name}: {error}")))?,
+            );
         }
         for (name, spec) in &file.scopes {
             // `*` would read as a default entry; it is only ever an exact-match literal.
@@ -188,6 +231,19 @@ impl OAuthScopeMap {
     /// tools but no device-addressed call is allowed (fail closed; not a refusal).
     #[must_use]
     pub fn map(&self, scopes: &[String], roles: &[String]) -> Option<MappedAuthority> {
+        self.map_with(scopes, roles, None)
+    }
+
+    /// [`map`](Self::map) with a live view of device attributes for entries that carry
+    /// `device_selectors`. Each such entry's devices are its `devices` names that also match
+    /// every selector, then intersected with the other entries exactly as before.
+    #[must_use]
+    pub fn map_with(
+        &self,
+        scopes: &[String],
+        roles: &[String],
+        attributes: Option<&dyn DeviceAttributeSource>,
+    ) -> Option<MappedAuthority> {
         let matched: Vec<&GrantSpec> = scopes
             .iter()
             .filter_map(|scope| self.scopes.get(scope))
@@ -196,11 +252,20 @@ impl OAuthScopeMap {
         if matched.is_empty() {
             return None;
         }
+        // One snapshot per authentication: every entry is judged against the same inventory
+        // generation, so a concurrent reload cannot let two entries disagree about a device.
+        let snapshot = if matched.iter().any(|spec| spec.compiled.is_some()) {
+            attributes
+                .map(DeviceAttributeSource::device_attributes)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let mut tools = ScopeSet::Allowlist(Vec::new());
         let mut devices = ScopeSet::Wildcard;
         for spec in matched {
             tools = union(tools, &spec.tools);
-            devices = intersect(devices, &spec.devices);
+            devices = intersect(devices, &spec.effective_devices(&snapshot));
         }
         // The union can exceed MAX_SCOPE_NAMES; refuse rather than truncate.
         if tools.is_empty()
@@ -674,6 +739,199 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("64 KiB")
+        );
+    }
+
+    struct Fleet(Vec<(String, mecmcp_auth::DeviceAttrs)>);
+
+    impl DeviceAttributeSource for Fleet {
+        fn device_attributes(&self) -> Vec<(String, mecmcp_auth::DeviceAttrs)> {
+            self.0.clone()
+        }
+    }
+
+    fn fleet() -> Fleet {
+        let site = |name: &str, site: &str| {
+            let attrs = serde_json::from_str(&format!(r#"{{"site":"{site}","vendor":"junos"}}"#));
+            (name.to_owned(), attrs.unwrap())
+        };
+        Fleet(vec![
+            site("lab-a", "lab-1"),
+            site("emea-a", "emea-lon"),
+            site("apac-a", "apac-1"),
+            ("bare".to_owned(), mecmcp_auth::DeviceAttrs::default()),
+        ])
+    }
+
+    const SELECTOR_MAP: &str = r#"{"version":1,
+        "scopes":{
+            "junos:read":{"tools":["get_junos_config"],"devices":["*"]},
+            "junos:lab":{"tools":["load_and_commit_config"],"devices":["*"],
+                         "device_selectors":["site=lab-*"]}},
+        "roles":{"site=*":{"tools":["get_device_list"],"devices":["*"],
+                           "device_selectors":["site=emea-*","vendor=junos"]}}}"#;
+
+    fn allowed(authority: &MappedAuthority) -> Vec<&'static str> {
+        ["lab-a", "emea-a", "apac-a", "bare", "ghost"]
+            .into_iter()
+            .filter(|name| authority.devices.allows(name))
+            .collect()
+    }
+
+    #[test]
+    fn selectors_resolve_against_the_live_inventory() {
+        let map = OAuthScopeMap::from_json(SELECTOR_MAP.as_bytes()).unwrap();
+        let fleet = fleet();
+        let lab = map
+            .map_with(&strings(&["junos:lab"]), &[], Some(&fleet))
+            .unwrap();
+        assert_eq!(
+            allowed(&lab),
+            ["lab-a"],
+            "attribute-less and unknown devices match nothing"
+        );
+    }
+
+    #[test]
+    fn selectors_never_widen_the_intersection() {
+        let map = OAuthScopeMap::from_json(SELECTOR_MAP.as_bytes()).unwrap();
+        let fleet = fleet();
+        let both = map
+            .map_with(&strings(&["junos:read", "junos:lab"]), &[], Some(&fleet))
+            .unwrap();
+        assert_eq!(allowed(&both), ["lab-a"]);
+        // Two selector entries with disjoint sites leave nothing.
+        let disjoint = map
+            .map_with(
+                &strings(&["junos:lab"]),
+                &strings(&["site=*"]),
+                Some(&fleet),
+            )
+            .unwrap();
+        assert!(allowed(&disjoint).is_empty());
+    }
+
+    #[test]
+    fn selector_entries_grant_nothing_without_an_attribute_source() {
+        let map = OAuthScopeMap::from_json(SELECTOR_MAP.as_bytes()).unwrap();
+        let lab = map.map(&strings(&["junos:lab"]), &[]).unwrap();
+        assert_eq!(lab.devices, ScopeSet::Allowlist(Vec::new()));
+    }
+
+    #[test]
+    fn an_inventory_reload_changes_the_next_mapping() {
+        let map = OAuthScopeMap::from_json(SELECTOR_MAP.as_bytes()).unwrap();
+        let mut moved = fleet();
+        moved.0[2].1 = serde_json::from_str(r#"{"site":"lab-9"}"#).unwrap();
+        let lab = map
+            .map_with(&strings(&["junos:lab"]), &[], Some(&moved))
+            .unwrap();
+        assert_eq!(allowed(&lab), ["lab-a", "apac-a"]);
+    }
+
+    /// A claim value that looks like a selector is only ever a lookup key.
+    #[test]
+    fn a_claim_cannot_inject_a_selector() {
+        let map = OAuthScopeMap::from_json(SELECTOR_MAP.as_bytes()).unwrap();
+        let fleet = fleet();
+        for claim in [
+            "site=*",
+            "vendor=junos",
+            "junos:read site=*",
+            "site=lab-* ",
+            "junos:lab,site=*",
+        ] {
+            // `site=*` is a role *key* in SELECTOR_MAP, so only that exact string maps, and it
+            // grants its own configured selectors, not what the claim text says.
+            let by_scope = map.map_with(&strings(&[claim]), &[], Some(&fleet));
+            assert!(by_scope.is_none(), "{claim:?} must not map as a scope");
+        }
+        let by_role = map
+            .map_with(&[], &strings(&["site=*"]), Some(&fleet))
+            .unwrap();
+        assert_eq!(
+            allowed(&by_role),
+            ["emea-a"],
+            "the key is opaque; its selectors come from config"
+        );
+        assert!(
+            map.map_with(&[], &strings(&["site=emea-*"]), Some(&fleet))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn selector_load_errors() {
+        for bad in [
+            r#""device_selectors":[]"#,
+            r#""device_selectors":["region=emea"]"#,
+            r#""device_selectors":["site="]"#,
+            r#""device_selectors":["site=emea-?"]"#,
+            r#""device_selectors":["site=emea\u0000"]"#,
+            r#""device_selectors":"site=emea-*""#,
+        ] {
+            let json = format!(
+                r#"{{"version":1,"scopes":{{"a":{{"tools":["t"],"devices":["*"],{bad}}}}}}}"#
+            );
+            assert!(OAuthScopeMap::from_json(json.as_bytes()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_file_without_selectors_maps_identically_with_or_without_a_source() {
+        let fleet = fleet();
+        let plain = map();
+        let with = plain.map_with(
+            &strings(&["junos:read"]),
+            &strings(&["netops"]),
+            Some(&fleet),
+        );
+        assert_eq!(
+            with,
+            plain.map(&strings(&["junos:read"]), &strings(&["netops"]))
+        );
+    }
+
+    #[test]
+    fn a_null_device_selectors_is_refused_not_read_as_absent() {
+        let json = r#"{"version":1,"scopes":{"a":{"tools":["t"],"devices":["*"],"device_selectors":null}}}"#;
+        assert!(OAuthScopeMap::from_json(json.as_bytes()).is_err());
+        let absent = r#"{"version":1,"scopes":{"a":{"tools":["t"],"devices":["*"]}}}"#;
+        assert!(OAuthScopeMap::from_json(absent.as_bytes()).is_ok());
+    }
+
+    /// Each call returns the next inventory generation. A device that is lab/panos in
+    /// generation 0 and emea/junos in generation 1 satisfies neither conjunction at any
+    /// instant, so per-entry reads would grant it via lab-* (gen 0) and junos (gen 1).
+    struct Flapping(std::sync::atomic::AtomicUsize);
+
+    impl DeviceAttributeSource for Flapping {
+        fn device_attributes(&self) -> Vec<(String, mecmcp_auth::DeviceAttrs)> {
+            let generation = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let json = if generation == 0 {
+                r#"{"site":"lab-1","vendor":"panos"}"#
+            } else {
+                r#"{"site":"emea-1","vendor":"junos"}"#
+            };
+            vec![("x".to_owned(), serde_json::from_str(json).unwrap())]
+        }
+    }
+
+    #[test]
+    fn every_entry_is_judged_against_one_attribute_snapshot() {
+        let json = r#"{"version":1,"scopes":{
+            "a":{"tools":["t"],"devices":["*"],"device_selectors":["site=lab-*"]},
+            "b":{"tools":["t"],"devices":["*"],"device_selectors":["vendor=junos"]}}}"#;
+        let map = OAuthScopeMap::from_json(json.as_bytes()).unwrap();
+        let source = Flapping(std::sync::atomic::AtomicUsize::new(0));
+        let granted = map
+            .map_with(&strings(&["a", "b"]), &[], Some(&source))
+            .unwrap();
+        assert!(!granted.devices.allows("x"));
+        assert_eq!(
+            source.0.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "read once"
         );
     }
 

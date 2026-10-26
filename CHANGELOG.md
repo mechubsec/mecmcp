@@ -27,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [Unreleased]
+
+### Added
+
+- OAuth scope-map entries accept `device_selectors` (`site=`, `vendor=`, `tag=`, `*` glob,
+  AND) that narrow `devices` by inventory attribute, resolved per authentication against a
+  consumer-supplied `DeviceAttributeSource` (`OAuthResource::with_device_attributes`). New
+  `mecmcp_auth::{DeviceAttrs, Selector, SelectorSet}`. Strictly additive: files without
+  `device_selectors` behave identically (#400 phase 2).
+
 ## [0.29.3] - 2026-10-26
 
 ### Added

@@ -2019,6 +2019,7 @@ dependencies = [
 name = "mecmcp-inventory"
 version = "0.29.3"
 dependencies = [
+ "mecmcp-auth",
  "mecmcp-secret",
  "serde",
  "serde_json",
