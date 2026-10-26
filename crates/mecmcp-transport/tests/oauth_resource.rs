@@ -1047,9 +1047,10 @@ async fn the_bearer_is_stripped_from_oauth_requests_only() {
 
 /// Ceiling tests: `iat`/`exp` are set explicitly.
 fn lifetime_claims(issued_ago: i64, lifetime: i64) -> Value {
+    let issued_at = now() - issued_ago;
     let mut token_claims = claims(json!(JUNOS), "junos:read");
-    token_claims["iat"] = json!(now() - issued_ago);
-    token_claims["exp"] = json!(now() - issued_ago + lifetime);
+    token_claims["iat"] = json!(issued_at);
+    token_claims["exp"] = json!(issued_at + lifetime);
     token_claims
 }
 
