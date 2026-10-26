@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
-## [Unreleased]
+## [0.30.1] - 2026-10-26
 
 ### Fixed
 
