@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CallerCtx::from_entry_with_attributes`; `CallerCtx::from(&entry)` grants no devices to a
   selector entry. `token add --device-selector` (repeatable) and
   `TokenStoreFile::add_with_selectors` (#400).
+- Approver roles are selector-scoped through the same field: approval already checks the
+  approver's device scope against the change set's one device, so a `site=lab-*` approver
+  cannot approve a prod change set. Pinned by an integration test; no new flag (#400).
 
 ## [0.29.4] - 2026-10-26
 

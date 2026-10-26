@@ -227,8 +227,18 @@ attribute, e.g. a role that may touch only the EMEA lab:
   alphabet above, enforced when they are constructed, so no control, bidi, zero-width,
   fullwidth or non-ASCII lookalike can exist to match a literal or be absorbed by `*`. The
   guarantee is only as good as the inventory's `site` labels: a mislabelled or unlabelled
-  device is placed (or not placed) by the label alone. Selector scoping of
-  verified-approver roles is not built.
+  device is placed (or not placed) by the label alone.
+
+#### Approver roles
+
+Approval is device-scoped already: a change set targets exactly one device, and a server's
+approve handler checks the caller's device scope against it (`authorize_target`) before the
+coordinator is reached. A human approver token carrying `device_selectors` is therefore
+confined to the change sets on devices its selectors match. An approver scoped to
+`site=lab-*` is refused on a prod change set, which stays `Planned`. No new flag is needed,
+and an approver with `devices: ["*"]` and no selectors behaves as before. OAuth principals
+cannot be human approvers (`actor_type "human"` is refused in the scope map), so approver
+roles are static tokens.
 
 #### Static tokens
 

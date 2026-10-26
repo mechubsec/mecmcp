@@ -1959,6 +1959,7 @@ name = "mecmcp-changeset"
 version = "0.29.4"
 dependencies = [
  "async-trait",
+ "chrono",
  "getrandom 0.4.3",
  "hex",
  "hmac",
@@ -1966,6 +1967,7 @@ dependencies = [
  "mecmcp-auth",
  "mecmcp-redact",
  "mecmcp-secret",
+ "mecmcp-server",
  "rustix",
  "serde",
  "serde_json",
