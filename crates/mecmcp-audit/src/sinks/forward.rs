@@ -23,6 +23,15 @@
 //! against tampering. Operators who need SSDF's exact guarantees use SSDF;
 //! this exists for everyone else who currently has nothing off-host at all.
 //!
+//! ## Forward-only mode
+//!
+//! SSDF is not required (mecmcp#378, option 2).
+//! [`EvidenceService::start_forward_only`](crate::EvidenceService::start_forward_only)
+//! makes this sink the pipeline's only destination, so operators without SSDF
+//! still get the chained log off-host. There the forward spool is the sole
+//! durable record, so the recorder is fail-closed on it, and the chain resumes
+//! from [`ForwardSink::produced_head`]. Alongside SSDF it stays best-effort.
+//!
 //! ## Background delivery
 //!
 //! As [`SsdfSink`](crate::sinks::ssdf::SsdfSink): no background thread.
@@ -31,7 +40,7 @@
 
 use crate::evidence::ClosedSegment;
 use crate::sinks::delivery_ledger::{DeliveryLedger, DeliveryStatus, SegmentId};
-use crate::sinks::ssdf::{HttpRequest, HttpTransport, dedup_token};
+use crate::sinks::ssdf::{HttpRequest, HttpTransport, ProducedHead, dedup_token};
 use mecmcp_secret::OutboundSecret;
 use std::fs::{File, OpenOptions, Permissions};
 use std::io::{BufRead, BufReader, Write};
@@ -176,6 +185,26 @@ impl ForwardSink {
             .expect("ledger mutex not poisoned")
             .mark_pending(id)?;
         Ok(())
+    }
+
+    /// The head of the newest segment this writer has **produced**, for
+    /// `server_id`, read from the outbox.
+    ///
+    /// Mirrors [`SsdfSink::produced_head`](crate::sinks::ssdf::SsdfSink::produced_head):
+    /// the outbox is append-only and never pruned (delivery is tracked in the
+    /// separate ledger), so file order is production order and the last
+    /// matching line is the newest segment, delivered or not. It is what a
+    /// forward-only pipeline resumes from; `None` means nothing produced here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ForwardSinkError`] if the outbox cannot be read or decoded.
+    pub fn produced_head(&self, server_id: &str) -> Result<Option<ProducedHead>, ForwardSinkError> {
+        Ok(self
+            .load_outbox()?
+            .into_iter()
+            .rfind(|segment| segment.server_id == server_id)
+            .map(|segment| ProducedHead::new(segment.head_hash)))
     }
 
     /// Attempt delivery of every segment the ledger does not already show as

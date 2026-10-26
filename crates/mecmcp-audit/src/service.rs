@@ -59,10 +59,61 @@ pub struct EvidenceConfig {
     pub forward_sink: Option<ForwardSinkConfig>,
 }
 
+/// Configuration for a **forward-only** evidence pipeline: the same hash-chained
+/// segments as [`EvidenceConfig`], shipped to a [`ForwardSink`] and nowhere else
+/// (mecmcp#378, option 2) -- for operators without SSDF who still want the chain
+/// off-host.
+///
+/// `server_id` keys the chain exactly as in [`EvidenceConfig`]; the same
+/// one-process-per-`server_id` rule applies.
+///
+/// Unlike the SSDF+forward arrangement, the forward spool is the *only* durable
+/// record here, so the recorder is fail-closed on it: a spool error refuses the
+/// operation rather than leaving no trace.
+#[derive(Debug, Clone)]
+pub struct ForwardOnlyConfig {
+    /// Identifies this writer's chain; see [`EvidenceConfig::server_id`].
+    pub server_id: String,
+    /// Identifies this process lifetime within the writer's chain.
+    pub run_id: String,
+    /// Records per segment before one is closed and spooled.
+    pub records_per_segment: usize,
+    /// How often the drain runs.
+    pub delivery_interval: Duration,
+    /// The one destination.
+    pub forward: ForwardSinkConfig,
+    /// Ed25519 signing key; see [`EvidenceConfig::signing_key_path`].
+    pub signing_key_path: Option<PathBuf>,
+}
+
+/// Either shape of evidence pipeline, so one call path can start both.
+///
+/// `#[non_exhaustive]` so a further destination mix can be added without
+/// breaking a consumer's `match`.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+#[allow(clippy::large_enum_variant)] // built once at startup
+pub enum EvidencePipelineConfig {
+    /// SSDF as the chain of record, optionally with a best-effort forward copy.
+    Ssdf(EvidenceConfig),
+    /// Forward sink only, fail-closed on its spool.
+    ForwardOnly(ForwardOnlyConfig),
+}
+
+/// The settings both pipeline shapes share.
+struct Common {
+    server_id: String,
+    run_id: String,
+    records_per_segment: usize,
+    delivery_interval: Duration,
+    signing_key_path: Option<PathBuf>,
+}
+
 /// A running evidence pipeline: recorder, sink, and the drain between them.
 pub struct EvidenceService {
     recorder: Arc<EvidenceRecorder>,
-    sink: Arc<SsdfSink>,
+    /// `None` in forward-only mode, where `forward` is the chain of record.
+    sink: Option<Arc<SsdfSink>>,
     forward: Option<Arc<ForwardSink>>,
     stop: Arc<(Mutex<bool>, Condvar)>,
     worker: Option<JoinHandle<()>>,
@@ -134,7 +185,62 @@ impl EvidenceService {
             interruptible_sleep(&stop),
         )?);
         let forward = Self::build_forward(&config, forward_transport)?;
-        Self::from_sink(config, sink, forward, stop)
+        let common = Common {
+            server_id: config.server_id,
+            run_id: config.run_id,
+            records_per_segment: config.records_per_segment,
+            delivery_interval: config.delivery_interval,
+            signing_key_path: config.signing_key_path,
+        };
+        Self::from_sink(common, sink, forward, stop)
+    }
+
+    /// Start whichever pipeline `config` describes.
+    ///
+    /// `ssdf_transport` is unused in forward-only mode.
+    ///
+    /// # Errors
+    ///
+    /// As [`start`](Self::start).
+    pub fn start_pipeline(
+        config: EvidencePipelineConfig,
+        ssdf_transport: Arc<dyn HttpTransport>,
+        forward_transport: Arc<dyn HttpTransport>,
+    ) -> Result<Self, SsdfSinkError> {
+        match config {
+            EvidencePipelineConfig::Ssdf(config) => {
+                Self::start_with_transports(config, ssdf_transport, forward_transport)
+            }
+            EvidencePipelineConfig::ForwardOnly(config) => {
+                Self::start_forward_only(config, forward_transport)
+            }
+        }
+    }
+
+    /// Start a forward-only pipeline (mecmcp#378, option 2).
+    ///
+    /// Resume mirrors the SSDF path with the remote read removed: deliver the
+    /// outbox first, then continue from the newest head this writer *produced*
+    /// ([`ForwardSink::produced_head`]). The forward outbox is append-only and
+    /// never pruned, so that head survives delivery and restarts. A rebuilt host
+    /// with an empty outbox starts a new root -- there is no remote to ask.
+    ///
+    /// # Errors
+    ///
+    /// As [`start`](Self::start).
+    pub fn start_forward_only(
+        config: ForwardOnlyConfig,
+        transport: Arc<dyn HttpTransport>,
+    ) -> Result<Self, SsdfSinkError> {
+        let forward = Arc::new(ForwardSink::new_with_transport(config.forward, transport)?);
+        let common = Common {
+            server_id: config.server_id,
+            run_id: config.run_id,
+            records_per_segment: config.records_per_segment,
+            delivery_interval: config.delivery_interval,
+            signing_key_path: config.signing_key_path,
+        };
+        Self::assemble(common, None, Some(forward), new_stop())
     }
 
     fn build_forward(
@@ -151,8 +257,17 @@ impl EvidenceService {
     }
 
     fn from_sink(
-        config: EvidenceConfig,
+        common: Common,
         sink: Arc<SsdfSink>,
+        forward: Option<Arc<ForwardSink>>,
+        stop: Arc<(Mutex<bool>, Condvar)>,
+    ) -> Result<Self, SsdfSinkError> {
+        Self::assemble(common, Some(sink), forward, stop)
+    }
+
+    fn assemble(
+        common: Common,
+        sink: Option<Arc<SsdfSink>>,
         forward: Option<Arc<ForwardSink>>,
         stop: Arc<(Mutex<bool>, Condvar)>,
     ) -> Result<Self, SsdfSinkError> {
@@ -164,18 +279,25 @@ impl EvidenceService {
         // reports both branches clean. This ordering is the contract's
         // (ssdf#47) and it is the whole reason these two lines are not
         // interchangeable.
-        sink.attempt_delivery()?;
-        let remote = sink.remote_head(&config.server_id)?;
-        let local = sink.produced_head(&config.server_id)?;
-
-        let mut recorder_builder = EvidenceRecorder::new(RecorderConfig {
-            server_id: config.server_id.clone(),
-            run_id: config.run_id.clone(),
-            resume_from: resume_head(remote, local),
-            records_per_segment: config.records_per_segment,
-        })
-        .spooling_to_with_forward(Arc::clone(&sink), forward.clone());
-        if let Some(key_path) = &config.signing_key_path {
+        let mut recorder_builder = match (&sink, &forward) {
+            (Some(sink), forward) => {
+                sink.attempt_delivery()?;
+                let remote = sink.remote_head(&common.server_id)?;
+                let local = sink.produced_head(&common.server_id)?;
+                Self::recorder_for(&common, resume_head(remote, local))
+                    .spooling_to_with_forward(Arc::clone(sink), forward.clone())
+            }
+            (None, Some(forward)) => {
+                // Forward-only: no remote head to consult, and the same
+                // replay-then-read order (harmless here, kept for parity).
+                forward.attempt_delivery()?;
+                let local = forward.produced_head(&common.server_id)?;
+                Self::recorder_for(&common, resume_head(None, local))
+                    .spooling_to_forward_only(Arc::clone(forward))
+            }
+            (None, None) => unreachable!("every constructor supplies a destination"),
+        };
+        if let Some(key_path) = &common.signing_key_path {
             let key = load_signing_key(key_path)?;
             recorder_builder = recorder_builder.with_signing_key(key);
         }
@@ -183,15 +305,21 @@ impl EvidenceService {
 
         let degraded = Arc::new(AtomicBool::new(false));
         let worker = {
-            let sink = Arc::clone(&sink);
+            let sink = sink.clone();
             let forward = forward.clone();
             let stop = Arc::clone(&stop);
             let degraded = Arc::clone(&degraded);
-            let interval = config.delivery_interval;
+            let interval = common.delivery_interval;
             std::thread::Builder::new()
                 .name("evidence-delivery".to_owned())
                 .spawn(move || {
-                    drain_until_stopped(&sink, forward.as_deref(), &stop, &degraded, interval)
+                    drain_until_stopped(
+                        sink.as_deref(),
+                        forward.as_deref(),
+                        &stop,
+                        &degraded,
+                        interval,
+                    )
                 })
                 .map_err(SsdfSinkError::OutboxIo)?
         };
@@ -203,6 +331,15 @@ impl EvidenceService {
             stop,
             worker: Some(worker),
             degraded,
+        })
+    }
+
+    fn recorder_for(common: &Common, resume_from: Option<String>) -> EvidenceRecorder {
+        EvidenceRecorder::new(RecorderConfig {
+            server_id: common.server_id.clone(),
+            run_id: common.run_id.clone(),
+            resume_from,
+            records_per_segment: common.records_per_segment,
         })
     }
 
@@ -232,9 +369,16 @@ impl EvidenceService {
         // them and shipping them. If one were dropped and a later segment did
         // get through, the chain would land with a missing predecessor -- a
         // hole that still verifies as a chain.
-        let sink = Arc::clone(&self.sink);
+        let sink = self.sink.clone();
         let forward = self.forward.clone();
         let outcome = spool_everything(&self.recorder, move |segment| {
+            let Some(sink) = &sink else {
+                // Forward-only: the forward spool is the record, so its error
+                // is the result.
+                return forward
+                    .as_ref()
+                    .map_or(Ok(()), |forward| forward.spool(segment));
+            };
             let result = sink.spool(segment.clone());
             if let Some(forward) = &forward
                 && let Err(error) = forward.spool(segment)
@@ -250,8 +394,15 @@ impl EvidenceService {
             }
             result
         });
-        let flushed = self.sink.shutdown_flush();
+        let flushed = self
+            .sink
+            .as_ref()
+            .map_or(Ok(()), |sink| sink.shutdown_flush());
         if let Some(forward) = &self.forward {
+            if self.sink.is_none() {
+                // Forward-only: the flush result is the pipeline's result.
+                return outcome.and(forward.shutdown_flush());
+            }
             // Best-effort: a forward-delivery failure at shutdown does not
             // change what this call reports, matching `delivery_degraded`
             // above, which also describes SSDF alone.
@@ -390,7 +541,7 @@ fn interruptible_sleep(stop: &Arc<(Mutex<bool>, Condvar)>) -> Arc<dyn Fn(Duratio
 
 /// Deliver on an interval until told to stop.
 fn drain_until_stopped(
-    sink: &SsdfSink,
+    sink: Option<&SsdfSink>,
     forward: Option<&ForwardSink>,
     stop: &(Mutex<bool>, Condvar),
     degraded: &AtomicBool,
@@ -412,26 +563,28 @@ fn drain_until_stopped(
         let should_stop = *stopped;
         drop(stopped);
 
-        match sink.attempt_delivery() {
-            // `Ok` describes the pass, not the segments: a pass in which every
-            // segment was refused still returns `Ok`. Reading only the outer
-            // result reports healthy while the outbox grows without limit.
-            Ok(report) => {
-                degraded.store(report.degraded(), Ordering::SeqCst);
-                if report.degraded() {
+        if let Some(sink) = sink {
+            match sink.attempt_delivery() {
+                // `Ok` describes the pass, not the segments: a pass in which every
+                // segment was refused still returns `Ok`. Reading only the outer
+                // result reports healthy while the outbox grows without limit.
+                Ok(report) => {
+                    degraded.store(report.degraded(), Ordering::SeqCst);
+                    if report.degraded() {
+                        tracing::warn!(
+                            delivered = report.delivered,
+                            failed = report.failed,
+                            "some evidence segments were refused; they stay spooled for retry"
+                        );
+                    }
+                }
+                Err(error) => {
+                    degraded.store(true, Ordering::SeqCst);
                     tracing::warn!(
-                        delivered = report.delivered,
-                        failed = report.failed,
-                        "some evidence segments were refused; they stay spooled for retry"
+                        %error,
+                        "evidence delivery pass failed; segments stay spooled and will be retried"
                     );
                 }
-            }
-            Err(error) => {
-                degraded.store(true, Ordering::SeqCst);
-                tracing::warn!(
-                    %error,
-                    "evidence delivery pass failed; segments stay spooled and will be retried"
-                );
             }
         }
 
@@ -441,17 +594,26 @@ fn drain_until_stopped(
         // worth a log line, not a signal that changes how an operator reads
         // the pipeline's health.
         if let Some(forward) = forward {
+            // Forward-only: this IS the chain of record, so it drives `degraded`.
+            let primary = sink.is_none();
             match forward.attempt_delivery() {
-                Ok(report) if report.degraded() => {
-                    tracing::warn!(
-                        delivered = report.delivered,
-                        failed = report.failed,
-                        "some segments were refused by the forward audit sink; they stay \
-                         spooled there for retry"
-                    );
+                Ok(report) => {
+                    if primary {
+                        degraded.store(report.degraded(), Ordering::SeqCst);
+                    }
+                    if report.degraded() {
+                        tracing::warn!(
+                            delivered = report.delivered,
+                            failed = report.failed,
+                            "some segments were refused by the forward audit sink; they stay \
+                             spooled there for retry"
+                        );
+                    }
                 }
-                Ok(_) => {}
                 Err(error) => {
+                    if primary {
+                        degraded.store(true, Ordering::SeqCst);
+                    }
                     tracing::warn!(
                         %error,
                         "forward audit sink delivery pass failed; segments stay spooled there"

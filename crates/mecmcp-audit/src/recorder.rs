@@ -357,6 +357,20 @@ impl EvidenceRecorder {
         })
     }
 
+    /// Spool to a [`ForwardSink`](crate::sinks::forward::ForwardSink) as the
+    /// **only** destination (mecmcp#378).
+    ///
+    /// Fail-closed like [`spooling_to`](Self::spooling_to): with no SSDF copy,
+    /// a forward spool failure would leave no trace, so it refuses the
+    /// operation. A ledger-only failure is still durable and is not an error.
+    #[must_use]
+    pub fn spooling_to_forward_only(
+        self,
+        forward: std::sync::Arc<crate::sinks::forward::ForwardSink>,
+    ) -> Self {
+        self.with_spool(move |segment| spool_outcome(forward.spool(segment)))
+    }
+
     /// Sign every segment's head automatically as it closes.
     ///
     /// Before this, [`sign_head`] existed only as a function a caller had to
