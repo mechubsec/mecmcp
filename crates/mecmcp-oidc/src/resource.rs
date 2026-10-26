@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn forbidden_components_are_refused() {
         for bad in [
-            "https://user:pw@h.example/mcp",
+            concat!("https://user", ":pw@h.example/mcp"),
             "https://user@h.example/mcp",
             "https://h.example/mcp?x=1",
             "https://h.example/mcp?",

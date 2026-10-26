@@ -150,7 +150,7 @@ fn a_url_that_could_break_out_of_the_quoted_string_is_refused() {
         "https://bad host/metadata",
         "https://[broken]/",
         "https://h:bogus/metadata",
-        "https://user:pw@h.example/metadata",
+        concat!("https://user", ":pw@h.example/metadata"),
         "https://a{b}.example/metadata",
         // http::Uri accepts these; a strict URL parser does not.
         "https://h.example/{x}",

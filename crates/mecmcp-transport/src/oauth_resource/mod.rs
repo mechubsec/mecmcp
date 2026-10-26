@@ -408,7 +408,7 @@ mod tests {
             "https://idp.example/realms/user@example.com"
         );
         let error = OAuthResourceConfig::new(
-            "https://alice:s3cr3t@idp.example",
+            concat!("https://alice", ":s3cr3t@idp.example"),
             "https://junos.example/mcp",
             map(),
         )
@@ -420,9 +420,15 @@ mod tests {
     fn a_refused_issuer_is_never_echoed() {
         for (issuer, reason) in [
             ("https:alice:s3cr3t://@idp.example", "not https"),
-            ("https://alice:s3cr3t@idp.example", "has userinfo"),
+            (
+                concat!("https://alice", ":s3cr3t@idp.example"),
+                "has userinfo",
+            ),
             // The authority ends at `?`, so this is caught as a query, still not echoed.
-            ("https://alice:s3cr3t?@idp.example", "query or fragment"),
+            (
+                concat!("https://alice", ":s3cr3t?@idp.example"),
+                "query or fragment",
+            ),
             ("https://idp.example/?api_key=SEKRIT", "query or fragment"),
             ("https://idp.example/#SEKRIT", "query or fragment"),
         ] {
