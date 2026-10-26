@@ -46,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`CallerCtx::verified_proposer`, `Attribution::verified_proposer`) so it is never approval
   evidence; it shares the `jti` replay set, so one assertion is good once in either role.
   A server with no verifier answers the header 400, as for the approver header.
+- `--require-verified-proposer` (`VerifiedApproverArgs`, requires `--oidc-issuer`) and
+  `ChangesetCoordinator::with_require_verified_proposer`: a proposal must carry an
+  IdP-verified proposer (`ProposerIdentity`, built by `from_attribution`; an OAuth principal
+  counts), proposed through the new `create_change_set_as`. The change set records
+  `owner_verified` and approval refuses one without it, so the two-person rule compares two
+  IdP-verified subjects. A verified record makes the state file version 9; nothing changes
+  for a deployment that leaves the flag off (#400).
 
 ## [0.29.4] - 2026-10-26
 

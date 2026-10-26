@@ -383,6 +383,16 @@ pub struct VerifiedApproverArgs {
     #[arg(long)]
     pub require_verified_approver: bool,
 
+    /// Require every proposal to come from an IdP-verified principal: a fresh
+    /// `Mecmcp-Proposer-Assertion` whose subject equals the proposing token's bound
+    /// `oidc_subject`, or an OAuth caller. Without it the owner's `owner_subject` is copied
+    /// from the token, which the operator who minted it typed. Off by default. Pair it with
+    /// `--require-verified-approver` so the two-person rule compares two verified subjects.
+    /// Requires `--oidc-issuer`. The server must also pass the flag to
+    /// `ChangesetCoordinator::with_require_verified_proposer`.
+    #[arg(long)]
+    pub require_verified_proposer: bool,
+
     /// Append log (periodically compacted; not an audit record) that makes the approver-assertion `jti` replay set
     /// survive restarts (created 0600; must be owned by the service user).
     /// Without it, an assertion used before a restart can be replayed once
@@ -458,6 +468,9 @@ impl VerifiedApproverArgs {
         if self.approver_replay_store.is_some() && self.oidc_issuer.is_none() {
             return Err(VerifiedApproverArgsError::ReplayStoreRequiresIssuer);
         }
+        if self.require_verified_proposer && self.oidc_issuer.is_none() {
+            return Err(VerifiedApproverArgsError::ProposerRequiresIssuer);
+        }
         if self.require_verified_approver {
             if self.oidc_issuer.is_none() {
                 return Err(VerifiedApproverArgsError::RequiresIssuer);
@@ -490,6 +503,9 @@ pub enum VerifiedApproverArgsError {
     /// against.
     #[error("--require-verified-approver requires --oidc-issuer")]
     RequiresIssuer,
+    /// Strict verified-proposer mode needs an IdP to verify proposer assertions against.
+    #[error("--require-verified-proposer requires --oidc-issuer")]
+    ProposerRequiresIssuer,
     /// Strict mode without a keyed approval digest lets the verified-approver
     /// fields (mechanism/issuer/subject/owner_subject) in a change-set record
     /// be edited with no detection, which defeats the point of requiring them.
@@ -1921,6 +1937,26 @@ mod composition_tests {
             args.validate(true, false),
             Err(VerifiedApproverArgsError::RequiresIssuer)
         );
+    }
+
+    #[test]
+    fn verified_proposer_is_off_by_default_and_needs_an_issuer() {
+        assert!(!VerifiedApproverArgs::default().require_verified_proposer);
+        let args = VerifiedApproverArgs {
+            require_verified_proposer: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            args.validate(false, false),
+            Err(VerifiedApproverArgsError::ProposerRequiresIssuer)
+        );
+        let with_issuer = VerifiedApproverArgs {
+            oidc_issuer: Some("https://idp.example".to_owned()),
+            oidc_audience: Some("aud".to_owned()),
+            ..args
+        };
+        // No digest key and no lab-mode exclusion: those are the approver mode's rules.
+        assert_eq!(with_issuer.validate(false, true), Ok(()));
     }
 
     #[test]

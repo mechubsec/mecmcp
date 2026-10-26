@@ -258,6 +258,7 @@ fn v3_waiver_round_trip_and_version_dependence() {
         task_id: None,
         apply_without_handle: false,
         owner_subject: None,
+        owner_verified: false,
     };
 
     let mut state = ChangesetState {

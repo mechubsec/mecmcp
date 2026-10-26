@@ -43,6 +43,7 @@ fn planned(id: &str) -> ChangeSetRecord {
         task_id: None,
         apply_without_handle: false,
         owner_subject: None,
+        owner_verified: false,
     }
 }
 

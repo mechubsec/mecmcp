@@ -1,7 +1,7 @@
 //! Change-set lifecycle operations: create, approve, status.
 
 use crate::{
-    approver::ApproverIdentity,
+    approver::{ApproverIdentity, ProposerIdentity},
     coordinator::{ChangesetCoordinator, CoordinatorError},
     digest::{
         change_set_digest, compute_approval_digest_v5, compute_approval_digest_v7,
@@ -139,6 +139,45 @@ impl ChangesetCoordinator {
         policy_signature: String,
         owner_subject: Option<OwnerSubject>,
     ) -> Result<ChangeSetOutput, CoordinatorError> {
+        self.create_change_set_as(
+            device,
+            actions,
+            owner,
+            expected_fingerprint,
+            policy_signature,
+            &ProposerIdentity::TokenAsserted { owner_subject },
+        )
+        .await
+    }
+
+    /// [`create_change_set`](Self::create_change_set) with the proposer's identity rather
+    /// than a bare subject (mecmcp#400), so the record can say whether the IdP verified
+    /// it. Build the identity with [`ProposerIdentity::from_attribution`].
+    ///
+    /// Additionally refuses, under `with_require_verified_proposer`, any proposer that is
+    /// not `OidcVerified`.
+    ///
+    /// # Errors
+    ///
+    /// As [`create_change_set`](Self::create_change_set), and if strict verified-proposer
+    /// mode is on and the proposer is only token-asserted.
+    pub async fn create_change_set_as<A: Serialize>(
+        &self,
+        device: String,
+        actions: Vec<A>,
+        owner: String,
+        expected_fingerprint: String,
+        policy_signature: String,
+        proposer: &ProposerIdentity,
+    ) -> Result<ChangeSetOutput, CoordinatorError> {
+        if self.require_verified_proposer() && !proposer.is_verified() {
+            return Err(CoordinatorError::new(
+                "proposer",
+                "strict verified-proposer mode requires an IdP-verified proposer: present a \
+                 fresh Mecmcp-Proposer-Assertion bound to the proposing token's oidc_subject",
+            ));
+        }
+        let owner_subject = proposer.owner_subject();
         if self.require_verified_approver() && owner_subject.is_none() {
             return Err(CoordinatorError::new(
                 "owner_subject",
@@ -190,6 +229,7 @@ impl ChangesetCoordinator {
             task_id: None,
             apply_without_handle: false,
             owner_subject,
+            owner_verified: proposer.is_verified(),
         };
 
         self.insert_change_set(record.clone()).await?;
@@ -307,6 +347,18 @@ impl ChangesetCoordinator {
                      from the state file after proposal",
                 ));
             }
+        }
+
+        // Under strict verified-proposer mode the owner side of the comparison below must be
+        // IdP-verified too; a token-asserted `owner_subject` is a value an operator typed.
+        // Checked on the record, not the caller, so it also refuses a change set proposed
+        // before the mode was turned on.
+        if self.require_verified_proposer() && !record.owner_verified {
+            return Err(CoordinatorError::new(
+                "owner_subject",
+                "strict verified-proposer mode requires the change set's owner to have been \
+                 IdP-verified when it was proposed; this one was not",
+            ));
         }
 
         // The house rule is two *people*, not two tokens. A verified subject

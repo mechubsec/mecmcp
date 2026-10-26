@@ -103,7 +103,7 @@ pub fn read_state_with_key(
     let on_disk: OnDiskChangesetState = serde_json::from_slice(bytes)
         .map_err(|error| PersistenceError::new(format!("invalid changeset state JSON: {error}")))?;
 
-    if !(1..=8).contains(&on_disk.version) {
+    if !(1..=9).contains(&on_disk.version) {
         return Err(PersistenceError::new(format!(
             "unsupported changeset state version {}",
             on_disk.version
@@ -746,7 +746,12 @@ pub(crate) fn write_state(
     let verified_approver_needs_v8 = state.change_sets.values().any(|cs| {
         cs.owner_subject.is_some() || cs.approval.as_ref().is_some_and(|a| a.digest_version >= 7)
     });
-    let version = if verified_approver_needs_v8 {
+    // Version 9 is required once a record carries `owner_verified` (mecmcp#400), a field a
+    // v8 reader would reject as unknown. Content-based like every rule above it.
+    let verified_proposer_needs_v9 = state.change_sets.values().any(|cs| cs.owner_verified);
+    let version = if verified_proposer_needs_v9 {
+        9
+    } else if verified_approver_needs_v8 {
         8
     } else if keyed_approvals_need_v7 {
         7

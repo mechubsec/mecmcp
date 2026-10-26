@@ -23,7 +23,7 @@ pub mod transaction;
 pub mod types;
 
 pub use apply::ApplyOutput;
-pub use approver::ApproverIdentity;
+pub use approver::{ApproverIdentity, ProposerIdentity};
 pub use changeset::ChangeSetOutput;
 pub use commit_metadata::{
     AttachOutcome, CommitMetaError, CommitMetadataSink, apply_commit_metadata,

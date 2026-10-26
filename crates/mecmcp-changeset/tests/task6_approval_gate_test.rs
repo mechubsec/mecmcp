@@ -852,6 +852,7 @@ async fn test_insert_refuses_a_record_that_already_carries_approval() {
         task_id: None,
         apply_without_handle: false,
         owner_subject: None,
+        owner_verified: false,
     };
 
     let result = coordinator.insert_change_set(record).await;
