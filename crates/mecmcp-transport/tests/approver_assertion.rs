@@ -172,6 +172,17 @@ fn app_with_actor(
     with_verifier: bool,
     actor_type: ActorType,
 ) -> Router {
+    app_with_store(key, oidc_subject, with_verifier, actor_type, None)
+}
+
+/// Like [`app_with_actor`], optionally with a durable replay store at `store`.
+fn app_with_store(
+    key: &TestKey,
+    oidc_subject: Option<OidcSubject>,
+    with_verifier: bool,
+    actor_type: ActorType,
+    store: Option<&std::path::Path>,
+) -> Router {
     let mut bound_caller = caller(oidc_subject);
     bound_caller.actor_type = actor_type;
     let authenticator = BearerAuthenticator::new(BearerSyntax::Strict, move |candidate| {
@@ -184,11 +195,12 @@ fn app_with_actor(
         };
         let config = OidcConfig::new(ISSUER, AUDIENCE, "groups");
         let token_verifier = TokenVerifier::new(config, Arc::new(FixtureSource { jwks }));
-        boundary = boundary.with_approver_assertion(Arc::new(ApproverAssertionVerifier::new(
-            Arc::new(token_verifier),
-            ISSUER,
-            policy(),
-        )));
+        let mut verifier =
+            ApproverAssertionVerifier::new(Arc::new(token_verifier), ISSUER, policy());
+        if let Some(path) = store {
+            verifier = verifier.with_replay_store(path).expect("replay store");
+        }
+        boundary = boundary.with_approver_assertion(Arc::new(verifier));
     }
 
     let router = Router::new().route(
@@ -635,5 +647,53 @@ fn every_rejection_reason_is_distinct_and_audited() {
         seen.len(),
         captures.len(),
         "every case above must assert a distinct reason code"
+    );
+}
+
+fn store_app(key: &TestKey, store: &std::path::Path) -> Router {
+    app_with_store(
+        key,
+        Some(bound_subject()),
+        true,
+        ActorType::Human,
+        Some(store),
+    )
+}
+
+async fn status_of(app: Router, token: &str) -> StatusCode {
+    app.oneshot(request(Some(token)))
+        .await
+        .expect("response")
+        .status()
+}
+
+/// A restart is a second verifier over the same store; without a store the replay succeeds
+/// (the documented in-memory limitation).
+#[tokio::test]
+async fn replay_across_a_restart_is_refused_only_with_a_store() {
+    let key = generate_test_key(KID);
+    let token = sign_token(&key, &valid_claims("alice", "jti-restart"), KID);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = dir.path().join("jti.log");
+
+    assert_eq!(
+        status_of(store_app(&key, &store), &token).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status_of(store_app(&key, &store), &token).await,
+        StatusCode::UNAUTHORIZED,
+        "the restarted verifier must still refuse the used assertion"
+    );
+
+    let token = sign_token(&key, &valid_claims("alice", "jti-no-store"), KID);
+    assert_eq!(
+        status_of(app(&key, Some(bound_subject()), true), &token).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status_of(app(&key, Some(bound_subject()), true), &token).await,
+        StatusCode::OK,
+        "without a store a restart forgets the jti (documented limitation)"
     );
 }

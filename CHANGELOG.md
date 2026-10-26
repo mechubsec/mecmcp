@@ -27,6 +27,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [Unreleased]
+
+### Added
+
+- `--approver-replay-store <PATH>` and `ApproverAssertionVerifier::with_replay_store` (mecmcp#400):
+  an opt-in, fsynced append-log store (periodically compacted) of used approver-assertion `jti` hashes, so a restart no
+  longer lets an unexpired assertion be replayed once. New refusal reason `replay_store_unavailable`
+  (`ApproverAssertionError::ReplayStoreUnavailable`) and `VerifiedApproverArgsError::ReplayStoreRequiresIssuer`.
+  Strictly semver-breaking for external code: `VerifiedApproverArgs` gained a field (struct literals
+  without `..Default::default()`), and `ApproverAssertionError` / `VerifiedApproverArgsError` gained
+  variants (exhaustive matches). No family consumer does either, so this ships as 0.29.2.
+
 ## [0.29.1] - 2026-10-26
 
 ### Added
