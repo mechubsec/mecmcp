@@ -53,6 +53,7 @@ rustls      = { version = "0.23", default-features = false, features = ["std", "
 rustls-pki-types = { version = "1", default-features = false }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
+sha2        = { workspace = true, optional = true }
 thiserror   = { workspace = true }
 tokio       = { version = "1", features = ["time", "sync"] }
 tokio-util  = { version = "0.7", default-features = false, features = ["rt"] }
@@ -81,7 +82,7 @@ test-util = ["dep:ureq"]
 # when this edge was a normal dependency. With the
 # feature off, a presented assertion header still gets a fail-closed 400
 # (`approver_assertion_not_configured`); only the verifier itself goes away.
-verified-approver = ["dep:mecmcp-oidc"]
+verified-approver = ["dep:mecmcp-oidc", "dep:sha2"]
 
 # Gates OAuth 2.1 resource-server mode (mecmcp#498): RFC 9728 metadata, JWT access-token
 # authentication as a second step after the static token store, and the claim -> scope map.

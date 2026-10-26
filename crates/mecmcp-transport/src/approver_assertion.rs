@@ -35,6 +35,10 @@ mod verifier {
     };
     use mecmcp_oidc::{TokenVerifier, VerificationFailure};
 
+    use crate::approver_replay_store::jti_key;
+    #[cfg(unix)]
+    use crate::approver_replay_store::{ReplayStore, ReplayStoreError};
+
     /// Server-side configuration for verifying a presented approver assertion.
     ///
     /// Built once at startup from `mecmcp-runtime`'s `VerifiedApproverArgs` (W5)
@@ -44,7 +48,14 @@ mod verifier {
         verifier: Arc<TokenVerifier>,
         issuer: String,
         policy: ApproverPolicy,
-        seen_jti: Mutex<HashMap<String, i64>>,
+        replay: Mutex<ReplayState>,
+    }
+
+    /// The replay set, keyed by the SHA-256 hex of each `jti`, plus the optional durable log.
+    struct ReplayState {
+        seen: HashMap<String, i64>,
+        #[cfg(unix)]
+        store: Option<ReplayStore>,
     }
 
     impl ApproverAssertionVerifier {
@@ -65,8 +76,74 @@ mod verifier {
                 verifier,
                 issuer: issuer.into(),
                 policy,
-                seen_jti: Mutex::new(HashMap::new()),
+                replay: Mutex::new(ReplayState {
+                    seen: HashMap::new(),
+                    #[cfg(unix)]
+                    store: None,
+                }),
             }
+        }
+
+        /// Make the replay set durable across restarts (opt-in; `new` stays in-memory).
+        ///
+        /// Each first use is appended to `path` and fsynced before approval is returned; a
+        /// failed write refuses the approval (`replay_store_unavailable`). Unexpired records
+        /// are loaded now, so an assertion used before a restart stays refused.
+        ///
+        /// # Errors
+        /// The file is a symlink, not a regular file, group/world-accessible, owned by
+        /// another user, or contains a malformed record.
+        #[cfg(unix)]
+        pub fn with_replay_store(self, path: &std::path::Path) -> Result<Self, ReplayStoreError> {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| {
+                    i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+                });
+            let (store, seen) = ReplayStore::open(path, now)?;
+            Ok(Self {
+                replay: Mutex::new(ReplayState {
+                    seen,
+                    store: Some(store),
+                }),
+                ..self
+            })
+        }
+
+        /// Refuse a `jti` seen before; otherwise record it (durably when a store is set).
+        fn record_use(
+            &self,
+            jti: &str,
+            retain_until: i64,
+            now: i64,
+        ) -> Result<(), ApproverAssertionError> {
+            let key = jti_key(jti);
+            let Ok(mut state) = self.replay.lock() else {
+                // A poisoned lock means a prior panic inside this guard; fail
+                // closed rather than risk losing replay protection.
+                return Err(ApproverAssertionError::ReplayGuardUnavailable);
+            };
+            state.seen.retain(|_, &mut until| until >= now);
+            if state.seen.contains_key(&key) {
+                return Err(ApproverAssertionError::ReplayedJti);
+            }
+            #[cfg(unix)]
+            {
+                let ReplayState { seen, store } = &mut *state;
+                if let Some(store) = store {
+                    if let Err(error) = store.record(&key, retain_until) {
+                        tracing::error!(%error, "replay store write failed; refusing approval");
+                        return Err(ApproverAssertionError::ReplayStoreUnavailable);
+                    }
+                    seen.insert(key, retain_until);
+                    if let Err(error) = store.compact_if_needed(seen) {
+                        tracing::warn!(%error, "replay store compaction failed");
+                    }
+                    return Ok(());
+                }
+            }
+            state.seen.insert(key, retain_until);
+            Ok(())
         }
 
         /// Verify the assertion's signature, issuer, audience, and expiry, bind
@@ -116,16 +193,7 @@ mod verifier {
                 .saturating_add(leeway_secs)
                 .max(claims.issued_at.saturating_add(max_age_secs));
 
-            let Ok(mut seen) = self.seen_jti.lock() else {
-                // A poisoned lock means a prior panic inside this guard; fail
-                // closed rather than risk losing replay protection.
-                return Err(ApproverAssertionError::ReplayGuardUnavailable);
-            };
-            seen.retain(|_, &mut until| until >= now);
-            if seen.contains_key(&jti) {
-                return Err(ApproverAssertionError::ReplayedJti);
-            }
-            seen.insert(jti, retain_until);
+            self.record_use(&jti, retain_until, now)?;
 
             Ok(approver)
         }
@@ -159,6 +227,10 @@ mod verifier {
         /// The in-memory replay guard's lock was poisoned by an earlier panic.
         #[error("the replay guard is unavailable")]
         ReplayGuardUnavailable,
+        /// The durable replay store could not record this use (write/fsync failed),
+        /// so the approval is refused rather than granted unrecorded.
+        #[error("the durable replay store is unavailable")]
+        ReplayStoreUnavailable,
     }
 
     impl ApproverAssertionError {
@@ -176,6 +248,7 @@ mod verifier {
                 Self::MissingJwtId => "missing_jwt_id",
                 Self::ReplayedJti => "replayed_jti",
                 Self::ReplayGuardUnavailable => "replay_guard_unavailable",
+                Self::ReplayStoreUnavailable => "replay_store_unavailable",
             }
         }
     }
@@ -221,6 +294,55 @@ mod verifier {
                 request_id: uuid::Uuid::new_v4(),
                 oauth: None,
             }
+        }
+
+        struct NoKeys;
+
+        #[async_trait::async_trait]
+        impl mecmcp_oidc::KeySource for NoKeys {
+            async fn fetch_discovery(
+                &self,
+                _issuer: &str,
+            ) -> Result<mecmcp_oidc::DiscoveryDocument, mecmcp_oidc::FetchError> {
+                unreachable!("record_use never verifies a JWT")
+            }
+            async fn fetch_jwks(
+                &self,
+                _jwks_uri: &str,
+            ) -> Result<jsonwebtoken::jwk::JwkSet, mecmcp_oidc::FetchError> {
+                unreachable!("record_use never verifies a JWT")
+            }
+        }
+
+        fn verifier() -> ApproverAssertionVerifier {
+            let config = mecmcp_oidc::OidcConfig::new("https://idp.example.com", "aud", "roles");
+            let token_verifier = TokenVerifier::new(config, Arc::new(NoKeys));
+            ApproverAssertionVerifier::new(
+                Arc::new(token_verifier),
+                "https://idp.example.com",
+                policy(),
+            )
+        }
+
+        #[test]
+        fn a_failed_store_write_refuses_the_approval_and_records_nothing() {
+            let verifier = verifier();
+            let full = std::fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .unwrap();
+            verifier.replay.lock().unwrap().store = Some(ReplayStore::from_file(full));
+            let error = verifier.record_use("jti-1", 2_000, 1_000).unwrap_err();
+            assert_eq!(error.reason_code(), "replay_store_unavailable");
+            assert!(verifier.replay.lock().unwrap().seen.is_empty());
+        }
+
+        #[test]
+        fn record_use_refuses_the_second_use_of_a_jti() {
+            let verifier = verifier();
+            verifier.record_use("jti-1", 2_000, 1_000).unwrap();
+            let error = verifier.record_use("jti-1", 2_000, 1_001).unwrap_err();
+            assert_eq!(error.reason_code(), "replayed_jti");
         }
 
         #[test]

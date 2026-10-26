@@ -6,6 +6,8 @@
 //! server label — is passed as a parameter rather than baked in.
 
 mod approver_assertion;
+#[cfg(feature = "verified-approver")]
+mod approver_replay_store;
 mod auth;
 mod caller;
 mod client_info;
@@ -41,6 +43,8 @@ pub mod tls;
 pub use approver_assertion::APPROVER_ASSERTION_HEADER;
 #[cfg(feature = "verified-approver")]
 pub use approver_assertion::{ApproverAssertionError, ApproverAssertionVerifier};
+#[cfg(feature = "verified-approver")]
+pub use approver_replay_store::ReplayStoreError;
 #[cfg(feature = "oauth-resource")]
 pub mod oauth_resource;
 pub use auth::{
