@@ -383,5 +383,10 @@ What the operator configures at the IdP: enable CIMD (or the IdP's equivalent) o
 authorization server; keep the one-audience-per-resource and `at+jwt` settings from
 section 3; and decide there which client URLs may register and which scopes they may
 request, since this server maps scopes and roles to tools and devices (section 4) but never
-judges who the client is. If your IdP does not support CIMD, clients fall back to the
-registration method it does support; nothing here changes.
+judges who the client is. There is no automatic fallback. When the authorization
+server does not advertise CIMD, a client can only use a client ID registered ahead of time
+or Dynamic Client Registration (RFC 7591), if the server offers it. To support such a
+client, an operator registers it manually at the IdP: create a client for it, give it the
+redirect URIs it will use, allow only the scopes your scope map names for it, and give the
+client's `client_id` to whoever configures the MCP client. The resource server needs no
+change for any of these paths, but the `client_id` constraints above still apply.
