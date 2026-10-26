@@ -117,7 +117,7 @@ impl ReplayStore {
     }
 
     /// A store over an arbitrary already-open file (tests: `/dev/full`).
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn from_file(file: File) -> Self {
         Self {
             file,
