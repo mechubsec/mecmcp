@@ -209,3 +209,32 @@ async fn a_lab_scoped_approver_cannot_approve_a_set_that_also_targets_prod() {
         .await
         .expect("a wildcard approver covers every target");
 }
+
+fn assert_send<T: Send>(_: &T) {}
+
+/// rmcp handlers are `Send` futures: holding the scope closure across the `.await` must not
+/// take that away. Fails to compile if the future stops being `Send`.
+#[tokio::test]
+async fn the_scoped_approve_future_is_send() {
+    let dir = tempfile::tempdir().unwrap();
+    let coordinator = ChangesetCoordinator::load(
+        Some(&dir.path().join("state.json")),
+        OperationLimits::default(),
+        Duration::from_secs(900),
+        false,
+    )
+    .unwrap();
+    let approver = ApproverIdentity::TokenAsserted {
+        principal: "a".to_owned(),
+        actor_type: mecmcp_audit::ActorType::Human,
+    };
+    let allow = |_: &str| true;
+    let future = coordinator.approve_change_set_within(
+        "x".to_owned(),
+        "d".to_owned(),
+        &approver,
+        String::new(),
+        &allow,
+    );
+    assert_send(&future);
+}

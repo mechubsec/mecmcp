@@ -550,7 +550,7 @@ impl ChangesetCoordinator {
         device: String,
         approver: &ApproverIdentity,
         expected_digest: String,
-        in_scope: &dyn Fn(&str) -> bool,
+        in_scope: &(dyn Fn(&str) -> bool + Sync),
     ) -> Result<ChangeSetOutput, CoordinatorError> {
         let record = self.change_set(&change_set_id, &device).await?;
         if record.targets().iter().any(|target| !in_scope(target)) {
