@@ -187,7 +187,13 @@ for a single-instance deployment.
   config-distribution step must hold the deployment lock and replace the
   marker with an atomic rename. **Before the rename it quiesces the owner**:
   it asks the server to stop admitting `/mcp` requests (503 + `Retry-After`)
-  and waits until the in-flight count reaches zero; only then does it rename
+  and waits until the in-flight count reaches zero. The count covers
+  executing tool calls (POST `/mcp` request streams), not standalone `GET
+  /mcp` SSE streams, which can stay open indefinitely
+  (`crates/mecmcp-transport/src/server.rs:928-930`) and carry no tool
+  execution. Quiesce is a **lease** with a deadline: if the distribution step
+  dies before the rename, the lease expires and admission resumes under the
+  unchanged marker, and an explicit abort clears it early; only then does it rename
   the marker and trigger the reload, and admission resumes once the loaded
   hash equals the new marker. Admission and the in-flight counter share one
   lock with the quiesce flag, so no request can pass the check under H1 and
@@ -223,7 +229,10 @@ for a single-instance deployment.
   completes before the rename (the rename waits for in-flight = 0); a request
   that passes the admission check immediately before quiesce is set is either
   counted in-flight (and drained) or refused, never run after the rename; so no
-  request ever executes under a hash != marker. Add a test where a stale
+  request ever executes under a hash != marker. Also: quiesce with an idle SSE
+  stream open completes; a distribution step killed after drain and before the
+  rename leaves the marker unchanged and admission resumes when the lease
+  expires. Add a test where a stale
   standby takes ownership and reloads: the marker must be byte-identical
   afterwards and the node not ready.
 - Sabotage check, **separate** test run: delete the `try_acquire_owner`
