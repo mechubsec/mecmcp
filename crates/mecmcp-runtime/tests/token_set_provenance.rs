@@ -53,6 +53,7 @@ fn add_token(
             actor_type: actor_type.map(str::to_owned),
             oidc_issuer: None,
             oidc_subject: None,
+            device_selector: Vec::new(),
             server_pid: None,
         },
         &[],

@@ -103,6 +103,10 @@ required-features = ["test-util"]
 name = "approver_assertion"
 required-features = ["verified-approver"]
 
+[[test]]
+name = "proposer_assertion"
+required-features = ["verified-approver"]
+
 # `oauth_resource.rs` drives signed-JWT requests through the real bearer boundary.
 [[test]]
 name = "oauth_resource"

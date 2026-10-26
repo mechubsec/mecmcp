@@ -227,8 +227,38 @@ attribute, e.g. a role that may touch only the EMEA lab:
   alphabet above, enforced when they are constructed, so no control, bidi, zero-width,
   fullwidth or non-ASCII lookalike can exist to match a literal or be absorbed by `*`. The
   guarantee is only as good as the inventory's `site` labels: a mislabelled or unlabelled
-  device is placed (or not placed) by the label alone. Static `tokens.json` scopes do not
-  support selectors yet, and selector scoping of verified-approver roles is not built.
+  device is placed (or not placed) by the label alone.
+
+#### Approver roles
+
+Approval is device-scoped: a server's approve handler calls
+`ChangesetCoordinator::approve_change_set_within(.., &|name| caller.devices.allows(name))`,
+which requires **every** device in the change set's `targets()` (a multi-target set has
+more than its primary device) to be inside the approver's scope before approving. A handler
+that calls plain `approve_change_set` checks only the one device it was given. A human approver token carrying `device_selectors` is therefore
+confined to the change sets whose devices all match. An approver scoped to
+`site=lab-*` is refused on a prod change set, which stays `Planned`. No new flag is needed,
+and an approver with `devices: ["*"]` and no selectors behaves as before. OAuth principals
+cannot be human approvers (`actor_type "human"` is refused in the scope map), so approver
+roles are static tokens.
+
+#### Static tokens
+
+A `tokens.json` entry may carry the same `device_selectors` (grammar, AND, narrowing and
+fail-closed rules as above; an explicit `null` is refused at load, as is an expression that
+does not compile). Mint one with `token add --device-selector 'site=emea-*'` (repeatable).
+
+```text
+{ "name": "emea-ro", "devices": ["*"], "device_selectors": ["site=emea-*"], ... }
+```
+
+Resolution is the consumer's: it builds the caller with
+`CallerCtx::from_entry_with_attributes(entry, Some(&inventory))` on each authentication
+(one attribute snapshot per call). The plain `CallerCtx::from(entry)` has no source, so a
+selector entry **grants no devices** through it: a server that has not adopted attributes
+refuses, rather than ignores, the narrowing. Upgrade every binary that reads or rewrites the
+store before adding selectors: an older build ignores the field and, on `token rotate` or
+`set-scopes`, drops it, widening the token to every device its `devices` names.
 
 ## 5. What clients see
 
@@ -327,3 +357,45 @@ Before upgrading, snapshot the guest or copy the change-set state file. Rolling 
 pre-0.29 binary after an OAuth caller has created a change set requires restoring that
 pre-upgrade state file, which rewinds all change-set state since the snapshot (see the
 rollback break at the top).
+
+## 9. Client ID Metadata Documents (CIMD)
+
+mecmcp is a pure resource server, so CIMD (the MCP 2025-11 authorization spec's way for a
+client to use an HTTPS URL as its `client_id`, which the authorization server fetches to
+learn the client's name, redirect URIs and keys) is the authorization server's concern, not
+this server's. The server never sees a client registration, never fetches a client's
+metadata document, and has no endpoint or flag for either; adding one would make a resource
+server fetch attacker-chosen URLs.
+
+What the resource server needs for a CIMD-using client to work is already here:
+
+- **Discovery.** RFC 9728 protected-resource metadata at the well-known route (section 2),
+  and `resource_metadata` in every 401 challenge, so the client finds the authorization
+  server from this server and then does CIMD with that server.
+- **Audience binding.** The token must carry this server's canonical resource URI as `aud`
+  (section 3, step 2), so a token a client obtained for another resource is refused
+  (`wrong_audience`), whatever client id it used.
+- **A client id in the token.** `client_id` or `azp` is required and must be 1-128 bytes of
+  printable ASCII without spaces (`invalid_client_id` otherwise). A CIMD client id is a URL,
+  so it must fit that, and it is recorded in the audit trail as given.
+
+What the operator configures at the IdP: enable CIMD (or the IdP's equivalent) on the
+authorization server; keep the one-audience-per-resource and `at+jwt` settings from
+section 3; and decide there which client URLs may register and which scopes they may
+request, since this server maps scopes and roles to tools and devices (section 4) but never
+judges who the client is. There is no automatic fallback. When the authorization
+server does not advertise CIMD, a client can only use a client ID registered ahead of time
+or Dynamic Client Registration (RFC 7591), if the server offers it. With open DCR the client
+registers itself and the operator does nothing per client; an IdP that protects
+registration (an initial access token, RFC 7591 §3) needs that token provisioned first. The manual recipe below is for
+pre-registration only: the operator creates a client at the IdP, gives it the redirect URIs
+it will use, allows only the scopes your scope map names for it, and hands its `client_id`
+to whoever configures the MCP client. A client configured with only a `client_id` must be
+registered as a public authorization-code client that uses PKCE with `S256` and
+`token_endpoint_auth_method=none`, with the application type (native or web) that matches
+where it runs, since the two have different redirect-URI rules. For a confidential client
+the operator must also supply the credentials its token-endpoint authentication method
+needs (a secret for the secret-based methods, a signing key for `private_key_jwt`), or the
+token request fails. The resource
+server needs no change for any of these paths, but the `client_id` constraints above still
+apply.

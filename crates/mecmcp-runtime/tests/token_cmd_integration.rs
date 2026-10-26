@@ -36,6 +36,7 @@ fn add_creates_token_and_returns_secret() {
         actor_type: None,
         oidc_issuer: None,
         oidc_subject: None,
+        device_selector: Vec::new(),
         server_pid: None,
     };
 
@@ -66,6 +67,7 @@ fn list_shows_token_metadata_not_secret() {
         actor_type: None,
         oidc_issuer: None,
         oidc_subject: None,
+        device_selector: Vec::new(),
         server_pid: None,
     };
     run(add_action, &[], KNOWN_TOOLS).unwrap();
@@ -101,6 +103,7 @@ fn revoke_removes_token() {
         actor_type: None,
         oidc_issuer: None,
         oidc_subject: None,
+        device_selector: Vec::new(),
         server_pid: None,
     };
     run(add_action, &[], KNOWN_TOOLS).unwrap();
@@ -135,6 +138,7 @@ fn rotate_changes_secret_preserves_scopes() {
         actor_type: None,
         oidc_issuer: None,
         oidc_subject: None,
+        device_selector: Vec::new(),
         server_pid: None,
     };
     run(add_action, &[], KNOWN_TOOLS).unwrap();
@@ -200,6 +204,7 @@ fn wildcard_mixed_with_names_rejected() {
         actor_type: None,
         oidc_issuer: None,
         oidc_subject: None,
+        device_selector: Vec::new(),
         server_pid: None,
     };
 
@@ -229,6 +234,7 @@ fn unknown_tool_rejected() {
         actor_type: None,
         oidc_issuer: None,
         oidc_subject: None,
+        device_selector: Vec::new(),
         server_pid: None,
     };
 
@@ -253,6 +259,7 @@ fn device_validation_when_known_devices_provided() {
         actor_type: None,
         oidc_issuer: None,
         oidc_subject: None,
+        device_selector: Vec::new(),
         server_pid: None,
     };
     assert!(run(valid_action, &known_devices, KNOWN_TOOLS).is_ok());
@@ -269,6 +276,7 @@ fn device_validation_when_known_devices_provided() {
         actor_type: None,
         oidc_issuer: None,
         oidc_subject: None,
+        device_selector: Vec::new(),
         server_pid: None,
     };
     assert!(run(invalid_action, &known_devices, KNOWN_TOOLS).is_err());
@@ -289,6 +297,7 @@ fn empty_device_scope_rejected() {
         actor_type: None,
         oidc_issuer: None,
         oidc_subject: None,
+        device_selector: Vec::new(),
         server_pid: None,
     };
 
@@ -317,6 +326,7 @@ fn empty_tool_scope_rejected() {
         actor_type: None,
         oidc_issuer: None,
         oidc_subject: None,
+        device_selector: Vec::new(),
         server_pid: None,
     };
 
@@ -351,6 +361,7 @@ fn signal_reload_with_valid_pid_succeeds() {
         actor_type: None,
         oidc_issuer: None,
         oidc_subject: None,
+        device_selector: Vec::new(),
         server_pid: Some(init_pid),
     };
 
@@ -387,6 +398,7 @@ fn signal_reload_with_invalid_pid_fails() {
         actor_type: None,
         oidc_issuer: None,
         oidc_subject: None,
+        device_selector: Vec::new(),
         server_pid: Some(0),
     };
 
@@ -497,6 +509,7 @@ mod grant_lifecycle {
                 actor_type: None,
                 oidc_issuer: None,
                 oidc_subject: None,
+                device_selector: Vec::new(),
                 server_pid: None,
             },
             &[],
@@ -645,6 +658,7 @@ mod grant_lifecycle {
                 actor_type: None,
                 oidc_issuer: None,
                 oidc_subject: None,
+                device_selector: Vec::new(),
                 server_pid: None,
             },
             &[],
@@ -770,6 +784,7 @@ mod grant_lifecycle {
                 actor_type: None,
                 oidc_issuer: None,
                 oidc_subject: None,
+                device_selector: Vec::new(),
                 server_pid: None,
             },
             &[],
@@ -871,6 +886,7 @@ mod set_scopes {
                 actor_type: None,
                 oidc_issuer: None,
                 oidc_subject: None,
+                device_selector: Vec::new(),
                 server_pid: None,
             },
             &[],
@@ -994,6 +1010,7 @@ mod set_scopes {
                 actor_type: None,
                 oidc_issuer: None,
                 oidc_subject: None,
+                device_selector: Vec::new(),
                 server_pid: None,
             },
             &["device1".to_owned(), "device2".to_owned()],
@@ -1040,6 +1057,7 @@ mod set_scopes {
                 actor_type: None,
                 oidc_issuer: None,
                 oidc_subject: None,
+                device_selector: Vec::new(),
                 server_pid: None,
             },
             &["device1".to_owned(), "device2".to_owned()],
@@ -1099,6 +1117,7 @@ mod set_scopes {
                 actor_type: None,
                 oidc_issuer: None,
                 oidc_subject: None,
+                device_selector: Vec::new(),
                 server_pid: None,
             },
             &["device1".to_owned()],
@@ -1154,6 +1173,7 @@ mod set_scopes {
                 actor_type: None,
                 oidc_issuer: None,
                 oidc_subject: None,
+                device_selector: Vec::new(),
                 server_pid: None,
             },
             &["device1".to_owned()],
@@ -1205,6 +1225,7 @@ mod set_scopes {
                 actor_type: None,
                 oidc_issuer: None,
                 oidc_subject: None,
+                device_selector: Vec::new(),
                 server_pid: None,
             },
             &["device1".to_owned()],
@@ -1379,6 +1400,7 @@ fn add_with_both_oidc_flags_stores_the_binding() {
         actor_type: Some("human".to_owned()),
         oidc_issuer: Some("https://idp.example.com".to_owned()),
         oidc_subject: Some("alice".to_owned()),
+        device_selector: Vec::new(),
         server_pid: None,
     };
     if let Err(e) = &run(action, &[], KNOWN_TOOLS) {
@@ -1412,6 +1434,7 @@ fn add_with_only_oidc_issuer_is_rejected() {
         actor_type: None,
         oidc_issuer: Some("https://idp.example.com".to_owned()),
         oidc_subject: None,
+        device_selector: Vec::new(),
         server_pid: None,
     };
     let error = run(action, &[], KNOWN_TOOLS).unwrap_err();
@@ -1433,8 +1456,39 @@ fn add_with_only_oidc_subject_is_rejected() {
         actor_type: None,
         oidc_issuer: None,
         oidc_subject: Some("alice".to_owned()),
+        device_selector: Vec::new(),
         server_pid: None,
     };
     let error = run(action, &[], KNOWN_TOOLS).unwrap_err();
     assert!(error.to_string().contains("--oidc-issuer"), "got {error}");
+}
+
+#[test]
+fn add_with_device_selectors_writes_them_and_a_bad_one_writes_nothing() {
+    let (_dir, tokens_file) = temp_tokens_file();
+    let action = |selectors: Vec<String>| TokenAction::Add {
+        tokens_file: tokens_file.clone(),
+        name: "emea".to_string(),
+        devices: vec!["*".to_string()],
+        tools: vec!["*".to_string()],
+        provider: None,
+        provider_tier: None,
+        on_behalf_of: None,
+        actor_type: None,
+        oidc_issuer: None,
+        oidc_subject: None,
+        device_selector: selectors,
+        server_pid: None,
+    };
+
+    assert!(run(action(vec!["region=emea".to_string()]), &[], KNOWN_TOOLS).is_err());
+    assert!(!tokens_file.exists());
+
+    let selectors = vec!["site=emea-*".to_string(), "vendor=junos".to_string()];
+    run(action(selectors.clone()), &[], KNOWN_TOOLS).unwrap();
+    let store_file = TokenStoreFile::<mecmcp_auth::NoGrant>::load(&tokens_file).unwrap();
+    assert_eq!(
+        store_file.store().entries()[0].device_selectors,
+        Some(selectors)
+    );
 }

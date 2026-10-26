@@ -40,6 +40,9 @@ test-util = []
 [dev-dependencies]
 hex = "0.4"
 mecmcp-auth = { version = "0.29.4", path = "../mecmcp-auth", features = ["test-util"] }
+# The approve-handler scope test composes the shared `authorize_target` with the coordinator.
+mecmcp-server = { version = "0.29.4", path = "../mecmcp-server" }
+chrono = { workspace = true }
 # `rt-multi-thread` for tests only. The atomic-claim test has to be able to
 # fail: on a current-thread runtime the claimants never interleave, so a
 # non-atomic claim would pass it.

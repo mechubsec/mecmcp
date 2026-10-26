@@ -18,7 +18,8 @@ pub mod token;
 pub mod file;
 
 pub use approver::{
-    ApproverClaims, ApproverPolicy, BindingFailure, VerifiedApprover, bind_approver,
+    ApproverClaims, ApproverPolicy, BindingFailure, VerifiedApprover, VerifiedProposer,
+    bind_approver, bind_proposer,
 };
 pub use bearer::{BearerHeaderError, BearerSyntax, parse_bearer_header};
 pub use entry::{ActorType, EntryError, MAX_TOKEN_NAME, OidcSubject, Tier, TokenEntry};

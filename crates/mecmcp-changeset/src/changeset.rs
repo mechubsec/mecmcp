@@ -1,7 +1,7 @@
 //! Change-set lifecycle operations: create, approve, status.
 
 use crate::{
-    approver::ApproverIdentity,
+    approver::{ApproverIdentity, ProposerIdentity},
     coordinator::{ChangesetCoordinator, CoordinatorError},
     digest::{
         change_set_digest, compute_approval_digest_v5, compute_approval_digest_v7,
@@ -139,6 +139,45 @@ impl ChangesetCoordinator {
         policy_signature: String,
         owner_subject: Option<OwnerSubject>,
     ) -> Result<ChangeSetOutput, CoordinatorError> {
+        self.create_change_set_as(
+            device,
+            actions,
+            owner,
+            expected_fingerprint,
+            policy_signature,
+            &ProposerIdentity::TokenAsserted { owner_subject },
+        )
+        .await
+    }
+
+    /// [`create_change_set`](Self::create_change_set) with the proposer's identity rather
+    /// than a bare subject (mecmcp#400), so the record can say whether the IdP verified
+    /// it. Build the identity with [`ProposerIdentity::from_attribution`].
+    ///
+    /// Additionally refuses, under `with_require_verified_proposer`, any proposer that is
+    /// not `OidcVerified`.
+    ///
+    /// # Errors
+    ///
+    /// As [`create_change_set`](Self::create_change_set), and if strict verified-proposer
+    /// mode is on and the proposer is only token-asserted.
+    pub async fn create_change_set_as<A: Serialize>(
+        &self,
+        device: String,
+        actions: Vec<A>,
+        owner: String,
+        expected_fingerprint: String,
+        policy_signature: String,
+        proposer: &ProposerIdentity,
+    ) -> Result<ChangeSetOutput, CoordinatorError> {
+        if self.require_verified_proposer() && !proposer.is_verified() {
+            return Err(CoordinatorError::new(
+                "proposer",
+                "strict verified-proposer mode requires an IdP-verified proposer: present a \
+                 fresh Mecmcp-Proposer-Assertion bound to the proposing token's oidc_subject",
+            ));
+        }
+        let owner_subject = proposer.owner_subject();
         if self.require_verified_approver() && owner_subject.is_none() {
             return Err(CoordinatorError::new(
                 "owner_subject",
@@ -190,6 +229,7 @@ impl ChangesetCoordinator {
             task_id: None,
             apply_without_handle: false,
             owner_subject,
+            owner_verified: proposer.is_verified(),
         };
 
         self.insert_change_set(record.clone()).await?;
@@ -308,6 +348,12 @@ impl ChangesetCoordinator {
                 ));
             }
         }
+
+        // Under strict verified-proposer mode the owner side of the comparison below must be
+        // IdP-verified too; a token-asserted `owner_subject` is a value an operator typed.
+        // Checked on the record, not the caller, so it also refuses a change set proposed
+        // before the mode was turned on.
+        self.refuse_unverified_owner(&record)?;
 
         // The house rule is two *people*, not two tokens. A verified subject
         // equal to the owner's recorded subject means the same human proposed
@@ -455,15 +501,66 @@ impl ChangesetCoordinator {
         // A human decided. Recorded after the state write, so the trail cannot
         // claim an approval the coordinator failed to persist.
         if let Some(evidence) = self.evidence() {
-            evidence.approval(
+            // The mechanism comes from the identity itself, not from `ApprovalRecord`, whose
+            // `mechanism` is absent on the unkeyed digest path.
+            evidence.approval_with_identity(
                 &change_set_id,
                 &change_set_id,
                 &approver_principal,
                 "approved",
+                Some((approver.mechanism(), approver.oidc_subject())),
             );
         }
 
         Ok(record.into())
+    }
+
+    /// Under strict verified-proposer mode, refuse a record whose owner was not IdP-verified
+    /// at propose time. Shared by approval, both waiver transitions and apply, so no path to
+    /// `Approved` or to the device skips it for a record proposed before the mode was on.
+    pub(crate) fn refuse_unverified_owner(
+        &self,
+        record: &ChangeSetRecord,
+    ) -> Result<(), CoordinatorError> {
+        if self.require_verified_proposer() && !record.owner_verified {
+            return Err(CoordinatorError::new(
+                "owner_subject",
+                "strict verified-proposer mode requires the change set's owner to have been \
+                 IdP-verified when it was proposed; this one was not",
+            ));
+        }
+        Ok(())
+    }
+
+    /// [`approve_change_set`](Self::approve_change_set), first requiring that **every** device
+    /// the change set targets is inside the approver's device scope (mecmcp#400).
+    ///
+    /// `in_scope` answers "may this approver address this device", typically
+    /// `|name| caller.devices.allows(name)`. A multi-target record is checked on all of
+    /// `ChangeSetRecord::targets()`, not just its primary device, so an approver scoped to
+    /// `site=lab-*` cannot approve a set that also touches a prod device. Fails closed: one
+    /// out-of-scope target refuses the approval and nothing changes. A server's approve
+    /// handler should call this rather than `approve_change_set`.
+    ///
+    /// # Errors
+    /// As [`approve_change_set`](Self::approve_change_set), and if any target is out of scope.
+    pub async fn approve_change_set_within(
+        &self,
+        change_set_id: String,
+        device: String,
+        approver: &ApproverIdentity,
+        expected_digest: String,
+        in_scope: &(dyn Fn(&str) -> bool + Sync),
+    ) -> Result<ChangeSetOutput, CoordinatorError> {
+        let record = self.change_set(&change_set_id, &device).await?;
+        if record.targets().iter().any(|target| !in_scope(target)) {
+            return Err(CoordinatorError::new(
+                "device",
+                "the approver's device scope does not cover every device this change set targets",
+            ));
+        }
+        self.approve_change_set(change_set_id, device, approver, expected_digest)
+            .await
     }
 
     /// Waives approval for a change set in lab mode, allowing single-operator application.
@@ -522,6 +619,7 @@ impl ChangesetCoordinator {
             .map_err(|e| CoordinatorError::new("expected_digest", e.to_string()))?;
 
         let mut record = self.change_set(&change_set_id, &device).await?;
+        self.refuse_unverified_owner(&record)?;
 
         if record.owner != owner {
             return Err(CoordinatorError::new(
@@ -662,6 +760,7 @@ impl ChangesetCoordinator {
             .map_err(|e| CoordinatorError::new("expected_digest", e.to_string()))?;
 
         let mut record = self.change_set(&change_set_id, &device).await?;
+        self.refuse_unverified_owner(&record)?;
 
         if record.owner != owner {
             return Err(CoordinatorError::new(

@@ -278,6 +278,20 @@ refuses to start on `--oidc-issuer` with no `--oidc-audience` regardless of
 `--require-verified-approver`, since `OidcConfig` has no sensible default for
 it.
 
+`--require-verified-proposer` (mecmcp#400, off by default, requires `--oidc-issuer`) does the
+same for the proposing side. Today the owner's `oidc_subject` on a change set is copied from
+the token, which whoever minted it typed. With the flag, a proposal must carry a fresh IdP
+assertion in `Mecmcp-Proposer-Assertion` (never the approver header) whose subject equals
+the token's bound `oidc_subject`; unlike an approval it needs no `human` token and no
+approver role, so an agent token acting for a person can present it. OAuth callers pass
+without it. Send the header only on the create/propose call, once per assertion (the `jti`
+set is shared with approvals). Use it with `--require-verified-approver`: then both sides of
+the two-person rule are IdP-verified subjects. The flag only takes effect once the server
+passes it to `ChangesetCoordinator::with_require_verified_proposer` and proposes through
+`create_change_set_as(.., &ProposerIdentity::from_attribution(..))`; the older
+`create_change_set` can only carry a token-asserted subject, so it is refused while the
+mode is on. A state file holding a verified record is written as version 9.
+
 With `--oidc-issuer` set and `--require-verified-approver` off, the server logs one
 `audit`-target warning at startup giving the **count** of live `human` tokens that have no
 `oidc_subject` binding (never their names). Rollout order: set the issuer, bind every

@@ -24,7 +24,8 @@ use mecmcp_auth::{
 use mecmcp_oidc::{DiscoveryDocument, FetchError, KeySource, OidcConfig, TokenVerifier};
 use mecmcp_transport::{
     APPROVER_ASSERTION_HEADER, ApproverAssertionVerifier, BearerAuthenticator, BearerBoundary,
-    BearerResponseProfile, BoundaryAccounting, LimitsConfig, apply_bearer_boundary,
+    BearerResponseProfile, BoundaryAccounting, LimitsConfig, PROPOSER_ASSERTION_HEADER,
+    apply_bearer_boundary,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -133,6 +134,7 @@ fn caller(oidc_subject: Option<OidcSubject>) -> CallerCtx<TestGrant> {
         actor_type: ActorType::Human,
         oidc_subject,
         verified_approver: None,
+        verified_proposer: None,
         client_name: None,
         model_id: None,
         session_id: None,
@@ -203,17 +205,21 @@ fn app_with_store(
         boundary = boundary.with_approver_assertion(Arc::new(verifier));
     }
 
-    let router = Router::new().route(
-        "/",
-        post(
-            |Extension(caller): Extension<CallerCtx<TestGrant>>| async move {
-                json!({
-                    "verified_approver_subject": caller.verified_approver.map(|a| a.subject),
-                })
-                .to_string()
-            },
-        ),
-    );
+    let router =
+        Router::new().route(
+            "/",
+            post(
+                |headers: axum::http::HeaderMap,
+                 Extension(caller): Extension<CallerCtx<TestGrant>>| async move {
+                    json!({
+                        "saw_assertion_header": headers.contains_key(APPROVER_ASSERTION_HEADER)
+                            || headers.contains_key(PROPOSER_ASSERTION_HEADER),
+                        "verified_approver_subject": caller.verified_approver.map(|a| a.subject),
+                    })
+                    .to_string()
+                },
+            ),
+        );
     apply_bearer_boundary(
         router,
         boundary,

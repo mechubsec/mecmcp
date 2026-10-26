@@ -241,6 +241,7 @@ async fn test_commit_cancellation_after_guard() {
         agent: None,
         token_verified_fields: mecmcp_audit::TokenVerifiedFields::none(),
         verified_approver: None,
+        verified_proposer: None,
         approver: None,
         change_set_id: None,
     };
@@ -558,6 +559,7 @@ async fn test_principal_variant_persisted() {
         agent: None,
         token_verified_fields: mecmcp_audit::TokenVerifiedFields::none(),
         verified_approver: None,
+        verified_proposer: None,
         approver: None,
         change_set_id: None,
     };
@@ -638,6 +640,7 @@ async fn test_principal_variant_persisted() {
         agent: None,
         token_verified_fields: mecmcp_audit::TokenVerifiedFields::none(),
         verified_approver: None,
+        verified_proposer: None,
         approver: None,
         change_set_id: None,
     };

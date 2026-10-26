@@ -119,6 +119,83 @@ impl ApproverIdentity {
     }
 }
 
+/// Identity of the principal proposing a change set (mecmcp#400): how its `owner_subject`
+/// was established.
+///
+/// The proposer-side counterpart of [`ApproverIdentity`], built the same way and for the
+/// same reason: a caller cannot name an IdP-verified proposer from a tool argument.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProposerIdentity {
+    /// Known only by the proposing token's own `oidc_subject`, if it has one: a value the
+    /// operator who minted the token typed.
+    TokenAsserted {
+        /// The token's bound subject, if any.
+        owner_subject: Option<crate::records::OwnerSubject>,
+    },
+    /// The IdP vouched for the proposer on this request. Payload is crate-private for the
+    /// reason [`ApproverIdentity::OidcVerified`]'s is; the only constructor is
+    /// [`from_attribution`](Self::from_attribution).
+    #[allow(private_interfaces)]
+    OidcVerified(VerifiedProposerFields),
+}
+
+/// Payload of [`ProposerIdentity::OidcVerified`]; deliberately `pub(crate)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VerifiedProposerFields {
+    issuer: String,
+    subject: String,
+}
+
+impl ProposerIdentity {
+    /// The identity a proposer actually presented.
+    ///
+    /// `OidcVerified` iff the request's `Mecmcp-Proposer-Assertion` bound
+    /// (`attribution.verified_proposer`), or the caller authenticated with an OAuth access
+    /// token (`Principal::OAuth`: the IdP already vouched for the subject). Otherwise
+    /// `TokenAsserted` carrying `token_subject`, the caller's token-bound `oidc_subject`
+    /// converted to an [`OwnerSubject`](crate::records::OwnerSubject).
+    #[must_use]
+    pub fn from_attribution(
+        attribution: &mecmcp_audit::Attribution,
+        token_subject: Option<crate::records::OwnerSubject>,
+    ) -> Self {
+        if let Some(proposer) = &attribution.verified_proposer {
+            return Self::OidcVerified(VerifiedProposerFields {
+                issuer: proposer.issuer.clone(),
+                subject: proposer.subject.clone(),
+            });
+        }
+        if let mecmcp_audit::Principal::OAuth {
+            issuer, subject, ..
+        } = &attribution.principal
+        {
+            return Self::OidcVerified(VerifiedProposerFields {
+                issuer: issuer.clone(),
+                subject: subject.clone(),
+            });
+        }
+        Self::TokenAsserted {
+            owner_subject: token_subject,
+        }
+    }
+
+    /// Whether the IdP verified this proposer.
+    pub(crate) fn is_verified(&self) -> bool {
+        matches!(self, Self::OidcVerified(_))
+    }
+
+    /// The `owner_subject` to record on the change set.
+    pub(crate) fn owner_subject(&self) -> Option<crate::records::OwnerSubject> {
+        match self {
+            Self::TokenAsserted { owner_subject } => owner_subject.clone(),
+            Self::OidcVerified(fields) => Some(crate::records::OwnerSubject {
+                issuer: fields.issuer.clone(),
+                subject: fields.subject.clone(),
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +250,7 @@ mod tests {
             request_id: uuid::Uuid::nil(),
             token_verified_fields: mecmcp_audit::TokenVerifiedFields::default(),
             verified_approver,
+            verified_proposer: None,
             approver: None,
             change_set_id: None,
         }

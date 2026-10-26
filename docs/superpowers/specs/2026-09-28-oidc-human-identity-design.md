@@ -61,6 +61,10 @@ its own test surface rather than landing as one diff.
 
 ### Phase 1 — OIDC discovery and token verification (resource-server core)
 
+> **Status (2026-10-26): built.** `mecmcp-oidc` (discovery, JWKS rotation, signature, `iss`,
+> `aud`, `exp`/`nbf` checks, distinct logged rejection reasons) and the step-up approver
+> assertion on top of it.
+
 Add a `mecmcp-oidc` crate (or a module in `mecmcp-auth` behind a feature
 flag — open question, see below) that can, given a configured issuer URL:
 
@@ -93,6 +97,16 @@ flag — open question, see below) that can, given a configured issuer URL:
 
 ### Phase 2 — Role-to-tenant mapping
 
+> **Status (2026-10-26): built.** The selector grammar is a typed AST compiled at config
+> load (`mecmcp_auth::selector`: `site=`, `vendor=`, `tag=`, `*` glob, exact bytes, a closed
+> attribute alphabet so no lookalike can match), with adversarial isolation tests. IdP
+> groups map to device scopes through the server-side OAuth scope map (`docs/OAUTH.md`
+> section 4), and `device_selectors` narrow them by inventory attribute. Static `tokens.json`
+> entries take the same `device_selectors`, which also scopes human approver roles, since
+> approval already checks the approver's scope against the change set's one device
+> (mecmcp#400). Not built: a role is a `(tools, devices)` pair; there is no separate "action
+> tier" beyond the tool allowlist and the wildcard's exclusion of write tools.
+
 Turn verified claims into the roadmap's `(device selector, tool set, action
 tier)` role:
 
@@ -120,6 +134,13 @@ tier)` role:
 
 ### Phase 3 — Session and token lifecycle for human callers
 
+> **Status (2026-10-26): built as pass-through, not token exchange.** The server accepts the
+> IdP's access token on every call (`docs/OAUTH.md`); it keeps no session store. The window
+> after an IdP-side revoke is `min(token exp, iat + --oauth-max-token-lifetime-secs)` plus a
+> 60 s skew allowance, a documented number, so set the ceiling. Introspection-based
+> revocation is not built. A retried client cannot extend a session because there is none.
+> Human callers who cannot do a browser flow keep using static tokens plus step-up.
+
 MCP's existing transports (stdio, HTTP with bearer) were not built around a
 browser-redirect OIDC flow. This phase decides and implements how a human's
 proven identity turns into something usable across a session:
@@ -146,6 +167,19 @@ proven identity turns into something usable across a session:
   lands, since role mapping and session mechanics touch different code paths.
 
 ### Phase 4 — Migration path for existing token-based approvers
+
+> **Status (2026-10-26): built.** `tokens.json` loads unchanged with no OIDC configuration.
+> Coexistence: a static `human` token bound to an `oidc_subject` plus a step-up assertion
+> and an unbound token both approve, and the mechanism is recorded in three places: the
+> evidence approval record's `metadata.approver_mechanism` (`token` or `oidc`, with the
+> verified issuer and subject for `oidc`; always written), the `identity_mechanism` field of
+> every audit line (`token`, `oauth`, `oidc-step-up`, or `none` on stdio), and the state-file
+> approval record's `mechanism`, which is bound into the keyed v7 digest and so exists only
+> under `--approval-digest-key-file`. The deprecation signal is
+> `VerifiedApproverArgs::warn_unbound_human_tokens`; the operator turns on
+> `--require-verified-approver` when ready, with no cutover date in code. The proposer side
+> is closed too: `--require-verified-proposer` makes the owner's `owner_subject`
+> IdP-verified rather than token-asserted (mecmcp#400).
 
 - `tokens.json` keeps working unmodified for service automation — the
   roadmap is explicit that minted tokens stay for CI/agents/schedulers, and

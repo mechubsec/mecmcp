@@ -24,6 +24,20 @@
 /// instead of letting it through unchecked.
 pub const APPROVER_ASSERTION_HEADER: &str = "Mecmcp-Approver-Assertion";
 
+/// The header carrying a step-up *proposer* assertion (mecmcp#400).
+///
+/// Deliberately not [`APPROVER_ASSERTION_HEADER`]. An approval assertion requires a `human`
+/// token and the approver role and becomes `CallerCtx::verified_approver`, which the
+/// two-person gate reads as approval evidence. A proposer is usually an agent token acting
+/// for a person and holds no approver role, so sharing the header would mean relaxing
+/// `bind_approver` for everyone or letting a proposal assertion populate the approval
+/// field. A second header keeps the two bindings, fields and error paths apart; the two
+/// share one `jti` replay set, so a single assertion is good for one use in either role.
+///
+/// Like the approver header it is always recognised by name, so a build or server without
+/// a verifier fails it closed instead of ignoring it.
+pub const PROPOSER_ASSERTION_HEADER: &str = "Mecmcp-Proposer-Assertion";
+
 #[cfg(feature = "verified-approver")]
 mod verifier {
     use std::collections::HashMap;
@@ -31,7 +45,7 @@ mod verifier {
 
     use mecmcp_auth::{
         ApproverClaims, ApproverPolicy, BindingFailure, CallerCtx, Grant, VerifiedApprover,
-        bind_approver,
+        VerifiedProposer, bind_approver, bind_proposer,
     };
     use mecmcp_oidc::{TokenVerifier, VerificationFailure};
 
@@ -174,6 +188,44 @@ mod verifier {
             let approver =
                 bind_approver(caller, &self.issuer, &approver_claims, &self.policy, now)?;
 
+            self.burn_jti(&claims, now)?;
+
+            Ok(approver)
+        }
+
+        /// Verify a *proposer* assertion and bind it to `caller`'s token (mecmcp#400).
+        ///
+        /// Same verification, freshness and single-use replay rules as
+        /// [`verify_and_bind`](Self::verify_and_bind), against the same `jti` set, but bound
+        /// with `bind_proposer`: no `human` token and no approver role required.
+        ///
+        /// # Errors
+        /// Returns the specific reason the assertion was refused.
+        pub async fn verify_and_bind_proposer<G: Grant>(
+            &self,
+            assertion: &str,
+            caller: &CallerCtx<G>,
+            now: i64,
+        ) -> Result<VerifiedProposer, ApproverAssertionError> {
+            let claims = self.verifier.verify(assertion).await?;
+            let proposer_claims = ApproverClaims {
+                subject: claims.subject.clone(),
+                roles: claims.roles.clone(),
+                issued_at: claims.issued_at,
+                auth_time: claims.auth_time,
+            };
+            let proposer =
+                bind_proposer(caller, &self.issuer, &proposer_claims, &self.policy, now)?;
+            self.burn_jti(&claims, now)?;
+            Ok(proposer)
+        }
+
+        /// Record the assertion's `jti` as used, refusing a repeat or a missing one.
+        fn burn_jti(
+            &self,
+            claims: &mecmcp_oidc::VerifiedClaims,
+            now: i64,
+        ) -> Result<(), ApproverAssertionError> {
             let jti = claims
                 .jwt_id
                 .clone()
@@ -193,9 +245,7 @@ mod verifier {
                 .saturating_add(leeway_secs)
                 .max(claims.issued_at.saturating_add(max_age_secs));
 
-            self.record_use(&jti, retain_until, now)?;
-
-            Ok(approver)
+            self.record_use(&jti, retain_until, now)
         }
     }
 
@@ -288,6 +338,7 @@ mod verifier {
                 actor_type: ActorType::Human,
                 oidc_subject,
                 verified_approver: None,
+                verified_proposer: None,
                 client_name: None,
                 model_id: None,
                 session_id: None,

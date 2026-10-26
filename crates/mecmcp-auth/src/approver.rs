@@ -98,6 +98,33 @@ impl VerifiedApprover {
     }
 }
 
+/// A proposer identity bound to one request, after a successful [`bind_proposer`]
+/// (mecmcp#400): the IdP-verified human behind the token that proposes a change set.
+///
+/// A separate type from [`VerifiedApprover`], and carried in its own `CallerCtx` field, so a
+/// proposer assertion can never be read as approval evidence. Same shape and the same
+/// restrictions: `#[non_exhaustive]`, and only [`bind_proposer`] succeeding produces one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct VerifiedProposer {
+    /// The IdP issuer that signed the verified assertion.
+    pub issuer: String,
+    /// The IdP's `sub` claim for the proposer.
+    pub subject: String,
+}
+
+impl VerifiedProposer {
+    /// Test-only constructor; see [`VerifiedApprover::for_test`].
+    #[cfg(any(test, feature = "test-util"))]
+    #[doc(hidden)]
+    pub fn for_test(issuer: impl Into<String>, subject: impl Into<String>) -> Self {
+        Self {
+            issuer: issuer.into(),
+            subject: subject.into(),
+        }
+    }
+}
+
 /// Why a presented approver assertion was refused binding to a caller's
 /// token.
 ///
@@ -210,6 +237,54 @@ pub fn bind_approver<G: Grant>(
         return Err(BindingFailure::MissingApproverRole);
     }
 
+    check_fresh(claims, policy, now)?;
+
+    Ok(VerifiedApprover {
+        issuer: bound.issuer.clone(),
+        subject: bound.subject.clone(),
+    })
+}
+
+/// Bind a verified assertion's claims to the token that proposes a change set (mecmcp#400).
+///
+/// Proves the human the token is bound to is present *now*: the assertion's `(issuer,
+/// subject)` must equal the token's `oidc_subject`, and it must be fresh under `policy`.
+/// Unlike [`bind_approver`] it requires neither a `human` token (proposers are usually
+/// agents acting for a person) nor the approver role: proposing is not a privilege the IdP
+/// grants, only an identity it vouches for. `policy.approver_role` is ignored.
+///
+/// Like [`bind_approver`] it does not check `jti` replay; the transport does, in the same
+/// set, so one assertion works once in either role.
+///
+/// # Errors
+/// Returns the specific [`BindingFailure`] naming why binding was refused.
+pub fn bind_proposer<G: Grant>(
+    caller: &CallerCtx<G>,
+    issuer: &str,
+    claims: &ApproverClaims,
+    policy: &ApproverPolicy,
+    now: i64,
+) -> Result<VerifiedProposer, BindingFailure> {
+    let bound: &OidcSubject = caller
+        .oidc_subject
+        .as_ref()
+        .ok_or(BindingFailure::NoSubjectBinding)?;
+    if bound.issuer != issuer || bound.subject != claims.subject {
+        return Err(BindingFailure::SubjectMismatch);
+    }
+    check_fresh(claims, policy, now)?;
+    Ok(VerifiedProposer {
+        issuer: bound.issuer.clone(),
+        subject: bound.subject.clone(),
+    })
+}
+
+/// The freshness rules shared by both bindings.
+fn check_fresh(
+    claims: &ApproverClaims,
+    policy: &ApproverPolicy,
+    now: i64,
+) -> Result<(), BindingFailure> {
     // Allowance for IdP/server clock skew. Not configurable: this guards
     // against misconfiguration, not an attacker who controls `iat` (`claims`
     // is already signature-verified), so there is no policy knob to tune.
@@ -229,11 +304,7 @@ pub fn bind_approver<G: Grant>(
             return Err(BindingFailure::StaleAuthTime);
         }
     }
-
-    Ok(VerifiedApprover {
-        issuer: bound.issuer.clone(),
-        subject: bound.subject.clone(),
-    })
+    Ok(())
 }
 
 #[cfg(test)]
@@ -266,6 +337,7 @@ mod tests {
             actor_type: ActorType::Human,
             oidc_subject,
             verified_approver: None,
+            verified_proposer: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -425,5 +497,77 @@ mod tests {
         let mut policy = policy();
         policy.require_auth_time = true;
         assert!(bind_approver(&caller, TEST_ISSUER, &claims, &policy, 1010).is_ok());
+    }
+
+    // ---- bind_proposer (mecmcp#400) ----
+
+    fn agent_caller(oidc_subject: Option<OidcSubject>) -> CallerCtx<NoGrant> {
+        CallerCtx {
+            actor_type: ActorType::Agent,
+            ..human_caller(oidc_subject)
+        }
+    }
+
+    #[test]
+    fn an_agent_token_needing_no_role_binds_as_proposer() {
+        let caller = agent_caller(Some(bound()));
+        let claims = claims("alice", &[], 1000);
+        let proposer = bind_proposer(&caller, TEST_ISSUER, &claims, &policy(), 1010).unwrap();
+        assert_eq!(proposer.subject, "alice");
+        // The approval binding keeps its stricter rules for the same inputs.
+        assert_eq!(
+            bind_approver(&caller, TEST_ISSUER, &claims, &policy(), 1010),
+            Err(BindingFailure::NotHumanToken)
+        );
+    }
+
+    #[test]
+    fn proposer_binding_refuses_an_unbound_mismatched_or_stale_assertion() {
+        let claims_for = |subject| claims(subject, &[], 1000);
+        assert_eq!(
+            bind_proposer(
+                &agent_caller(None),
+                TEST_ISSUER,
+                &claims_for("alice"),
+                &policy(),
+                1010
+            ),
+            Err(BindingFailure::NoSubjectBinding)
+        );
+        let caller = agent_caller(Some(bound()));
+        assert_eq!(
+            bind_proposer(
+                &caller,
+                TEST_ISSUER,
+                &claims_for("mallory"),
+                &policy(),
+                1010
+            ),
+            Err(BindingFailure::SubjectMismatch)
+        );
+        assert_eq!(
+            bind_proposer(
+                &caller,
+                "https://other",
+                &claims_for("alice"),
+                &policy(),
+                1010
+            ),
+            Err(BindingFailure::SubjectMismatch)
+        );
+        assert_eq!(
+            bind_proposer(
+                &caller,
+                TEST_ISSUER,
+                &claims_for("alice"),
+                &policy(),
+                1_000_000
+            ),
+            Err(BindingFailure::Stale)
+        );
+        assert_eq!(
+            bind_proposer(&caller, TEST_ISSUER, &claims_for("alice"), &policy(), 0),
+            Err(BindingFailure::IssuedInFuture)
+        );
     }
 }

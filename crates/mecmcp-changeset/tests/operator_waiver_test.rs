@@ -258,6 +258,7 @@ fn v3_waiver_round_trip_and_version_dependence() {
         task_id: None,
         apply_without_handle: false,
         owner_subject: None,
+        owner_verified: false,
     };
 
     let mut state = ChangesetState {
@@ -488,6 +489,7 @@ fn test_attribution(principal: &str) -> Attribution {
         token_verified_fields: mecmcp_audit::TokenVerifiedFields::none(),
         approver: None,
         verified_approver: None,
+        verified_proposer: None,
         change_set_id: None,
     }
 }

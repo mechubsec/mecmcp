@@ -27,6 +27,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [Unreleased]
+
+### Added
+
+- Static `tokens.json` entries accept `device_selectors`, the same grammar and semantics as
+  the OAuth scope map (narrows `devices`; `null` refused; one attribute snapshot per
+  authentication; an unlabelled device never matches). Opt in with
+  `CallerCtx::from_entry_with_attributes`; `CallerCtx::from(&entry)` grants no devices to a
+  selector entry. `token add --device-selector` (repeatable) and
+  `TokenStoreFile::add_with_selectors` (#400).
+- Approver roles are selector-scoped through the same field: approval already checks the
+  approver's device scope against the change set's one device, so a `site=lab-*` approver
+  cannot approve a prod change set. Pinned by an integration test; no new flag (#400).
+- `ChangesetCoordinator::approve_change_set_within`: approves only if every device in the
+  change set's `targets()` passes the caller's scope check, so a `site=lab-*` approver cannot
+  approve a multi-target set that also names a prod device. Servers' approve handlers should
+  call it instead of `approve_change_set` (#400).
+- `Mecmcp-Proposer-Assertion` step-up header (#400): a fresh IdP assertion whose subject equals
+  the proposing token's bound `oidc_subject`, bound with `bind_proposer`, which needs neither a
+  `human` token nor the approver role. A separate header and a separate field
+  (`CallerCtx::verified_proposer`, `Attribution::verified_proposer`) so it is never approval
+  evidence; it shares the `jti` replay set, so one assertion is good once in either role.
+  A server with no verifier answers the header 400, as for the approver header. Both
+  assertion headers are now removed from the request once verified, so the JWT never reaches
+  tool extensions.
+- `--require-verified-proposer` (`VerifiedApproverArgs`, requires `--oidc-issuer`) and
+  `ChangesetCoordinator::with_require_verified_proposer`: a proposal must carry an
+  IdP-verified proposer (`ProposerIdentity`, built by `from_attribution`; an OAuth principal
+  counts), proposed through the new `create_change_set_as`. The change set records
+  `owner_verified` and approval refuses one without it, so the two-person rule compares two
+  IdP-verified subjects. A verified record makes the state file version 9; nothing changes
+  for a deployment that leaves the flag off. Under the mode, both waiver transitions and
+  `apply_change_set` also refuse a record whose owner was not verified at propose time, so a
+  change set proposed before the mode was on cannot skip it (#400).
+
+### Changed
+
+- Every audit line gains `identity_mechanism` (`token`, `oauth`, `oidc-step-up`, `none`), and an
+  approval's evidence record carries `metadata.approver_mechanism` (`token`/`oidc`, plus the
+  verified issuer and subject), via the new `EvidenceRecorder::approval_with_identity`. The
+  plain `approval` is unchanged (#400).
+
+### Documentation
+
+- `docs/OAUTH.md` section 9: Client ID Metadata Documents are the authorization server's
+  concern, what the resource server already provides for them, and what to configure at the
+  IdP. The OIDC human-identity spec's Phases 1-4 carry status notes (#400).
+
 ## [0.29.4] - 2026-10-26
 
 ### Added

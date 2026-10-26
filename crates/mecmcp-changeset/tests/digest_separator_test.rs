@@ -266,6 +266,7 @@ fn load_rejects_separator_in_approver() {
         task_id: None,
         apply_without_handle: false,
         owner_subject: None,
+        owner_verified: false,
     };
     let digest = compute_approval_digest_legacy(
         &change_set_id,
@@ -340,6 +341,7 @@ fn load_rejects_separator_in_owner() {
         task_id: None,
         apply_without_handle: false,
         owner_subject: None,
+        owner_verified: false,
     };
     let digest = compute_approval_digest_legacy(
         &change_set_id,
@@ -471,6 +473,7 @@ fn load_accepts_clean_approval() {
         task_id: None,
         apply_without_handle: false,
         owner_subject: None,
+        owner_verified: false,
     };
     // What a current writer produces. `write_state_for_test` stamps version 4 for any
     // real approval, and v4 files verify under the tuple encoding.
@@ -641,6 +644,7 @@ fn a_legacy_approval_migrates_to_v4_and_still_verifies() {
         task_id: None,
         apply_without_handle: false,
         owner_subject: None,
+        owner_verified: false,
     };
 
     let mut change_sets = BTreeMap::new();

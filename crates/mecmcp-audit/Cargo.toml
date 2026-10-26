@@ -69,6 +69,7 @@ otel = [
 ]
 
 [dev-dependencies]
+mecmcp-auth = { version = "0.29.4", path = "../mecmcp-auth", features = ["test-util"] }
 # Test-only: the exporter is used solely to render metrics in unit tests.
 # It must NOT be a normal dependency — its default features pull an HTTP
 # listener and hyper-rustls, which enables rustls's aws-lc-rs backend and

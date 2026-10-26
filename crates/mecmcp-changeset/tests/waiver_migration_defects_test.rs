@@ -100,6 +100,7 @@ fn defect_4_edited_reason_is_rejected_on_load() {
         task_id: None,
         apply_without_handle: false,
         owner_subject: None,
+        owner_verified: false,
     };
 
     let mut change_sets = BTreeMap::new();
@@ -203,6 +204,7 @@ fn defect_5_both_approver_and_waived_is_rejected() {
         task_id: None,
         apply_without_handle: false,
         owner_subject: None,
+        owner_verified: false,
     };
 
     let mut change_sets = BTreeMap::new();

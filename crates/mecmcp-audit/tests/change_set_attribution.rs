@@ -30,6 +30,7 @@ fn attribution() -> Attribution {
         request_id: uuid::Uuid::nil(),
         token_verified_fields: TokenVerifiedFields::default(),
         verified_approver: None,
+        verified_proposer: None,
         approver: None,
         change_set_id: None,
     }
@@ -106,6 +107,7 @@ fn from_caller_never_invents_an_approver_or_change_set() {
         actor_type: mecmcp_auth::ActorType::Agent,
         oidc_subject: None,
         verified_approver: None,
+        verified_proposer: None,
         client_name: None,
         model_id: None,
         session_id: None,

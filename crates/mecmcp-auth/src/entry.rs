@@ -192,6 +192,27 @@ pub struct TokenEntry<G: Grant = NoGrant> {
     /// byte-for-byte unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oidc_subject: Option<OidcSubject>,
+
+    /// Optional attribute selectors (AND) that narrow `devices` to inventory devices whose
+    /// attributes match, with the same grammar and semantics as the OAuth scope map's
+    /// `device_selectors` (mecmcp#400). Absent means `devices` is used as written; an
+    /// explicit `null` is refused. Resolved per authentication by
+    /// [`CallerCtx::from_entry_with_attributes`](crate::CallerCtx::from_entry_with_attributes);
+    /// with no attribute source the token addresses no devices (fail closed).
+    #[serde(
+        default,
+        deserialize_with = "selectors_not_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub device_selectors: Option<Vec<String>>,
+}
+
+/// Absent means "no selectors"; an explicit `null` must not silently mean the same, or a
+/// broken edit would widen the token to every device its `devices` names.
+fn selectors_not_null<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error> {
+    Vec::<String>::deserialize(deserializer).map(Some)
 }
 
 /// Predicate for `skip_serializing_if` on `actor_type`.
@@ -339,6 +360,11 @@ impl<G: Grant> TokenEntry<G> {
                 "token '{}': provider metadata contradicts actor_type \"human\"",
                 self.name
             )));
+        }
+        if let Some(expressions) = &self.device_selectors {
+            crate::SelectorSet::compile(expressions).map_err(|error| {
+                EntryError::Invalid(format!("token '{}': device_selectors: {error}", self.name))
+            })?;
         }
         if let Some(oidc_subject) = &self.oidc_subject {
             // Empty is rejected because it reads as declared (like the

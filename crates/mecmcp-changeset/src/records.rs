@@ -341,6 +341,14 @@ pub struct ChangeSetRecord {
     /// appears.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_subject: Option<OwnerSubject>,
+    /// Whether `owner_subject` was verified by the IdP at propose time (mecmcp#400): a fresh
+    /// `Mecmcp-Proposer-Assertion`, or an OAuth principal. `false` means it was copied from
+    /// the proposing token's own `oidc_subject`, which the operator who minted the token
+    /// typed. Never written when `false`, so state files from before this field are
+    /// unchanged. Like `owner_subject` it is covered by no digest until an approval signs the
+    /// subject in, so a strict approval reads it with the same caveat.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub owner_verified: bool,
 }
 
 /// A preview of what a change set will do, bound to a digest.

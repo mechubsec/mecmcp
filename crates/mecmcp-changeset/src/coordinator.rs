@@ -260,6 +260,9 @@ pub struct ChangesetCoordinator {
     /// authentication keeps behaving exactly as it did before this field
     /// existed.
     require_verified_approver: bool,
+    /// Strict mode for verified-proposer identity (mecmcp#400): see
+    /// [`with_require_verified_proposer`](Self::with_require_verified_proposer).
+    require_verified_proposer: bool,
 }
 
 impl ChangesetCoordinator {
@@ -314,6 +317,27 @@ impl ChangesetCoordinator {
         self
     }
 
+    /// Require an IdP-verified proposer on every proposal made through
+    /// [`create_change_set_as`](Self::create_change_set_as), and on every approval an owner
+    /// that was verified at propose time (mecmcp#400).
+    ///
+    /// Off by default. [`create_change_set`](Self::create_change_set) takes only a
+    /// token-asserted subject, so with this on it refuses: a server must pass a
+    /// [`ProposerIdentity`](crate::approver::ProposerIdentity) to be able to propose at all.
+    /// Pairs with `with_require_verified_approver` so the two-person rule compares two
+    /// IdP-verified subjects; neither requires the other. Affects calls made through this
+    /// instance from here on.
+    #[must_use]
+    pub fn with_require_verified_proposer(mut self, value: bool) -> Self {
+        self.require_verified_proposer = value;
+        self
+    }
+
+    /// Whether strict verified-proposer mode is enabled.
+    pub(crate) fn require_verified_proposer(&self) -> bool {
+        self.require_verified_proposer
+    }
+
     /// Whether strict verified-approver mode is enabled.
     pub(crate) fn require_verified_approver(&self) -> bool {
         self.require_verified_approver
@@ -332,6 +356,7 @@ impl Default for ChangesetCoordinator {
             lab_mode: false,
             approval_digest_key: None,
             require_verified_approver: false,
+            require_verified_proposer: false,
             _owner_lock: None,
         }
     }
@@ -476,6 +501,7 @@ impl ChangesetCoordinator {
                 evidence: None,
                 approval_digest_key,
                 require_verified_approver: false,
+                require_verified_proposer: false,
                 _owner_lock: None,
             });
         };
@@ -620,6 +646,7 @@ impl ChangesetCoordinator {
             lab_mode,
             approval_digest_key,
             require_verified_approver: false,
+            require_verified_proposer: false,
             _owner_lock: Some(owner_lock),
         })
     }

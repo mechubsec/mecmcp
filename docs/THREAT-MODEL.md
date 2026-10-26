@@ -112,11 +112,23 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
   exactly once across a restart. Set the flag whenever `--require-verified-approver` is.
   The store is a local file: it does not protect a deployment whose state directory is
   rolled back or restored from a snapshot, and it is per-host (not shared across replicas).
-- **`owner_subject` is token-asserted, not IdP-verified.** The owner's bound
-  `oidc_subject` (set via `token add --oidc-issuer/--oidc-subject`) is whatever the
-  operator who ran that command typed in, not something the IdP vouches for at propose
-  time. Strict mode refuses to approve a change set whose `owner_subject` went missing
-  after proposal (MEC-994 W4), but it cannot detect one that was wrong from the start.
+- **`owner_subject` is token-asserted unless `--require-verified-proposer` is on.** The
+  owner's bound `oidc_subject` (set via `token add --oidc-issuer/--oidc-subject`) is
+  whatever the operator who ran that command typed in, not something the IdP vouches for
+  at propose time. Strict approver mode refuses to approve a change set whose
+  `owner_subject` went missing after proposal (MEC-994 W4), but it cannot detect one that
+  was wrong from the start. With `--require-verified-proposer` (mecmcp#400) a proposal must
+  carry a fresh `Mecmcp-Proposer-Assertion` whose subject equals the token's binding (or
+  come from an OAuth caller, whose subject the IdP already vouched for); the change set
+  records `owner_verified`, and approval refuses one that lacks it, so the two-person rule
+  compares two IdP-verified subjects when `--require-verified-approver` is on as well.
+  Residual limits: the proposer header is a separate header from the approver one (a
+  proposer assertion never becomes approval evidence) but both draw on one `jti` replay
+  set and the IdP cannot tell the two purposes apart, so an assertion minted for either
+  role is good for exactly one use in either; `owner_verified`, like `owner_subject`, is in
+  no digest until an approval signs the subject in, so someone who can edit the state file
+  can set it; and the flag does nothing until the server passes it to
+  `ChangesetCoordinator::with_require_verified_proposer`.
 - **Scope-map correctness is the operator's job (T13).** A mapping that grants `["*"]` to a
   broad IdP group grants it to every member (write tools stay excluded from the wildcard).
   Revocation is the IdP's `exp`, capped by `--oauth-max-token-lifetime-secs` when set (docs/OAUTH.md section 6); there is no server-side revocation list. Write tools

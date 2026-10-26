@@ -423,6 +423,31 @@ impl EvidenceRecorder {
     /// refusal is evidence too, and omitting it would leave the trail unable to
     /// show that anyone declined.
     pub fn approval(&self, request_id: &str, changeset_id: &str, approver: &str, decision: &str) {
+        self.approval_with_identity(request_id, changeset_id, approver, decision, None);
+    }
+
+    /// [`approval`](Self::approval) that also records how the approver's identity was
+    /// established (mecmcp#400): `mechanism` is `"token"` (the token's own declaration) or
+    /// `"oidc"` (a verified IdP assertion, with its `issuer` and `subject`). Written into the
+    /// record's `metadata`, so an auditor can tell which regime approved without the state
+    /// file. `None` writes no metadata, exactly as `approval` always did.
+    pub fn approval_with_identity(
+        &self,
+        request_id: &str,
+        changeset_id: &str,
+        approver: &str,
+        decision: &str,
+        identity: Option<(&str, Option<(&str, &str)>)>,
+    ) {
+        let metadata = identity.map(|(mechanism, oidc)| {
+            let mut map = serde_json::Map::new();
+            map.insert("approver_mechanism".to_owned(), mechanism.into());
+            if let Some((issuer, subject)) = oidc {
+                map.insert("approver_issuer".to_owned(), issuer.into());
+                map.insert("approver_subject".to_owned(), subject.into());
+            }
+            serde_json::Value::Object(map)
+        });
         let context = self.context_for(changeset_id);
         self.append(EvidenceRecord::Approval(ApprovalRecord {
             request_id: request_id.to_owned(),
@@ -437,7 +462,7 @@ impl EvidenceRecorder {
             prev_hash: String::new(),
             approver: approver.to_owned(),
             decision: decision.to_owned(),
-            metadata: None,
+            metadata,
         }));
         if decision != "approved" {
             // A rejected change never reaches a receipt, so this is its

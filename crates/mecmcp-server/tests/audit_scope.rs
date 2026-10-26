@@ -39,6 +39,7 @@ fn both_transports_emit_the_same_tool_and_action() {
             actor_type: ActorType::Human,
             oidc_subject: None,
             verified_approver: None,
+            verified_proposer: None,
             client_name: None,
             model_id: None,
             session_id: None,

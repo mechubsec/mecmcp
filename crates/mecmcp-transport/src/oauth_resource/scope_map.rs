@@ -60,14 +60,7 @@ impl GrantSpec {
         let Some(selectors) = &self.compiled else {
             return self.devices.clone();
         };
-        let mut names: Vec<String> = snapshot
-            .iter()
-            .filter(|(name, attrs)| self.devices.allows(name) && selectors.matches(attrs))
-            .map(|(name, _)| name.clone())
-            .collect();
-        names.sort();
-        names.dedup();
-        ScopeSet::Allowlist(names)
+        selectors.narrow(&self.devices, snapshot)
     }
 }
 
