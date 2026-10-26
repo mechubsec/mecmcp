@@ -71,8 +71,10 @@ Off by default and inert unless configured. Pass `--ssdf-audit-endpoint
 <url>` — for example on rustjunosmcp — plus the paired credential and
 identity flags (`EvidenceArgs` in
 [`mecmcp-runtime/src/cli.rs`](../crates/mecmcp-runtime/src/cli.rs) has the
-full set); a server started without `--ssdf-audit-endpoint` runs its evidence
-pipeline as a no-op. The sink itself lives in
+full set); a server started with neither `--ssdf-audit-endpoint` nor
+`--audit-forward-endpoint` runs its evidence pipeline as a no-op. Forward-only
+(below) needs the consumer to build it with `EvidenceArgs::into_pipeline_config`
+and `EvidenceService::start_pipeline`; `into_config` alone refuses it. The sink itself lives in
 [`crates/mecmcp-audit/src/sinks/ssdf.rs`](../crates/mecmcp-audit/src/sinks/ssdf.rs).
 
 ### A second destination: the generic forward sink
