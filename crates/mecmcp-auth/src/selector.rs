@@ -86,6 +86,7 @@ pub struct DeviceAttrs {
     #[serde(
         default,
         deserialize_with = "bounded_tags",
+        serialize_with = "serialize_bounded_tags",
         skip_serializing_if = "Vec::is_empty"
     )]
     pub tags: Vec<AttrValue>,
@@ -99,6 +100,20 @@ fn bounded_tags<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<AttrVa
         )));
     }
     Ok(tags)
+}
+
+// The field is public, so an oversized list is constructible; refuse to write what
+// `bounded_tags` would refuse to read back.
+fn serialize_bounded_tags<S: serde::Serializer>(
+    tags: &[AttrValue],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    if tags.len() > MAX_TAGS {
+        return Err(serde::ser::Error::custom(format!(
+            "more than {MAX_TAGS} tags"
+        )));
+    }
+    tags.serialize(serializer)
 }
 
 /// The closed set of attribute keys a selector may name.
@@ -368,6 +383,15 @@ mod tests {
             serde_json::to_string(&DeviceAttrs::default()).unwrap(),
             "{}"
         );
+    }
+
+    #[test]
+    fn oversized_tags_refuse_to_serialize() {
+        let attrs = DeviceAttrs {
+            tags: vec![AttrValue::new("t").unwrap(); MAX_TAGS + 1],
+            ..DeviceAttrs::default()
+        };
+        assert!(serde_json::to_string(&attrs).is_err());
     }
 
     #[test]
