@@ -45,10 +45,15 @@ fn issuer_rejection(issuer: &str) -> Option<&'static str> {
     if !issuer.bytes().all(|byte| byte.is_ascii_graphic()) {
         return Some("not printable ASCII without spaces");
     }
-    if !issuer.starts_with("https://") {
+    let Some(after_scheme) = issuer.strip_prefix("https://") else {
         return Some("not https");
-    }
-    if issuer.contains('@') {
+    };
+    // Userinfo lives only in the authority; `@` is legal in a path (`/realms/user@x`).
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    if authority.contains('@') {
         return Some("has userinfo");
     }
     if issuer.contains(['?', '#']) {
@@ -391,11 +396,33 @@ mod tests {
     }
 
     #[test]
+    fn an_at_sign_in_the_issuer_path_is_not_userinfo() {
+        let config = OAuthResourceConfig::new(
+            "https://idp.example/realms/user@example.com",
+            "https://junos.example/mcp",
+            map(),
+        )
+        .unwrap();
+        assert_eq!(
+            config.issuer(),
+            "https://idp.example/realms/user@example.com"
+        );
+        let error = OAuthResourceConfig::new(
+            "https://alice:s3cr3t@idp.example",
+            "https://junos.example/mcp",
+            map(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("has userinfo"), "{error}");
+    }
+
+    #[test]
     fn a_refused_issuer_is_never_echoed() {
         for (issuer, reason) in [
             ("https:alice:s3cr3t://@idp.example", "not https"),
             ("https://alice:s3cr3t@idp.example", "has userinfo"),
-            ("https://alice:s3cr3t?@idp.example", "has userinfo"),
+            // The authority ends at `?`, so this is caught as a query, still not echoed.
+            ("https://alice:s3cr3t?@idp.example", "query or fragment"),
             ("https://idp.example/?api_key=SEKRIT", "query or fragment"),
             ("https://idp.example/#SEKRIT", "query or fragment"),
         ] {
