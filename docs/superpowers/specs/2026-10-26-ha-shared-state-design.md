@@ -19,6 +19,11 @@ that keeps the safety properties.
 
 ## Inventory of per-process / per-host state
 
+**State paths.** Paths in this document are relative to each service's own
+state dir, per `docs/FILESYSTEM-LAYOUT.md` (`/var/lib/jmcp`,
+`/var/lib/rust-panosmcp`, `/var/lib/proxmoxmcp`, ...). `/var/lib/mecmcp` appears
+only as the library default constant and is not used by packaged services.
+
 Severity: **S** = safety (wrong or unaudited change reaches a device),
 **A** = availability (requests fail or users re-authenticate), **C** =
 convenience (limits drift, nothing wrong is done).
@@ -29,12 +34,13 @@ convenience (limits drift, nothing wrong is done).
 | Single-writer guard | `StateFileLock::try_acquire_owner` on `<state>.owner`, held in `_owner_lock` (`coordinator.rs:243`, `state_lock.rs`) | `flock(2)`, one kernel | On one host it **already refuses** a second instance: this is the correct failure. On NFS/shared FS, `flock` semantics are filesystem-dependent and cannot be assumed | S |
 | Read-modify-write lock | `StateFileLock::acquire` on `<state>.lock` (`state_lock.rs`, MEC-540) | `flock(2)` | Serializes writers on one host only. It guards the file, not the in-memory snapshot, so it does not fix the stale-snapshot problem above | S |
 | Per-endpoint op guard | `endpoint_locks: Mutex<BTreeMap<..>>`, `device_guard` (`coordinator.rs:224,641`) | In-process tokio mutex | Two instances apply to the same device concurrently | S |
-| Device lock | `FlockDeviceLock` (`crates/mecmcp-device/src/flock.rs`), files named by SHA-256 of device name under `/var/lib/mecmcp/device-locks` | `flock(2)` on a local dir | Mutual exclusion across processes on **one host** only. Two hosts hold the same device lock simultaneously; the "kernel releases on death" property has no analogue across hosts | S |
-| MCP sessions | rmcp `LocalSessionManager` wrapped by `LimitedSessionManager` (`crates/mecmcp-transport/src/session.rs`) | In-memory map | A request carrying `mcp-session-id` that lands on the other instance gets 404 and the client must re-initialize. `restore_session` returns `RestoreOutcome::NotSupported` by design (`session.rs:625-670`): restore would bypass the per-token cap and reaper | A |
+| Device lock | `FlockDeviceLock` (`crates/mecmcp-device/src/flock.rs`), files named by SHA-256 of device name; `DEFAULT_DEVICE_LOCK_DIR` is `/var/lib/mecmcp/device-locks`, but packaged services use their own state dir (below) | `flock(2)` on a local dir | Mutual exclusion across processes on **one host** only. Two hosts hold the same device lock simultaneously; the "kernel releases on death" property has no analogue across hosts | S |
+| MCP sessions | rmcp `LocalSessionManager` wrapped by `LimitedSessionManager` (`crates/mecmcp-transport/src/session.rs`) | In-memory map | A legacy request carrying `mcp-session-id` that lands on the other instance gets 404 and the client must re-initialize. `restore_session` returns `RestoreOutcome::NotSupported` by design (`session.rs:625-670`): restore would bypass the per-token cap and reaper | A |
 | Session caps | `LimitedSessionManager` count + per-token counts (`session.rs`), `ConcurrencyState` (`concurrency.rs:30`) | In-process | Effective caps multiply by N | C |
 | Rate limiter | token buckets `Arc<Mutex<BucketMap>>` (`rate_limit.rs:205`) | In-process | Effective rate is N times configured; per-IP keying also depends on `trusted_proxies` / `X-Forwarded-For` being right behind the LB | C |
 | jti replay store | `ReplayStore` append log, fsync before the approval returns (`approver_replay_store.rs`, #400) | One local file, loaded at open, in-memory map | A replayed approver assertion presented to the *other* instance is accepted: its map has never seen the jti. This is a **new** shared-state hole from 0.29.2 | S |
-| Token store | `ArcSwap<TokenStore>` hot-reload of `tokens.json` (`crates/mecmcp-auth/src/file.rs:149`) | Per-process reload | Each instance reloads independently. A revoked token is live on a lagging instance for up to one reload interval; `mint`/`rotate` write one host's file | S (revocation lag), A |
+| Token store | `ArcSwap<TokenStore>` (`crates/mecmcp-auth/src/file.rs:149`), reloaded on **SIGHUP**, not on a timer (README 0.9.0, #266) | Per-process | `token revoke --server-pid` signals one process; every other replica keeps accepting the revoked credential until it is signalled too. Rotate is worse: replicas still accept the old secret | S |
+| Device inventory | `FileInventory` holds `devices` in an `Arc<RwLock>` until an explicit `reload()` (`crates/mecmcp-inventory/src/file.rs:34,70`) | Per-process | A standby that loaded inventory at boot, or a new active after takeover, serves a stale device set/policy unless it reloads after acquiring ownership | S |
 | Audit chain / evidence | `EvidenceRecorder`: "One recorder per `(server_id, run_id)`"; a second recorder "forks the chain, and a fork verifies as two valid chains rather than as an error" (`crates/mecmcp-audit/src/recorder.rs:15-21`) | In-process head, per-run | Two writers sharing a `server_id` produce undetectable forks, so evidence can silently omit an apply. Distinct `server_id`s per instance are safe by construction | S |
 | Delivery ledger | `sinks/delivery_ledger.rs` | Local file | Per-instance; harmless if each instance has its own `server_id`, wrong if shared | C |
 | Idempotency cache | none found in `crates/` | n/a | Nothing to share. Retried applies are handled by change-set state (so they inherit its severity) | n/a |
@@ -52,35 +58,54 @@ Two findings worth recording:
 
 ## Options
 
-### (a) Active/passive with shared storage and fencing
+### (a) Active/passive with fenced shared storage
 
-One instance serves; a standby is started only when the active is fenced.
-State directories (`/var/lib/mecmcp/*`) live on storage only the active
-mounts, or on a replicated block device.
+One instance serves; a standby takes over only after the old active is
+**provably dead**. State directories live on storage only the active has
+writable.
 
-- **Fixes:** every row above, by keeping the invariant the code already
-  assumes (exactly one process). The existing `.owner` flock becomes the
-  last line of defence, not the first.
-- **Needs:** a fencing story. Without it, a partitioned old active that
-  still believes it is active is the two-writer case. Proxmox gives this for
-  free for guests: HA manager with a guest on shared or replicated storage
-  fences by watchdog and restarts the guest elsewhere. Outside Proxmox, a
-  lease with a monotonically increasing fencing token that the device-lock
-  path and state writes check.
+- **Fixes:** every row above, by keeping the invariant the code assumes
+  (exactly one process). The `.owner` flock stays as a same-host last line.
+- **Fencing must be real.** A lease-file epoch is *not* fencing. A paused
+  old active (SIGSTOP, VM freeze, long GC-like stall) that already passed an
+  epoch check, or already holds a device lock, can resume after the new
+  active publishes epoch N+1 and still write stale state or commit to a
+  device. Plain files give no atomic compare-and-set across hosts; the
+  device does not validate our epoch; keepalived/VRRP moves an address, it
+  does not stop the old process. Required instead: the old active is
+  killed or isolated *before* the standby takes the state, by **Proxmox HA
+  fencing (hardware/software watchdog self-fence, or STONITH)**, or a
+  linearizable lease that the *protected resource* enforces. State what each
+  side can enforce: our state files and replay store can refuse stale
+  writers only if the storage layer does (fenced block device, exclusive
+  mount); Junos/PAN-OS/Proxmox devices **cannot** validate a fencing token,
+  so for device commits only process death (fencing) prevents a late
+  commit. An epoch in the code is defence in depth, never the guarantee.
+- **Storage must be shared or synchronously replicated.** Proxmox
+  asynchronous storage replication (ZFS replication) is **rejected**: after
+  failover the guest boots from a snapshot older than the active's last
+  writes, resurrecting approvals, forgetting spent jtis and un-revoking
+  tokens, which re-enables a replayed approval or a duplicate device action.
+  Acceptable: shared storage (Ceph RBD, SAN) or a synchronously replicated
+  device, with the volume attached to one guest at a time.
 - **Does not fix:** session loss on failover (clients re-initialize; the
-  stateless protocol revision, `2026-07-28`, already referenced in
-  `concurrency.rs:467`, removes most of this pain), and no horizontal
-  scaling.
-- **Cost:** near zero code. Runbook, a `--standby` start mode that waits on
-  the `.owner` lock rather than exiting, and a documented requirement that
-  the state dir not be on NFS unless the filesystem's `flock` is proven.
+  stateless revision `2026-07-28`, `concurrency.rs:467`, removes most of
+  this) and no horizontal scaling.
+- **Cost:** modest code (standby start mode, readiness gate, ordered
+  takeover) plus an operator runbook; fencing is the operator's.
 
 ### (b) Active/active with an external store
 
 All state moves to a shared store: change sets, device locks, jti,
 rate buckets, token store, evidence heads.
 
-- **Fixes:** everything, including scale-out.
+- **Fixes:** the state rows, plus scale-out, **once sessions are handled**:
+  `LimitedSessionManager::restore_session` returns `NotSupported`, so legacy
+  sessions 404 on another replica and per-token session caps multiply by
+  replica count. B must also require the stateless protocol, or sticky
+  routing, or a shared session manager (which reopens the cap bypass at
+  `session.rs:625-670`) before it can claim every row. Token revocation
+  needs a shared version notification or signalling every replica.
 - **Store choice.** ClickHouse is already in the stack for SSDF but is wrong
   here: no transactions, no compare-and-set, eventual merges. A
   linearizable store is required for locks and the jti check: Postgres
@@ -108,7 +133,7 @@ LB pins a client or token to an instance; state stays local.
 
 ## Recommendation
 
-**Option (a): active/passive, with fencing, shipped as a documented
+**Option (a): active/passive with watchdog/STONITH fencing and shared or synchronously replicated storage, shipped as a documented
 topology plus a small amount of code.** It keeps the one-writer invariant
 the whole safety story (change-set lifecycle, evidence chain, device locks,
 replay store) was built on, costs a few hundred lines rather than a new
@@ -126,44 +151,56 @@ for a single-instance deployment.
 
 ### Phase 0: document the supported topology
 
-- `docs/` runbook: Proxmox HA guest, shared/replicated state volume,
+- `docs/` runbook: Proxmox HA guest with watchdog fencing, shared or
+  synchronously replicated state volume (async replication forbidden),
   required mounts, why not NFS.
 - Acceptance: a reader can stand up an active/passive pair on pve2/pve3
   from the doc; a failover drill is recorded in the runbook.
 - Tests: none (docs). A drill checklist, run once against the lab rigs.
 
-### Phase 1: standby mode and ownership
+### Phase 1: standby mode, readiness gate, ordered takeover
 
-- `--standby` / `[ha] mode = "standby"`: startup blocks on
-  `StateFileLock::try_acquire_owner` with backoff, serves `/healthz` as
-  not-ready until it wins, then loads state. Today a second instance exits
-  with the owner error; that stays the default.
-- Load order: take owner lock, **then** read state, replay store and token
-  file, **then** open evidence. Never the reverse.
-- Acceptance: with the active alive, standby never reads state; after the
-  active is killed (SIGKILL), standby is ready within the poll interval and
-  sees every change set the active persisted.
-- Tests that prove the race is impossible, not unlikely:
-  - Process-level: spawn N=8 instances against one state dir; assert
-    exactly one holds the owner lock at any sampled instant, across 1000
-    random SIGKILL/restart cycles, and that the persisted state is monotone
-    (no change-set state ever moves backward).
-  - Sabotage: delete the `try_acquire_owner` call, rerun, assert the test
-    fails (per the repo's habit: prove the test can fail).
+- `[ha] mode = "standby"`: startup retries `StateFileLock::try_acquire_owner`
+  with backoff. Today a second instance exits with the owner error; that
+  stays the default.
+- **Readiness.** `/healthz` is unconditional liveness (`health.rs:54`, no
+  dependency consulted) and must stay so; `/readyz` runs `ReadinessCheck`s
+  and can return 503 (`health.rs:72-97`). Add an ownership check that fails
+  until this process holds the owner lock. The load balancer / HA manager
+  gates traffic on `/readyz`, never `/healthz`.
+- **Takeover order:** acquire owner lock, then read state file, replay store
+  and `tokens.json`, then **(re)load `FileInventory` and config** (explicit
+  `reload()`, `file.rs:70`; it does not refresh itself), then open the
+  evidence recorder, then report ready. A standby never serves from data
+  read before it owned the lock.
+- Acceptance: while the active lives the standby is not ready and has read
+  no state; after fenced death of the active the standby is ready only
+  after inventory reload, and sees every change set the active persisted.
+- Tests (deterministic, not sampled): a test hook records every
+  critical-section entry and exit with a global sequence number; any
+  overlap of two owners fails the run. Contenders are released from a
+  barrier at the acquisition call, so a brief dual-owner window cannot hide
+  between samples. Run N=8 contenders over 1000 kill/restart cycles and
+  assert persisted state is monotone. A readiness test asserts `/readyz`
+  is 503 for a non-owner while `/healthz` is 200, and that inventory
+  reload happens-before ready.
+- Sabotage check, **separate** test run: delete the `try_acquire_owner`
+  call; the overlap test must fail. Likewise remove the inventory reload;
+  the stale-inventory test must fail.
 
-### Phase 2: fencing token
+### Phase 2: defence-in-depth epoch (not fencing)
 
-- A lease file (`<state>.lease`) carrying a monotonically increasing epoch,
-  incremented by whoever takes the owner lock. State writes, device-lock
-  acquisition and replay-store appends carry the epoch and refuse if a
-  higher epoch is on disk. Closes the partitioned-old-active case that
-  `flock` alone cannot, notably on non-local filesystems.
-- Acceptance: a stale instance that is SIGSTOPped, superseded, then resumed
-  cannot persist a change set, take a device lock, or record a jti.
-- Tests: SIGSTOP/SIGCONT test as above; a loom-free deterministic test where
-  a fake clock and fake filesystem interleave "old active resumes mid
-  `write_state`" and assert the write is rejected. Sabotage: drop the epoch
-  comparison, assert failure.
+- A lease file carries a monotonic epoch bumped by whoever takes the owner
+  lock; state writes and replay appends refuse if a higher epoch is on
+  disk. This narrows, but cannot close, the paused-writer window: a writer
+  paused between the check and the write is stopped only by fencing
+  (Phase 0 requirement) or by storage that rejects the stale writer.
+- Acceptance: documented as best-effort; a SIGSTOPped, superseded, resumed
+  instance that has not yet been fenced is refused at the next check.
+- Tests: deterministic interleaving with a fake filesystem for "old active
+  resumes after the check" must be shown to **still write** on plain files,
+  and the doc says so; the guarantee is asserted only for a fencing-capable
+  storage fake. Separate sabotage run drops the epoch comparison.
 
 ### Phase 3: session continuity (optional)
 
@@ -215,7 +252,14 @@ request.
 4. Should an HA-capable deployment give each instance a distinct `server_id`
    for evidence, and does the SSDF verifier treat that as one logical
    server? Today it groups by `(tier, server_id)`.
-5. Token revocation lag (reload interval) matters more under HA. Do we want
-   a reload-on-demand signal as part of Phase 1?
+5. Token reload is SIGHUP-driven, so revocation under any multi-replica
+   topology needs every replica signalled or a shared version notification.
+   Which? (Under (a) only the active needs it, but a standby must reload
+   at takeover, covered in Phase 1.)
 6. Does the jti replay store need a retention bump on failover (assertion
    lifetime is the floor)?
+7. Codex review (dd6a316) asserted a `/var/lib/mecmcp` state path; verified:
+   it is only the `DEFAULT_DEVICE_LOCK_DIR` constant in
+   `crates/mecmcp-device/src/flock.rs`, packaged services use per-service
+   dirs. Does each service pass its own dir to `FlockDeviceLock` in its
+   repo? Not checked here (consumers live outside this repo).
