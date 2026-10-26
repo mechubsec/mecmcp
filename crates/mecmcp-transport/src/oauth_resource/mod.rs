@@ -19,12 +19,11 @@ use tokio::sync::Semaphore;
 /// Why an [`OAuthResourceConfig`] was refused.
 #[derive(Debug, thiserror::Error)]
 pub enum OAuthConfigError {
-    /// The issuer is not an `https` URL of printable ASCII with a host and no userinfo,
-    /// query or fragment. Any userinfo in the rejected value is redacted.
-    #[error(
-        "OAuth issuer must be an https URL with a host, of printable ASCII without spaces: {0:?}"
-    )]
-    Issuer(String),
+    /// The issuer is not an `https` URL of printable ASCII with a well-formed host and no
+    /// userinfo, query or fragment. Carries only a reason category: a rejected issuer may
+    /// hold a credential, so its value is never echoed (not even a prefix).
+    #[error("invalid OAuth issuer: {0}")]
+    Issuer(&'static str),
     /// The canonical resource URI is invalid.
     #[error(transparent)]
     Resource(#[from] ResourceUriError),
@@ -41,22 +40,22 @@ pub enum OAuthConfigError {
     },
 }
 
-/// `issuer` for an error message (it reaches logs). Any `@` anywhere means userinfo may be
-/// present, and no delimiter order can be trusted to bound it (`https://u:p?@h` puts the
-/// secret before a `?`, `https://h/?e=a@b&k=secret` puts it after an `@`), so only the
-/// scheme survives. Otherwise the query and fragment are cut, as in mecmcp-http's
-/// `SafeUrl::from_unparsed`.
-fn redact_issuer(issuer: &str) -> String {
+/// Why `issuer` is unusable, as a category only (see [`OAuthConfigError::Issuer`]).
+fn issuer_rejection(issuer: &str) -> Option<&'static str> {
+    if !issuer.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Some("not printable ASCII without spaces");
+    }
+    if !issuer.starts_with("https://") {
+        return Some("not https");
+    }
     if issuer.contains('@') {
-        return match issuer.split_once("://") {
-            Some((scheme, _)) => format!("{scheme}://[redacted]"),
-            None => "[redacted]".to_owned(),
-        };
+        return Some("has userinfo");
     }
-    match issuer.find(['?', '#']) {
-        Some(cut) => format!("{}[redacted]", &issuer[..cut]),
-        None => issuer.to_owned(),
+    if issuer.contains(['?', '#']) {
+        // The discovery suffix would land inside the query or fragment.
+        return Some("query or fragment");
     }
+    (!crate::auth::is_absolute_http_url(issuer)).then_some("malformed host, port or path")
 }
 
 /// Static configuration of one server's OAuth resource-server mode.
@@ -83,14 +82,9 @@ impl OAuthResourceConfig {
         resource: &str,
         scope_map: OAuthScopeMap,
     ) -> Result<Self, OAuthConfigError> {
-        // Refused at startup rather than surfacing later as every token's `iss` mismatching,
-        // or as a discovery URL with the well-known suffix inside a query or fragment.
-        let usable = issuer.bytes().all(|byte| byte.is_ascii_graphic())
-            && issuer.starts_with("https://")
-            && !issuer.contains(['?', '#'])
-            && crate::auth::is_absolute_http_url(issuer);
-        if !usable {
-            return Err(OAuthConfigError::Issuer(redact_issuer(issuer)));
+        // Refused at startup rather than surfacing later as every token's `iss` mismatching.
+        if let Some(reason) = issuer_rejection(issuer) {
+            return Err(OAuthConfigError::Issuer(reason));
         }
         let resource = ResourceUri::parse(resource)?;
         // `BearerBoundary::with_oauth_resource` advertises this URL and relies on it.
@@ -397,23 +391,24 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_issuer_does_not_echo_its_credentials() {
-        for issuer in [
-            "https://alice:s3cr3t@idp.example/realms/lab",
-            "https://idp.example/realms/lab?api_key=s3cr3t",
-            "https://idp.example/realms/lab#s3cr3t",
-            // An `@` in the query must not anchor the userinfo scan past the `?`.
-            "https://idp.example/?email=a@b.example&key=s3cr3t",
-            "https://alice:s3cr3t@idp.example/?email=a@b.example",
-            // The credential sits before a `?`/`#` that precedes the `@`.
-            "https://alice:s3cr3t?@idp.example",
-            "https://alice:s3cr3t#@idp.example",
+    fn a_refused_issuer_is_never_echoed() {
+        for (issuer, reason) in [
+            ("https:alice:s3cr3t://@idp.example", "not https"),
+            ("https://alice:s3cr3t@idp.example", "has userinfo"),
+            ("https://alice:s3cr3t?@idp.example", "has userinfo"),
+            ("https://idp.example/?api_key=SEKRIT", "query or fragment"),
+            ("https://idp.example/#SEKRIT", "query or fragment"),
         ] {
-            let error = OAuthResourceConfig::new(issuer, "https://junos.example/mcp", map())
-                .unwrap_err()
-                .to_string();
-            assert!(!error.contains("s3cr3t"), "{error}");
-            assert!(!error.contains("alice"), "{error}");
+            let error =
+                OAuthResourceConfig::new(issuer, "https://junos.example/mcp", map()).unwrap_err();
+            for rendered in [error.to_string(), format!("{error:?}")] {
+                assert!(
+                    !rendered.contains("s3cr3t") && !rendered.contains("SEKRIT"),
+                    "{rendered}"
+                );
+                assert!(!rendered.contains("idp.example"), "{rendered}");
+            }
+            assert!(error.to_string().contains(reason), "{issuer}: {error}");
         }
     }
 
