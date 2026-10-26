@@ -116,7 +116,9 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
 - **Scope-map correctness is the operator's job (T13).** A mapping that grants `["*"]` to a
   broad IdP group grants it to every member (write tools stay excluded from the wildcard).
   Revocation is the IdP's `exp`; there is no server-side revocation list. Write tools
-  named in an entry are callable by every token that matches it. `actor_type: "human"` is
+  named in an entry are callable by every token that matches it, unless that token also
+  matches an entry whose tools are `["*"]`: the union is then the wildcard, which excludes
+  write tools. `actor_type: "human"` is
   refused, so OAuth callers are never token-asserted human approvers. The audience must be
   the resource's own, not an OIDC login client's id, or that client's ID tokens become
   bearers (a body `typ: "ID"` is refused, other ID tokens are not).

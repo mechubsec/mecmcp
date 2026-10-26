@@ -11,7 +11,10 @@ alongside the static tokens it already has.
 > **Rollback break.** Once an OAuth caller has created a change set, a pre-0.29 binary
 > refuses the change-set state file (`unknown variant "oauth"`). Snapshot the guest (or copy
 > the state file) before upgrading; to roll back, stop the server, restore that pre-upgrade
-> state file, then start the old binary. Change sets created after the upgrade are lost.
+> state file, then start the old binary. Restoring it discards **all** change-set state
+> since the snapshot, not only new change sets: approvals, cancellations, apply statuses
+> and operation records of existing change sets rewind too, while device changes applied
+> in that window stay applied. Reconcile against the devices before restarting.
 
 ## 1. What this is, and is not
 
@@ -65,7 +68,8 @@ concurrent-verification limit (32) are not flags.
    differ from the approver-assertion audience. Turn on `--oauth-require-at-jwt-typ` if
    your IdP supports it.
 3. **Claims.** The IdP must emit `iss`, `sub`, `exp`, `iat`, `jti`, a `scope` claim
-   (space-delimited; `scp` is read when `scope` is absent) and `client_id` (or `azp`,
+   (a space-delimited string; an array there grants nothing; `scp`, a string or an array,
+   is read when `scope` is absent) and `client_id` (or `azp`,
    which Keycloak emits). These are RFC 9068 access-token claims; `jti` and a client id
    are required.
 4. **Roles/groups** as a **top-level** claim named by `--oauth-role-claim` (default
@@ -95,7 +99,8 @@ an error without them):
 --oauth-require-at-jwt-typ
 ```
 
-- `--oauth-issuer`: https; compared byte-for-byte with `iss`, so write it exactly as the IdP issues it.
+- `--oauth-issuer`: https with a host, and no userinfo, query or fragment; compared
+  byte-for-byte with `iss`, so write it exactly as the IdP issues it.
 - `--oauth-resource`: https, or http for a loopback host only. It must already be
   canonical, and the error shows the canonical form. A bare origin canonicalises to
   `https://host/` **with the trailing slash**, and that is then the audience.
@@ -142,11 +147,13 @@ Lives on the server like `tokens.json`; a token cannot name its own authority. M
   values match, exact string match only.
 - **Unmapped grants nothing.** There is no default entry and no implicit wildcard; `["*"]`
   is a wildcard only where you write it. A scope key may not be `*`.
-- Scope keys must be RFC 6749 scope-tokens (printable ASCII, no space, `"` or `\`).
+- Scope keys must be RFC 6749 scope-tokens (printable ASCII, no space, `"` or `\`) of
+  1-128 bytes; a longer key refuses the whole file at load.
 - A token that matches nothing, or whose union grants no tools, is refused with **403**.
 - **Wildcard never grants write tools.** `"tools": ["*"]` allows every non-write tool.
-  Combining it with a scope that names a write tool does not widen it: write tools are
-  excluded from the wildcard, so name them explicitly in an entry that has no `"*"`.
+  The union with a wildcard is the wildcard, so a token that matches **any** `["*"]` entry
+  loses the write tools named in its other entries. A token that must write may match
+  only entries without `"*"`.
 - At most 64 scopes are read from a token; any beyond that are silently dropped.
 - Role keys are 1-128 bytes of printable ASCII (spaces allowed, e.g. `Domain Admins`).
 - `actor_type` (`agent` or `unknown`) is asserted by the file for every OAuth caller. The
@@ -186,8 +193,10 @@ Every refusal logs a reason code (`oauth_rejected` for 401/403, `oauth_unavailab
 | `busy` | all 32 verification permits in use (503) |
 
 Audit events for the auth decision use component `oauth`, operation `authenticate`.
-Later events for an OAuth caller carry `caller=oauth:<escaped issuer>:<escaped subject>`
-plus `oauth_issuer`, `oauth_subject` and `oauth_client_id` (empty for static-token callers).
+Per-call audit records (`AuditScope`) for an OAuth caller carry
+`caller=oauth:<escaped issuer>:<escaped subject>` plus `oauth_issuer`, `oauth_subject` and
+`oauth_client_id` (empty for static-token callers). Operational `audit`-target events
+(sink flush, startup warnings) do not carry these fields.
 
 ## 6. Security properties and limits
 
@@ -205,7 +214,8 @@ plus `oauth_issuer`, `oauth_subject` and `oauth_client_id` (empty for static-tok
 - **Write tools are granted by the scope map.** An OAuth caller gets exactly the tools its
   entries name, **write tools included** (e.g. `load_and_commit_config` above), so map
   write tools as carefully as you would grant them in `tokens.json`. A `["*"]` wildcard
-  never grants write tools; name them in an entry without `"*"`. The exception: OAuth
+  never grants write tools, and a token that also matches a wildcard entry loses its named
+  write tools (section 4). The exception: OAuth
   callers hold **no vendor grant**, so grant-gated operations (e.g. PAN-OS XPath writes,
   Mist org/site writes) need a static token. They also cannot bind a verified approver, so
   they cannot approve under `--require-verified-approver`.
@@ -238,4 +248,5 @@ the IdP once before relying on it.
 
 Before upgrading, snapshot the guest or copy the change-set state file. Rolling back to a
 pre-0.29 binary after an OAuth caller has created a change set requires restoring that
-pre-upgrade state file (see the rollback break at the top).
+pre-upgrade state file, which rewinds all change-set state since the snapshot (see the
+rollback break at the top).

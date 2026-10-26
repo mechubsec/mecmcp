@@ -37,7 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > set, a pre-0.29 binary refuses the change-set state file
 > (`invalid changeset state JSON: unknown variant "oauth"`). To roll back: stop the server,
 > restore the pre-upgrade state file (or guest snapshot), then start the old binary.
-> Change sets created after the upgrade are lost.
+> That discards all change-set state since the snapshot: new change sets, and the
+> approvals, cancellations, apply statuses and operation records of existing ones.
+> Device changes applied in that window are not reverted; reconcile before restarting.
 >
 > **Upgrade break: rename any static token named `oauth:*` before upgrading.** The
 > `oauth:` prefix is now reserved, and a token file containing such a name fails to load
@@ -66,9 +68,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Audit line format (every server, feature on or off):** every audit event gains
-  `oauth_issuer=`, `oauth_subject=` and `oauth_client_id=` fields, empty for static-token
-  callers. Update log parsers that match the whole line.
+- **Audit line format (every server, feature on or off):** every per-call audit record
+  (`AuditScope::emit`) gains `oauth_issuer=`, `oauth_subject=` and `oauth_client_id=`
+  fields, empty for static-token callers. Operational `target: "audit"` events (sink
+  flush, startup and redaction warnings) are unchanged and do not carry them, so parsers
+  must not require the fields on every audit line.
 - **Change-set state:** a change set created by an OAuth caller persists a
   `PersistedPrincipal::OAuth` attribution that pre-0.29 binaries cannot read (see the
   rollback break above).
