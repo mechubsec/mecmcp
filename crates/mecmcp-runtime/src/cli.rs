@@ -464,6 +464,188 @@ pub enum VerifiedApproverArgsError {
     IncompatibleWithLabMode,
 }
 
+/// OAuth 2.1 resource-server flags, for a server to `#[command(flatten)]` into its own CLI
+/// (mecmcp#498).
+///
+/// Absent all of them a server behaves exactly as before. Kept off [`Cli`] for the reason
+/// [`ToolModeArgs`] is: a new `Cli` field would break consumers that build it by struct
+/// literal. This crate depends on neither `mecmcp-oidc` nor `mecmcp-transport`, so
+/// [`validate`](Self::validate) is string-level only; the authoritative (canonical) URI parse
+/// is `mecmcp_transport::OAuthResourceConfig::new`, which the server calls next and which
+/// refuses a non-canonical `--oauth-resource`. The verify timeout and permit count are not
+/// flags: the transport defaults apply.
+#[derive(Debug, Clone, clap::Args)]
+pub struct OAuthResourceArgs {
+    /// Issuer URL of the external authorization server (must be https). Tokens must carry
+    /// exactly this `iss`. Required with `--oauth-resource` and `--oauth-scope-map`.
+    #[arg(long)]
+    pub oauth_issuer: Option<String>,
+
+    /// This server's canonical resource URI (RFC 8707), e.g. `https://junos.lab.example/mcp`.
+    /// Becomes the required token audience, the metadata `resource`, and (by path) the
+    /// metadata route. https, or http for a loopback host only.
+    #[arg(long)]
+    pub oauth_resource: Option<String>,
+
+    /// JSON file mapping token scopes and roles to this server's tools and devices.
+    /// A token that maps to nothing is refused. See docs/OAUTH.md.
+    #[arg(long)]
+    pub oauth_scope_map: Option<PathBuf>,
+
+    /// Expected `aud`, when the IdP cannot emit the resource URI (it defaults to
+    /// `--oauth-resource`). Must be unique per server or tokens are not bound to one server.
+    #[arg(long)]
+    pub oauth_audience: Option<String>,
+
+    /// Top-level claim carrying role or group names.
+    #[arg(long, default_value = "roles")]
+    pub oauth_role_claim: String,
+
+    /// Require the RFC 9068 `typ: at+jwt` header on access tokens.
+    #[arg(long)]
+    pub oauth_require_at_jwt_typ: bool,
+}
+
+impl Default for OAuthResourceArgs {
+    /// OAuth off: every option absent, role claim at its default.
+    fn default() -> Self {
+        Self {
+            oauth_issuer: None,
+            oauth_resource: None,
+            oauth_scope_map: None,
+            oauth_audience: None,
+            oauth_role_claim: "roles".to_owned(),
+            oauth_require_at_jwt_typ: false,
+        }
+    }
+}
+
+/// Claims a role claim must not alias: identity, binding and scope claims the verifier
+/// already reads, which an IdP user could otherwise steer into the role set.
+const RESERVED_ROLE_CLAIMS: [&str; 14] = [
+    "sub",
+    "iss",
+    "aud",
+    "exp",
+    "nbf",
+    "iat",
+    "jti",
+    "scope",
+    "scp",
+    "client_id",
+    "azp",
+    "cnf",
+    "typ",
+    "act",
+];
+
+impl OAuthResourceArgs {
+    /// Whether any core OAuth flag was given (the three required ones).
+    #[must_use]
+    pub fn enabled(&self) -> bool {
+        self.oauth_issuer.is_some()
+            || self.oauth_resource.is_some()
+            || self.oauth_scope_map.is_some()
+    }
+
+    /// Whether `--oauth-audience` was set to something other than the resource URI.
+    #[must_use]
+    pub fn audience_differs_from_resource(&self) -> bool {
+        match (&self.oauth_audience, &self.oauth_resource) {
+            (Some(audience), Some(resource)) => audience != resource,
+            _ => false,
+        }
+    }
+
+    /// Cross-check the flags: all three core flags or none; modifiers only with them;
+    /// https issuer; https (or loopback http) resource; a sane role claim.
+    ///
+    /// # Errors
+    /// Returns the first rule violated.
+    pub fn validate(&self) -> Result<(), OAuthResourceArgsError> {
+        let modifier_given = self.oauth_require_at_jwt_typ
+            || self.oauth_audience.is_some()
+            || self.oauth_role_claim != "roles";
+        if !self.enabled() {
+            if modifier_given {
+                return Err(OAuthResourceArgsError::FlagWithoutOAuth);
+            }
+            return Ok(());
+        }
+        let missing: Vec<&'static str> = [
+            ("--oauth-issuer", self.oauth_issuer.is_none()),
+            ("--oauth-resource", self.oauth_resource.is_none()),
+            ("--oauth-scope-map", self.oauth_scope_map.is_none()),
+        ]
+        .into_iter()
+        .filter_map(|(flag, absent)| absent.then_some(flag))
+        .collect();
+        if !missing.is_empty() {
+            return Err(OAuthResourceArgsError::Incomplete(missing));
+        }
+        if !self
+            .oauth_issuer
+            .as_deref()
+            .is_some_and(|issuer| issuer.starts_with("https://"))
+        {
+            return Err(OAuthResourceArgsError::IssuerNotHttps);
+        }
+        if !self
+            .oauth_resource
+            .as_deref()
+            .is_some_and(is_https_or_loopback_http)
+        {
+            return Err(OAuthResourceArgsError::ResourceNotHttps);
+        }
+        if self.oauth_role_claim.is_empty()
+            || RESERVED_ROLE_CLAIMS.contains(&self.oauth_role_claim.as_str())
+        {
+            return Err(OAuthResourceArgsError::BadRoleClaim);
+        }
+        Ok(())
+    }
+}
+
+/// `https://...`, or `http://` followed by exactly a loopback host (optionally `:port` and/or a path).
+fn is_https_or_loopback_http(uri: &str) -> bool {
+    if uri.starts_with("https://") {
+        return true;
+    }
+    ["http://localhost", "http://127.0.0.1", "http://[::1]"]
+        .iter()
+        .any(|prefix| {
+            uri.strip_prefix(prefix).is_some_and(|rest| {
+                rest.is_empty() || rest.starts_with(':') || rest.starts_with('/')
+            })
+        })
+}
+
+/// An `OAuthResourceArgs` combination with no safe interpretation.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum OAuthResourceArgsError {
+    /// Some, but not all, of the three required flags were given.
+    #[error("OAuth resource-server mode needs --oauth-issuer, --oauth-resource and --oauth-scope-map together; missing {}", .0.join(", "))]
+    Incomplete(Vec<&'static str>),
+    /// An OAuth modifier flag was given with no OAuth configuration to modify.
+    #[error(
+        "--oauth-audience, --oauth-role-claim and --oauth-require-at-jwt-typ have no effect without --oauth-issuer, --oauth-resource and --oauth-scope-map"
+    )]
+    FlagWithoutOAuth,
+    /// The issuer is not https.
+    #[error("--oauth-issuer must be an https URL")]
+    IssuerNotHttps,
+    /// The resource is neither https nor loopback http.
+    #[error(
+        "--oauth-resource must be an https URI (http is allowed only for localhost, 127.0.0.1 or [::1])"
+    )]
+    ResourceNotHttps,
+    /// The role claim is empty or names an identity/binding/scope claim.
+    #[error(
+        "--oauth-role-claim must be non-empty and must not be a registered claim (sub, iss, aud, exp, nbf, iat, jti, scope, scp, client_id, azp, cnf, typ, act)"
+    )]
+    BadRoleClaim,
+}
+
 /// SSDF evidence-pipeline switches, defined once and flattened into every
 /// server's CLI.
 ///
@@ -1663,6 +1845,181 @@ mod composition_tests {
             VerifiedApproverArgs::default()
                 .validate(false, false)
                 .is_ok()
+        );
+    }
+
+    #[derive(Debug, Parser)]
+    struct OAuthTestCli {
+        #[command(flatten)]
+        oauth: OAuthResourceArgs,
+    }
+
+    fn parse_oauth(extra: &[&str]) -> OAuthResourceArgs {
+        let mut argv = vec!["test"];
+        argv.extend_from_slice(extra);
+        OAuthTestCli::parse_from(argv).oauth
+    }
+
+    const OAUTH_FULL: [&str; 6] = [
+        "--oauth-issuer",
+        "https://idp.example/realms/lab",
+        "--oauth-resource",
+        "https://junos.example/mcp",
+        "--oauth-scope-map",
+        "/etc/junosmcp/oauth-scopes.json",
+    ];
+
+    #[test]
+    fn oauth_args_default_to_off_and_validate() {
+        for args in [parse_oauth(&[]), OAuthResourceArgs::default()] {
+            assert!(!args.enabled());
+            assert_eq!(args.validate(), Ok(()));
+            assert_eq!(args.oauth_role_claim, "roles");
+        }
+    }
+
+    #[test]
+    fn a_complete_oauth_configuration_validates() {
+        let args = parse_oauth(&OAUTH_FULL);
+        assert!(args.enabled());
+        assert_eq!(args.validate(), Ok(()));
+        assert!(!args.audience_differs_from_resource());
+    }
+
+    #[test]
+    fn a_partial_oauth_configuration_names_what_is_missing() {
+        assert_eq!(
+            parse_oauth(&["--oauth-issuer", "https://idp.example"]).validate(),
+            Err(OAuthResourceArgsError::Incomplete(vec![
+                "--oauth-resource",
+                "--oauth-scope-map"
+            ]))
+        );
+        assert_eq!(
+            parse_oauth(&["--oauth-scope-map", "/x.json"]).validate(),
+            Err(OAuthResourceArgsError::Incomplete(vec![
+                "--oauth-issuer",
+                "--oauth-resource"
+            ]))
+        );
+    }
+
+    #[test]
+    fn oauth_modifier_flags_without_the_core_trio_are_errors() {
+        for flag in [
+            vec!["--oauth-require-at-jwt-typ"],
+            vec!["--oauth-audience", "x"],
+            vec!["--oauth-role-claim", "groups"],
+        ] {
+            assert_eq!(
+                parse_oauth(&flag).validate(),
+                Err(OAuthResourceArgsError::FlagWithoutOAuth),
+                "{flag:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_oauth_issuer_must_be_https() {
+        let mut argv = OAUTH_FULL.to_vec();
+        argv[1] = "http://idp.example";
+        assert_eq!(
+            parse_oauth(&argv).validate(),
+            Err(OAuthResourceArgsError::IssuerNotHttps)
+        );
+    }
+
+    #[test]
+    fn the_oauth_resource_must_be_https_except_for_loopback() {
+        for ok in [
+            "https://junos.example/mcp",
+            "http://localhost:8080/mcp",
+            "http://127.0.0.1:8080/mcp",
+            "http://[::1]:8080/mcp",
+            "http://localhost/mcp",
+        ] {
+            let mut argv = OAUTH_FULL.to_vec();
+            argv[3] = ok;
+            assert_eq!(parse_oauth(&argv).validate(), Ok(()), "{ok}");
+        }
+        for bad in [
+            "http://junos.example/mcp",
+            "http://localhost.evil.example/mcp",
+            "http://127.0.0.1.evil.example/mcp",
+            "ftp://junos.example/mcp",
+            "junos.example/mcp",
+        ] {
+            let mut argv = OAUTH_FULL.to_vec();
+            argv[3] = bad;
+            assert_eq!(
+                parse_oauth(&argv).validate(),
+                Err(OAuthResourceArgsError::ResourceNotHttps),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_oauth_role_claim_must_not_be_empty_or_a_registered_claim() {
+        for bad in ["", "sub", "iss", "scope", "azp"] {
+            let mut argv = OAUTH_FULL.to_vec();
+            argv.extend(["--oauth-role-claim", bad]);
+            assert_eq!(
+                parse_oauth(&argv).validate(),
+                Err(OAuthResourceArgsError::BadRoleClaim),
+                "{bad:?}"
+            );
+        }
+        let mut argv = OAUTH_FULL.to_vec();
+        argv.extend(["--oauth-role-claim", "groups"]);
+        assert_eq!(parse_oauth(&argv).validate(), Ok(()));
+    }
+
+    #[test]
+    fn an_oauth_audience_override_is_reported_so_the_server_can_warn() {
+        let mut argv = OAUTH_FULL.to_vec();
+        argv.extend(["--oauth-audience", "junos-client"]);
+        let args = parse_oauth(&argv);
+        assert_eq!(args.validate(), Ok(()));
+        assert!(args.audience_differs_from_resource());
+    }
+
+    #[test]
+    fn oauth_args_flatten_alongside_the_shared_cli_and_verified_approver_args() {
+        #[derive(Debug, Parser)]
+        struct ServerCli {
+            #[command(flatten)]
+            shared: Cli,
+            #[command(flatten)]
+            verified_approver: VerifiedApproverArgs,
+            #[command(flatten)]
+            oauth: OAuthResourceArgs,
+        }
+        let parsed: ParsedCli<ServerCli> = try_parse_from(
+            "consumer-mcp",
+            "9.9.9",
+            [
+                "consumer-mcp",
+                "--oidc-issuer",
+                "https://approver-idp.example",
+                "--oidc-audience",
+                "a",
+                "--oauth-issuer",
+                "https://idp.example",
+                "--oauth-resource",
+                "https://h.example/mcp",
+                "--oauth-scope-map",
+                "/m.json",
+            ],
+        )
+        .expect("the --oidc-* and --oauth-* groups must not collide");
+        assert_eq!(
+            parsed.cli.oauth.oauth_issuer.as_deref(),
+            Some("https://idp.example")
+        );
+        assert_eq!(
+            parsed.cli.verified_approver.oidc_issuer.as_deref(),
+            Some("https://approver-idp.example")
         );
     }
 }
