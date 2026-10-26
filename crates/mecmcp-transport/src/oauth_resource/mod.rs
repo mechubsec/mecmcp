@@ -115,10 +115,11 @@ impl OAuthResourceConfig {
     }
 
     /// How many verifications may be in flight at once; beyond that a request is refused
-    /// as unavailable rather than queued (default 32, minimum 1).
+    /// as unavailable rather than queued (default 32, clamped to 1..=`Semaphore::MAX_PERMITS`).
     #[must_use]
     pub fn with_max_concurrent_verifications(mut self, permits: usize) -> Self {
-        self.max_concurrent_verifications = permits.max(1);
+        // Tokio's Semaphore::new panics above MAX_PERMITS; "unlimited" must not crash startup.
+        self.max_concurrent_verifications = permits.clamp(1, Semaphore::MAX_PERMITS);
         self
     }
 
@@ -399,9 +400,16 @@ mod tests {
         assert_eq!(config.max_concurrent_verifications(), 32);
         assert_eq!(
             config
+                .clone()
                 .with_max_concurrent_verifications(0)
                 .max_concurrent_verifications(),
             1
+        );
+        assert_eq!(
+            config
+                .with_max_concurrent_verifications(usize::MAX)
+                .max_concurrent_verifications(),
+            Semaphore::MAX_PERMITS
         );
     }
 
