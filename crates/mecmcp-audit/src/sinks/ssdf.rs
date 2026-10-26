@@ -198,6 +198,11 @@ impl DeliveryReport {
 pub struct ProducedHead(String);
 
 impl ProducedHead {
+    /// For sibling sinks whose outbox is likewise append-only.
+    pub(crate) fn new(head_hash: String) -> Self {
+        Self(head_hash)
+    }
+
     /// The hash itself.
     #[must_use]
     pub fn as_str(&self) -> &str {

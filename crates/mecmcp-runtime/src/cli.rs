@@ -801,13 +801,12 @@ impl EvidenceArgs {
     /// pipeline spools evidence it can never deliver.
     pub fn into_config(&self) -> Result<Option<mecmcp_audit::EvidenceConfig>, EvidenceArgsError> {
         let Some(endpoint) = self.ssdf_audit_endpoint.clone() else {
-            // The forward sink rides alongside the SSDF pipeline -- the
-            // recorder, chain identity and resume logic all anchor on SSDF --
-            // so an operator who set `--audit-forward-endpoint` alone asked
-            // for something this cannot build. Returning `Ok(None)` here
-            // would silently drop a destination they explicitly configured,
-            // which is exactly what issue #158's fix to the audit-file sink
-            // exists to avoid elsewhere in this crate.
+            // This entry point yields an `EvidenceConfig`, which is the SSDF
+            // pipeline; a forward-only setup needs
+            // [`into_pipeline_config`](Self::into_pipeline_config). Returning
+            // `Ok(None)` here would silently drop a destination the operator
+            // explicitly configured, which is exactly what issue #158's fix to
+            // the audit-file sink exists to avoid elsewhere in this crate.
             if self.audit_forward_endpoint.is_some() {
                 return Err(EvidenceArgsError::ForwardWithoutSsdf);
             }
@@ -878,6 +877,51 @@ impl EvidenceArgs {
             signing_key_path: self.ssdf_audit_signing_key.clone(),
             forward_sink,
         }))
+    }
+
+    /// Build whichever evidence pipeline the flags describe, or `None` when
+    /// neither endpoint was given.
+    ///
+    /// Superset of [`into_config`](Self::into_config): with
+    /// `--ssdf-audit-endpoint` it returns the same SSDF pipeline (plus the
+    /// optional forward copy); with only `--audit-forward-endpoint` it returns
+    /// a forward-only pipeline (mecmcp#378, option 2), fail-closed on the
+    /// forward spool. Chain identity (`--ssdf-audit-server-id`, validated the
+    /// same way), signing key, segment size and interval are shared; the
+    /// forward outbox and ledger flags are required. Start the result with
+    /// `EvidenceService::start_pipeline`.
+    ///
+    /// # Errors
+    ///
+    /// As [`into_config`](Self::into_config), plus a missing or unusable
+    /// server id when only the forward endpoint is set.
+    pub fn into_pipeline_config(
+        &self,
+    ) -> Result<Option<mecmcp_audit::EvidencePipelineConfig>, EvidenceArgsError> {
+        if self.ssdf_audit_endpoint.is_some() {
+            return Ok(self
+                .into_config()?
+                .map(mecmcp_audit::EvidencePipelineConfig::Ssdf));
+        }
+        let Some(forward) = self.forward_config()? else {
+            return Ok(None);
+        };
+        let server_id = self
+            .ssdf_audit_server_id
+            .clone()
+            .ok_or(EvidenceArgsError::ForwardOnlyMissingServerId)?;
+        mecmcp_audit::evidence::validate_server_id(&server_id)
+            .map_err(EvidenceArgsError::InvalidServerId)?;
+        Ok(Some(mecmcp_audit::EvidencePipelineConfig::ForwardOnly(
+            mecmcp_audit::ForwardOnlyConfig {
+                server_id,
+                run_id: new_run_id(),
+                records_per_segment: self.ssdf_audit_records_per_segment,
+                delivery_interval: std::time::Duration::from_secs(self.ssdf_audit_interval_secs),
+                forward,
+                signing_key_path: self.ssdf_audit_signing_key.clone(),
+            },
+        )))
     }
 
     /// The trust anchor to give the forward sink's transport, if one was
@@ -978,12 +1022,20 @@ pub enum EvidenceArgsError {
     /// A credential file failed its checks — wrong mode, wrong owner, symlink.
     #[error("credential file rejected (must be a regular file, 0600, owned by this user): {0}")]
     Credential(#[from] mecmcp_secret::SecretError),
-    /// `--audit-forward-endpoint` was set without `--ssdf-audit-endpoint`.
+    /// `--audit-forward-endpoint` was set without `--ssdf-audit-endpoint`, on
+    /// the SSDF-only entry point.
     #[error(
-        "--audit-forward-endpoint requires --ssdf-audit-endpoint: the forward sink ships \
-         alongside the SSDF evidence pipeline, not instead of it"
+        "--audit-forward-endpoint without --ssdf-audit-endpoint is a forward-only pipeline, \
+         which `EvidenceArgs::into_config` cannot express: use `into_pipeline_config`"
     )]
     ForwardWithoutSsdf,
+    /// A forward-only pipeline was configured without a chain identity.
+    #[error(
+        "--audit-forward-endpoint without --ssdf-audit-endpoint requires \
+         --ssdf-audit-server-id; it keys the hash chain, and a value that drifts starts a \
+         second root that verifies as a valid chain"
+    )]
+    ForwardOnlyMissingServerId,
 }
 
 /// Read a password file through the workspace's canonical secret loader.

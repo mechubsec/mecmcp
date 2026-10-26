@@ -27,6 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [Unreleased]
+
+### Added
+
+- **Forward-only evidence pipeline** (mecmcp#378, option 2): operators without SSDF can now
+  ship the hash-chained evidence log off-host through `--audit-forward-endpoint` alone.
+  Additive API: `EvidenceArgs::into_pipeline_config` (returns the SSDF pipeline as before, or a
+  forward-only one), `EvidenceService::start_pipeline` / `start_forward_only`,
+  `ForwardOnlyConfig`, `EvidencePipelineConfig`, `ForwardSink::produced_head` and
+  `EvidenceRecorder::spooling_to_forward_only`. `--ssdf-audit-server-id` (still required),
+  signing key, segment size and interval are shared. The chain resumes across restarts from
+  the append-only forward outbox, and the recorder is **fail-closed** on the forward spool
+  (with SSDF the forward copy stays best-effort). `EvidenceArgs::into_config` is unchanged and
+  still refuses a forward endpoint without SSDF; consumers adopt forward-only by switching to
+  `into_pipeline_config` + `start_pipeline`.
+
 ## [0.29.0] - 2026-10-25
 
 > **Breaking release.** The public API changes below break

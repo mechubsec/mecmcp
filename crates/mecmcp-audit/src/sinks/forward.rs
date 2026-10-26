@@ -23,6 +23,15 @@
 //! against tampering. Operators who need SSDF's exact guarantees use SSDF;
 //! this exists for everyone else who currently has nothing off-host at all.
 //!
+//! ## Forward-only mode
+//!
+//! SSDF is not required (mecmcp#378, option 2).
+//! [`EvidenceService::start_forward_only`](crate::EvidenceService::start_forward_only)
+//! makes this sink the pipeline's only destination, so operators without SSDF
+//! still get the chained log off-host. There the forward spool is the sole
+//! durable record, so the recorder is fail-closed on it, and the chain resumes
+//! from [`ForwardSink::produced_head`]. Alongside SSDF it stays best-effort.
+//!
 //! ## Background delivery
 //!
 //! As [`SsdfSink`](crate::sinks::ssdf::SsdfSink): no background thread.
@@ -31,7 +40,7 @@
 
 use crate::evidence::ClosedSegment;
 use crate::sinks::delivery_ledger::{DeliveryLedger, DeliveryStatus, SegmentId};
-use crate::sinks::ssdf::{HttpRequest, HttpTransport, dedup_token};
+use crate::sinks::ssdf::{HttpRequest, HttpTransport, ProducedHead, dedup_token};
 use mecmcp_secret::OutboundSecret;
 use std::fs::{File, OpenOptions, Permissions};
 use std::io::{BufRead, BufReader, Write};
@@ -178,8 +187,32 @@ impl ForwardSink {
         Ok(())
     }
 
+    /// The head of the newest segment this writer has **produced**, for
+    /// `server_id`, read from the outbox.
+    ///
+    /// Mirrors [`SsdfSink::produced_head`](crate::sinks::ssdf::SsdfSink::produced_head):
+    /// the outbox is append-only and never pruned (delivery is tracked in the
+    /// separate ledger), so file order is production order and the last
+    /// matching line is the newest segment, delivered or not. It is what a
+    /// forward-only pipeline resumes from; `None` means nothing produced here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ForwardSinkError`] if the outbox cannot be read or decoded.
+    pub fn produced_head(&self, server_id: &str) -> Result<Option<ProducedHead>, ForwardSinkError> {
+        Ok(self
+            .load_outbox()?
+            .into_iter()
+            .rfind(|segment| segment.server_id == server_id)
+            .map(|segment| ProducedHead::new(segment.head_hash)))
+    }
+
     /// Attempt delivery of every segment the ledger does not already show as
     /// delivered.
+    ///
+    /// A segment skipped because its backoff has not elapsed is still
+    /// undelivered, so it is counted in `failed`; `degraded()` clears only once
+    /// the backlog is actually delivered.
     ///
     /// # Errors
     ///
@@ -237,6 +270,10 @@ impl ForwardSink {
                     // parsable timestamp.
                     .unwrap_or(true);
                 if !due {
+                    // Still failing, merely not due: count it so a pass that
+                    // skips every backed-off segment does not read as healthy
+                    // (forward-only `delivery_degraded` is derived from this).
+                    report.failed += 1;
                     continue;
                 }
             }
@@ -373,13 +410,15 @@ mod tests {
 
     impl HttpTransport for MockTransport {
         fn send(&self, request: &HttpRequest) -> Result<String, ForwardSinkError> {
-            if self.should_fail {
-                return Err(ForwardSinkError::Http("mock transport failure".to_string()));
-            }
+            // Record every attempt, failed or not, so a test can prove whether
+            // a pass actually tried to send.
             self.requests
                 .lock()
                 .expect("mock mutex not poisoned")
                 .push(request.clone());
+            if self.should_fail {
+                return Err(ForwardSinkError::Http("mock transport failure".to_string()));
+            }
             Ok(String::new())
         }
     }
@@ -509,6 +548,25 @@ mod tests {
         assert_eq!(report.failed, 1);
     }
 
+    /// A pass that skips a still-failing segment (backoff not elapsed) must not
+    /// report healthy: forward-only `delivery_degraded` is derived from it.
+    #[test]
+    fn a_segment_skipped_in_backoff_still_counts_as_failed() {
+        let dir = TempDir::new().unwrap();
+        let mut config = make_test_config(&dir, "http://127.0.0.1:9/audit");
+        config.initial_backoff = Duration::from_secs(3600);
+        config.max_backoff = Duration::from_secs(3600);
+        let sink =
+            ForwardSink::new_with_transport(config, Arc::new(MockTransport::failing())).unwrap();
+        sink.spool(make_test_segment(0)).unwrap();
+        assert_eq!(sink.attempt_delivery().unwrap().failed, 1);
+
+        let second = sink.attempt_delivery().unwrap();
+
+        assert_eq!(second.delivered, 0);
+        assert!(second.degraded(), "the backlog is still undelivered");
+    }
+
     #[test]
     fn a_stalled_run_does_not_block_later_segments() {
         let dir = TempDir::new().unwrap();
@@ -543,7 +601,7 @@ mod tests {
         config.initial_backoff = Duration::from_secs(60);
         config.max_backoff = Duration::from_secs(60);
         let failing = Arc::new(MockTransport::failing());
-        let sink = ForwardSink::new_with_transport(config, failing).unwrap();
+        let sink = ForwardSink::new_with_transport(config, failing.clone()).unwrap();
 
         for seq in 0..10 {
             sink.spool(make_test_segment(seq)).unwrap();
@@ -556,11 +614,16 @@ mod tests {
         let second = sink.attempt_delivery().unwrap();
         let elapsed = started.elapsed();
 
+        // Not re-attempted -- the transport saw no new send -- but still
+        // counted as failed: the backlog is undelivered, so the pass must not
+        // look healthy.
         assert_eq!(
-            second.delivered + second.failed,
-            0,
-            "no segment is due for retry yet, so none should be re-attempted"
+            failing.requests().len(),
+            10,
+            "no segment is due: zero new sends"
         );
+        assert_eq!(second.delivered, 0);
+        assert_eq!(second.failed, 10, "skipped segments are still failing");
         assert!(
             elapsed < Duration::from_secs(5),
             "a pass over segments still within their backoff window must not block: took {elapsed:?}"

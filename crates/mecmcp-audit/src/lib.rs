@@ -43,7 +43,7 @@ pub use schema::{AuditOutcome, AuditValue};
 pub use scope::{
     AuditScope, DEFAULT_DURATION_METRIC, duration_metric_name, install_duration_metric_name,
 };
-pub use service::{EvidenceConfig, EvidenceService};
+pub use service::{EvidenceConfig, EvidencePipelineConfig, EvidenceService, ForwardOnlyConfig};
 pub use sinks::{
     DeliveryLedger, DeliveryReport, DeliveryStatus, ForwardSink, ForwardSinkConfig,
     ForwardSinkError, ProducedHead, SsdfSink, SsdfSinkConfig, SsdfSinkError,
