@@ -356,6 +356,14 @@ impl<G: Grant> BearerBoundary<G> {
         self
     }
 
+    /// The metadata router to merge outside the boundary, when OAuth mode is on.
+    #[cfg(feature = "oauth-resource")]
+    pub(crate) fn oauth_metadata_router(&self) -> Option<Router> {
+        self.oauth
+            .as_ref()
+            .map(|resource| resource.metadata_router())
+    }
+
     /// Install a synchronous scope preflight.
     ///
     /// The preflight runs after authentication but before the request reaches

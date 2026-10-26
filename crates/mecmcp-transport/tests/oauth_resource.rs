@@ -516,9 +516,13 @@ use axum::{
 };
 use mecmcp_auth::{BearerSyntax, CallerCtx};
 use mecmcp_transport::{
-    BearerAuthenticator, BearerBoundary, BearerResponseProfile, BoundaryAccounting, LimitsConfig,
-    apply_bearer_boundary,
+    BearerAuthenticator, BearerBoundary, BearerResponseProfile, BoundaryAccounting,
+    HostOriginPolicy, HttpTransportConfig, LimitsConfig, TransportIdentity, apply_bearer_boundary,
+    build_streamable_http_router, test_harness::serve_on_loopback,
 };
+use rmcp::ServerHandler;
+use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
+use tokio_util::sync::CancellationToken;
 use tower::ServiceExt as _;
 
 const STATIC_TOKEN: &str = "static-secret";
@@ -752,4 +756,91 @@ async fn without_the_resource_installed_a_jwt_is_just_an_unknown_token() {
     let (status, challenge, _, _) = call(&app, Some(token.as_str())).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert!(!challenge.expect("challenge").contains("resource_metadata"));
+}
+
+#[derive(Clone)]
+struct StubServer;
+impl ServerHandler for StubServer {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("stub", "0.1"))
+    }
+}
+
+/// Raw HTTP/1.1 so the Host header is exactly what the test says it is.
+fn raw_get(address: std::net::SocketAddr, path: &str, host: &str) -> (u16, String) {
+    use std::io::{Read as _, Write as _};
+    let mut stream = std::net::TcpStream::connect(address).expect("connect");
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    )
+    .expect("write");
+    let mut response = String::new();
+    stream.read_to_string(&mut response).expect("read");
+    let status = response
+        .split(' ')
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .expect("status line");
+    (status, response)
+}
+
+/// Metadata is outside the bearer boundary but inside Host/Origin validation; `/mcp` is not
+/// opened up by it.
+#[tokio::test]
+async fn the_assembled_router_serves_metadata_unauthenticated_and_guards_mcp() {
+    let key = generate_test_key(KID);
+    let (resource, _) = resource_for("http://127.0.0.1/mcp", &key);
+    let authenticator = BearerAuthenticator::<TestGrant>::new(BearerSyntax::Strict, |_| None);
+    let boundary = BearerBoundary::new(authenticator, BearerResponseProfile::detailed("stub"))
+        .with_oauth_resource(Arc::new(resource));
+    let shutdown = CancellationToken::new();
+    let config = HttpTransportConfig::authenticated(
+        TransportIdentity::new("stubmcp", "stub", "stub", ["device"]),
+        LimitsConfig::default(),
+        HostOriginPolicy::enforced(Vec::<String>::new(), Vec::<String>::new()),
+        shutdown.clone(),
+        boundary,
+    );
+    let plan = build_streamable_http_router(|| Ok::<_, std::io::Error>(StubServer), config)
+        .expect("router builds");
+    let served = serve_on_loopback(plan).await;
+    let address = served.address;
+
+    let (metadata, foreign_host, mcp) = tokio::task::spawn_blocking(move || {
+        let path = "/.well-known/oauth-protected-resource/mcp";
+        let metadata = raw_get(address, path, &address.to_string());
+        let foreign_host = raw_get(address, path, "evil.example");
+        let mcp = raw_get(address, "/mcp", &address.to_string());
+        (metadata, foreign_host, mcp)
+    })
+    .await
+    .expect("blocking task");
+
+    assert_eq!(
+        metadata.0, 200,
+        "metadata must be reachable without credentials: {}",
+        metadata.1
+    );
+    let document: Value =
+        serde_json::from_str(metadata.1.split("\r\n\r\n").nth(1).expect("body")).expect("JSON");
+    assert_eq!(document["resource"], "http://127.0.0.1/mcp");
+    assert_eq!(document["authorization_servers"], json!([ISSUER]));
+    assert_ne!(
+        foreign_host.0, 200,
+        "metadata must stay behind Host validation: {}",
+        foreign_host.1
+    );
+    assert_eq!(mcp.0, 401, "{}", mcp.1);
+    assert!(
+        mcp.1.contains(
+            r#"resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp""#
+        ),
+        "{}",
+        mcp.1
+    );
+
+    shutdown.cancel();
+    served.serving.await.expect("join").expect("clean shutdown");
 }

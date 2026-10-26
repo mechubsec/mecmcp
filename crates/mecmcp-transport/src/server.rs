@@ -486,6 +486,11 @@ where
     let limits = Arc::new(config.limits);
 
     let bearer_was_attached = config.bearer.is_some();
+    #[cfg(feature = "oauth-resource")]
+    let oauth_metadata = config
+        .bearer
+        .as_ref()
+        .and_then(BearerBoundary::oauth_metadata_router);
 
     // Apply bearer boundary if authentication is enabled.
     // This applies the complete authenticated stack: auth → token_rate →
@@ -522,6 +527,14 @@ where
     router = router.merge(crate::health::health_router(Arc::from(
         config.readiness_checks,
     )));
+
+    // RFC 9728 metadata is public by design: merged after the bearer boundary was applied
+    // to /mcp, so it is outside it, but before Host/Origin validation and the IP rate
+    // limit below, so it is inside those.
+    #[cfg(feature = "oauth-resource")]
+    if let Some(metadata) = oauth_metadata {
+        router = router.merge(metadata);
+    }
 
     // Apply Host/Origin validation to the entire router (covers /mcp, /metrics, and /healthz+/readyz).
     // This prevents DNS rebinding attacks where an attacker-controlled page
