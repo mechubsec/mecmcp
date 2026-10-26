@@ -210,6 +210,10 @@ impl ForwardSink {
     /// Attempt delivery of every segment the ledger does not already show as
     /// delivered.
     ///
+    /// A segment skipped because its backoff has not elapsed is still
+    /// undelivered, so it is counted in `failed`; `degraded()` clears only once
+    /// the backlog is actually delivered.
+    ///
     /// # Errors
     ///
     /// Returns [`ForwardSinkError`] if the outbox cannot be read.
@@ -266,6 +270,10 @@ impl ForwardSink {
                     // parsable timestamp.
                     .unwrap_or(true);
                 if !due {
+                    // Still failing, merely not due: count it so a pass that
+                    // skips every backed-off segment does not read as healthy
+                    // (forward-only `delivery_degraded` is derived from this).
+                    report.failed += 1;
                     continue;
                 }
             }
@@ -536,6 +544,25 @@ mod tests {
         let report = sink.attempt_delivery().unwrap();
         assert_eq!(report.delivered, 0);
         assert_eq!(report.failed, 1);
+    }
+
+    /// A pass that skips a still-failing segment (backoff not elapsed) must not
+    /// report healthy: forward-only `delivery_degraded` is derived from it.
+    #[test]
+    fn a_segment_skipped_in_backoff_still_counts_as_failed() {
+        let dir = TempDir::new().unwrap();
+        let mut config = make_test_config(&dir, "http://127.0.0.1:9/audit");
+        config.initial_backoff = Duration::from_secs(3600);
+        config.max_backoff = Duration::from_secs(3600);
+        let sink =
+            ForwardSink::new_with_transport(config, Arc::new(MockTransport::failing())).unwrap();
+        sink.spool(make_test_segment(0)).unwrap();
+        assert_eq!(sink.attempt_delivery().unwrap().failed, 1);
+
+        let second = sink.attempt_delivery().unwrap();
+
+        assert_eq!(second.delivered, 0);
+        assert!(second.degraded(), "the backlog is still undelivered");
     }
 
     #[test]
