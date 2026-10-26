@@ -143,8 +143,15 @@ Lives on the server like `tokens.json`; a token cannot name its own authority. M
 }
 ```
 
-- A token's authority is the **union** of every entry its `scope` values and role-claim
-  values match, exact string match only.
+- A token's **tools** are the **union** of every entry its `scope` values and role-claim
+  values match (exact string match only); its **devices** are the **intersection** of
+  those entries' device sets, with `["*"]` as the identity. One entry's tools never reach
+  another entry's devices: a token holding both `junos:read` and `junos:lab` above gets
+  `get_junos_config` and `load_and_commit_config` on `lab-srx1` **only**, not the write
+  tool on every device. The cost: such a token loses the reads outside the narrowest
+  device set, and disjoint device sets leave it **no devices** (its tools stay, every
+  device-addressed call is refused). Give distinct device reach to separate tokens (IdP
+  clients or scopes requested separately). A single matched entry is unaffected.
 - **Unmapped grants nothing.** There is no default entry and no implicit wildcard; `["*"]`
   is a wildcard only where you write it. A scope key may not be `*`.
 - Scope keys must be RFC 6749 scope-tokens (printable ASCII, no space, `"` or `\`) of
@@ -217,7 +224,9 @@ Per-call audit records (`AuditScope`) for an OAuth caller carry
   entries name, **write tools included** (e.g. `load_and_commit_config` above), so map
   write tools as carefully as you would grant them in `tokens.json`. A `"tools": ["*"]`
   wildcard never grants write tools, and a token that also matches an entry with `"*"` in
-  `tools` loses its named write tools (section 4); `"devices": ["*"]` does not. The exception: OAuth
+  `tools` loses its named write tools (section 4); `"devices": ["*"]` does not. Devices
+  intersect across matched entries, so a write entry is never widened to another entry's
+  devices. The exception: OAuth
   callers hold **no vendor grant**, so grant-gated operations (e.g. PAN-OS XPath writes,
   Mist org/site writes) need a static token. They also cannot bind a verified approver, so
   they cannot approve under `--require-verified-approver`.

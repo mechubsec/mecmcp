@@ -183,6 +183,12 @@ impl OAuthScopeMap {
 
     /// The authority for a token carrying these scopes and roles, or `None` if it maps to
     /// nothing (no entry matched, or the union grants no tools).
+    ///
+    /// Tools are the **union** of the matched entries; devices are their **intersection**
+    /// (`["*"]` is the identity). Unioning devices too would let one entry's tools reach
+    /// another entry's devices: read-on-`*` plus write-on-`lab` must not become
+    /// write-on-`*`. Disjoint device sets leave an empty device set: the token keeps its
+    /// tools but no device-addressed call is allowed (fail closed; not a refusal).
     #[must_use]
     pub fn map(&self, scopes: &[String], roles: &[String]) -> Option<MappedAuthority> {
         let matched: Vec<&GrantSpec> = scopes
@@ -194,10 +200,10 @@ impl OAuthScopeMap {
             return None;
         }
         let mut tools = ScopeSet::Allowlist(Vec::new());
-        let mut devices = ScopeSet::Allowlist(Vec::new());
+        let mut devices = ScopeSet::Wildcard;
         for spec in matched {
             tools = union(tools, &spec.tools);
-            devices = union(devices, &spec.devices);
+            devices = intersect(devices, &spec.devices);
         }
         // The union can exceed MAX_SCOPE_NAMES; refuse rather than truncate.
         if tools.is_empty()
@@ -240,6 +246,18 @@ fn union(accumulated: ScopeSet, next: &ScopeSet) -> ScopeSet {
     }
 }
 
+/// Intersection of two device grants; `Wildcard` is the identity.
+fn intersect(accumulated: ScopeSet, next: &ScopeSet) -> ScopeSet {
+    match (accumulated, next) {
+        (accumulated, ScopeSet::Wildcard) => accumulated,
+        (ScopeSet::Wildcard, next) => next.clone(),
+        (ScopeSet::Allowlist(mut names), ScopeSet::Allowlist(more)) => {
+            names.retain(|name| more.contains(name));
+            ScopeSet::Allowlist(names)
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -276,25 +294,56 @@ mod tests {
     }
 
     #[test]
-    fn scopes_and_roles_union() {
+    fn scopes_and_roles_union_tools_and_intersect_devices() {
         let authority = map()
-            .map(
-                &strings(&["junos:read", "junos:ops"]),
-                &strings(&["netops"]),
-            )
+            .map(&strings(&["junos:read"]), &strings(&["netops"]))
             .unwrap();
         assert_eq!(
             authority.tools,
-            ScopeSet::Allowlist(strings(&[
-                "get_junos_config",
-                "gather_device_facts",
-                "get_device_list"
-            ]))
+            ScopeSet::Allowlist(strings(&["get_junos_config", "get_device_list"]))
         );
-        assert_eq!(
-            authority.devices,
-            ScopeSet::Allowlist(strings(&["srx-1", "srx-2"]))
+        assert_eq!(authority.devices, ScopeSet::Allowlist(strings(&["srx-1"])));
+    }
+
+    /// (c) Disjoint explicit device sets intersect to no devices: the tools stay, but no
+    /// device-addressed call is allowed.
+    #[test]
+    fn disjoint_device_sets_leave_no_devices() {
+        let authority = map()
+            .map(&strings(&["junos:read", "junos:ops"]), &[])
+            .unwrap();
+        assert_eq!(authority.devices, ScopeSet::Allowlist(Vec::new()));
+        assert!(!authority.devices.allows("srx-1"));
+        assert!(!authority.devices.allows("srx-2"));
+    }
+
+    /// (a) read-on-every-device plus write-on-lab must not become write-on-every-device.
+    #[test]
+    fn a_write_entry_does_not_inherit_another_entrys_device_wildcard() {
+        let json = r#"{"version":1,"scopes":{
+            "junos:read":{"tools":["get_junos_config"],"devices":["*"]},
+            "junos:lab":{"tools":["load_and_commit_config"],"devices":["lab-srx1"]}}}"#;
+        let map = OAuthScopeMap::from_json(json.as_bytes()).unwrap();
+        let both = map
+            .map(&strings(&["junos:read", "junos:lab"]), &[])
+            .unwrap();
+        assert!(
+            both.tools
+                .allows_tool("load_and_commit_config", &["load_and_commit_config"])
         );
+        assert!(both.devices.allows("lab-srx1"));
+        assert!(!both.devices.allows("core-srx1"));
+    }
+
+    /// (b) Two all-device entries still reach every device.
+    #[test]
+    fn two_device_wildcards_stay_a_wildcard() {
+        let json = r#"{"version":1,"scopes":{
+            "a":{"tools":["get_junos_config"],"devices":["*"]},
+            "b":{"tools":["get_device_list"],"devices":["*"]}}}"#;
+        let map = OAuthScopeMap::from_json(json.as_bytes()).unwrap();
+        let both = map.map(&strings(&["a", "b"]), &[]).unwrap();
+        assert_eq!(both.devices, ScopeSet::Wildcard);
     }
 
     #[test]

@@ -56,7 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--oauth-issuer`, `--oauth-resource`, `--oauth-scope-map`, `--oauth-audience`,
   `--oauth-role-claim` and `--oauth-require-at-jwt-typ`. OAuth callers get exactly the
   tools their scope-map entries name, write tools included (a `"tools": ["*"]` wildcard never
-  grants write tools); they hold no vendor grant, so grant-gated vendor operations need a
+  grants write tools). When a token matches several entries, tools are unioned and
+  devices **intersected** (`["*"]` is the identity), so a write entry never reaches
+  another entry's devices; the cost is that such a token loses reads outside the
+  narrowest device set, and disjoint sets leave it no devices. They hold no vendor grant, so grant-gated vendor operations need a
   static token, and they cannot bind a verified approver. The scope map refuses
   `actor_type: "human"`. Tokens over about 4 KiB are not supported (the `Authorization`
   header cap).

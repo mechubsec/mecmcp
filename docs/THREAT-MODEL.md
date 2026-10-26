@@ -118,7 +118,8 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
   Revocation is the IdP's `exp`; there is no server-side revocation list. Write tools
   named in an entry are callable by every token that matches it, unless that token also
   matches an entry whose `tools` list contains `"*"`: the union is then the wildcard, which
-  excludes write tools. A device wildcard (`"devices": ["*"]`) does not do this. `actor_type: "human"` is
+  excludes write tools. Devices are intersected across matched entries (tools unioned), so
+  one entry's tools never reach another entry's devices. A device wildcard (`"devices": ["*"]`) does not do this. `actor_type: "human"` is
   refused, so OAuth callers are never token-asserted human approvers. The audience must be
   the resource's own, not an OIDC login client's id, or that client's ID tokens become
   bearers (a body `typ: "ID"` is refused, other ID tokens are not).
