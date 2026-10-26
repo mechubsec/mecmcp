@@ -22,16 +22,16 @@ use std::task::{Context, Poll};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower_http::limit::RequestBodyLimitLayer;
 
+/// Per-token map size at which idle semaphores are swept before a new name is added.
+const PER_TOKEN_SWEEP_AT: usize = 2_048;
+
 /// Shared concurrency state, cheaply cloneable.
 #[derive(Clone)]
 pub struct ConcurrencyState {
     global: Arc<Semaphore>,
     max_global: usize,
-    /// Map grows unbounded with the number of distinct token names ever seen.
-    /// In typical deployments, it is bounded by the token store's stable size
-    /// (hot-reloads replace tokens atomically, not additively). If high-churn
-    /// dynamic token provisioning becomes a use case, add LRU eviction or
-    /// periodic cleanup of semaphores with zero permits in use.
+    /// One semaphore per caller name. OAuth subjects are unbounded, so idle
+    /// entries are swept once the map reaches [`PER_TOKEN_SWEEP_AT`].
     per_token: Arc<DashMap<String, Arc<Semaphore>>>,
     max_per_token: usize,
     per_target: TargetLimiter,
@@ -65,6 +65,14 @@ impl ConcurrencyState {
     }
 
     fn token_sem(&self, token: &str) -> Arc<Semaphore> {
+        if let Some(sem) = self.per_token.get(token) {
+            return sem.clone();
+        }
+        if self.per_token.len() >= PER_TOKEN_SWEEP_AT {
+            // Held only by the map: no permit out and no caller mid-acquire, so the
+            // entry carries no state and a fresh semaphore later is equivalent.
+            self.per_token.retain(|_, sem| Arc::strong_count(sem) > 1);
+        }
         self.per_token
             .entry(token.to_string())
             .or_insert_with(|| Arc::new(Semaphore::new(self.max_per_token.max(1))))
@@ -543,6 +551,28 @@ impl HttpBody for GuardedBody {
 mod tests {
     use super::*;
     use crate::config::streamable_http_server_config;
+
+    /// OAuth subjects are unbounded, so idle per-token semaphores must not
+    /// accumulate; one with a permit out must survive the sweep and still limit.
+    #[test]
+    fn idle_per_token_semaphores_are_swept_and_held_ones_survive() {
+        let cfg = LimitsConfig {
+            max_inflight_requests_per_token: 1,
+            ..LimitsConfig::default()
+        };
+        let state = ConcurrencyState::new(&cfg, Vec::new(), None);
+        let held = state.token_sem("oauth:held").try_acquire_owned().unwrap();
+        for index in 0..(PER_TOKEN_SWEEP_AT * 3) {
+            drop(state.token_sem(&format!("oauth:subject-{index}")));
+        }
+        assert!(
+            state.per_token.len() <= PER_TOKEN_SWEEP_AT,
+            "{}",
+            state.per_token.len()
+        );
+        assert!(state.token_sem("oauth:held").try_acquire_owned().is_err());
+        drop(held);
+    }
 
     fn post_with(headers: &[(&str, &str)]) -> Request {
         let mut builder = axum::http::Request::builder()
