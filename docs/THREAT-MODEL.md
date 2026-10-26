@@ -28,7 +28,7 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
                               │
                          (5)  │
                               ▼
-                     IdP (JWKS, step-up assertions)
+      IdP (JWKS: OAuth bearer verification, step-up assertions)
 ```
 
 1. **Client → server.** Everything the model sends is untrusted, *even with a valid token*.
@@ -115,7 +115,11 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
   after proposal (MEC-994 W4), but it cannot detect one that was wrong from the start.
 - **Scope-map correctness is the operator's job (T13).** A mapping that grants `["*"]` to a
   broad IdP group grants it to every member (write tools stay excluded from the wildcard).
-  Revocation is the IdP's `exp`; there is no server-side revocation list.
+  Revocation is the IdP's `exp`; there is no server-side revocation list. Write tools
+  named in an entry are callable by every token that matches it. `actor_type: "human"` is
+  refused, so OAuth callers are never token-asserted human approvers. The audience must be
+  the resource's own, not an OIDC login client's id, or that client's ID tokens become
+  bearers (a body `typ: "ID"` is refused, other ID tokens are not).
 - **The host operator is trusted.** Root on the host can read credentials and rewrite
   local audit. Only the off-host SSDF copy survives that.
 - **Hosted model providers see tool output.** Even with T8 fixed, free text such as

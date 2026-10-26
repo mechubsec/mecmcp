@@ -7,6 +7,11 @@ alongside the static tokens it already has.
 > **Upgrade break.** Static token names starting with `oauth:` are now reserved. A token
 > file containing one **fails to load as a whole** (every token is refused, not just that
 > one). Rename any such token before upgrading.
+>
+> **Rollback break.** Once an OAuth caller has created a change set, a pre-0.29 binary
+> refuses the change-set state file (`unknown variant "oauth"`). Snapshot the guest (or copy
+> the state file) before upgrading; to roll back, stop the server, restore that pre-upgrade
+> state file, then start the old binary. Change sets created after the upgrade are lost.
 
 ## 1. What this is, and is not
 
@@ -54,6 +59,11 @@ concurrent-verification limit (32) are not flags.
    spec) and the IdP puts it in `aud`. If the IdP cannot, add an audience claim mapper that
    emits the URI. As a last resort pass `--oauth-audience <client-id>` with one IdP client
    per server; the audience must still be unique per server.
+   **Give the resource its own audience, never the client id of an OIDC login client.** An ID
+   token issued to that client carries the same `aud` and would pass as an access token
+   (Keycloak's body `typ: "ID"` is refused, other IdPs' ID tokens are not), and it must
+   differ from the approver-assertion audience. Turn on `--oauth-require-at-jwt-typ` if
+   your IdP supports it.
 3. **Claims.** The IdP must emit `iss`, `sub`, `exp`, `iat`, `jti`, a `scope` claim
    (space-delimited; `scp` is read when `scope` is absent) and `client_id` (or `azp`,
    which Keycloak emits). These are RFC 9068 access-token claims; `jti` and a client id
@@ -64,7 +74,7 @@ concurrent-verification limit (32) are not flags.
 5. **Write the scope-map file** (section 4) and test with `curl`:
 
    ```fish
-   curl -si -H "Authorization: Bearer $TOKEN" https://junos.lab.example/mcp
+   curl -s --max-time 5 -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" https://junos.lab.example/mcp
    ```
 
 6. **Start the server** and check discovery:
@@ -89,7 +99,8 @@ an error without them):
 - `--oauth-resource`: https, or http for a loopback host only. It must already be
   canonical, and the error shows the canonical form. A bare origin canonicalises to
   `https://host/` **with the trailing slash**, and that is then the audience.
-- `--oauth-audience`: overrides the required `aud`. The default is the canonical resource string.
+- `--oauth-audience`: overrides the required `aud`. The default is the canonical resource
+  string. See the warning in step 2: never an OIDC login client's id.
 - `--oauth-role-claim`: not a registered claim name (`sub`, `iss`, `aud`, `scope`, ...).
 - `--oauth-require-at-jwt-typ`: requires the `typ: at+jwt` (or `application/at+jwt`) header. Off
   by default because some IdPs (Keycloak by default) sign access tokens with `typ: JWT`;
@@ -131,15 +142,20 @@ Lives on the server like `tokens.json`; a token cannot name its own authority. M
   values match, exact string match only.
 - **Unmapped grants nothing.** There is no default entry and no implicit wildcard; `["*"]`
   is a wildcard only where you write it. A scope key may not be `*`.
+- Scope keys must be RFC 6749 scope-tokens (printable ASCII, no space, `"` or `\`).
 - A token that matches nothing, or whose union grants no tools, is refused with **403**.
 - **Wildcard never grants write tools.** `"tools": ["*"]` allows every non-write tool.
   Combining it with a scope that names a write tool does not widen it: write tools are
   excluded from the wildcard, so name them explicitly in an entry that has no `"*"`.
 - At most 64 scopes are read from a token; any beyond that are silently dropped.
 - Role keys are 1-128 bytes of printable ASCII (spaces allowed, e.g. `Domain Admins`).
-- `actor_type` (`human`, `agent` or `unknown`) is asserted by the file for every OAuth
-  caller. The default is `unknown`: the server cannot tell a person from an agent holding
-  the token.
+- `actor_type` (`agent` or `unknown`) is asserted by the file for every OAuth caller. The
+  default is `unknown`: the server cannot tell a person from an agent holding the token.
+  `human` is **refused at load**: OAuth cannot prove a human (no verified-approver
+  binding), and one value would also cover client-credentials accounts, making them
+  token-asserted human approvers.
+- The role claim must be IdP-controlled (groups/roles), never a claim users can edit
+  (`name`, `preferred_username`, `email`).
 
 ## 5. What clients see
 
@@ -160,10 +176,10 @@ Every refusal logs a reason code (`oauth_rejected` for 401/403, `oauth_unavailab
 | `unsupported_algorithm` | not RS/PS256-512, ES256/384 or EdDSA (never HS*, never `none`) |
 | `unknown_key_id` | `kid` not in the cached JWKS (see rotation, section 6) |
 | `malformed_jwt` | JWT-shaped but undecodable |
-| `wrong_token_type` | `--oauth-require-at-jwt-typ` is on and `typ` is not `at+jwt` |
+| `wrong_token_type` | `--oauth-require-at-jwt-typ` is on and `typ` is not `at+jwt`, or the body `typ` claim is `ID` (an ID token) |
 | `missing_claim` / `missing_issued_at` | no `jti`, client id (`client_id`/`azp`), `sub` or `iat` |
 | `invalid_subject` | `sub` is not 1-128 bytes of printable ASCII without spaces |
-| `invalid_client_id` | `client_id`/`azp` is not 1-128 bytes of printable ASCII |
+| `invalid_client_id` | `client_id`/`azp` is not 1-128 bytes of printable ASCII without spaces |
 | `unmapped_scope` | token valid, scope map grants no tools (403) |
 | `keys_unavailable` | the IdP's discovery or JWKS endpoint failed (503) |
 | `timeout` | verification exceeded 3 s, usually a slow IdP (503) |
@@ -186,10 +202,13 @@ plus `oauth_issuer`, `oauth_subject` and `oauth_client_id` (empty for static-tok
 - **Identity key.** The change-set owner and approver identity of an OAuth caller is
   `oauth:<escaped issuer>:<escaped subject>`, so the same `sub` from two IdPs are
   different owners. Rate limiting keys on `oauth:<sub>`.
-- **Read-mostly in v1.** OAuth callers hold **no vendor grant**, so grant-gated mutations
-  (e.g. PAN-OS XPath writes, Mist org/site writes) stay unavailable to them; write-capable
-  access still needs a static token. They also cannot bind a verified approver, so they
-  cannot approve under `--require-verified-approver`.
+- **Write tools are granted by the scope map.** An OAuth caller gets exactly the tools its
+  entries name, **write tools included** (e.g. `load_and_commit_config` above), so map
+  write tools as carefully as you would grant them in `tokens.json`. A `["*"]` wildcard
+  never grants write tools; name them in an entry without `"*"`. The exception: OAuth
+  callers hold **no vendor grant**, so grant-gated operations (e.g. PAN-OS XPath writes,
+  Mist org/site writes) need a static token. They also cannot bind a verified approver, so
+  they cannot approve under `--require-verified-approver`.
 - **JWKS rotation latency.** An unknown `kid` does not force a refetch; keys refresh at most
   every 5 minutes, so a rotation can reject valid tokens for up to that long.
 - **Verification load.** Non-JWT-shaped bearers never reach the verifier, and the
@@ -216,3 +235,7 @@ Enable on one lab server first, keep the static tokens, watch `oauth_rejected` a
 `oauth_unavailable`, then widen server by server. A green test suite proves the
 verifier, not that your IdP puts the resource URI in `aud`: run a real MCP client against
 the IdP once before relying on it.
+
+Before upgrading, snapshot the guest or copy the change-set state file. Rolling back to a
+pre-0.29 binary after an OAuth caller has created a change set requires restoring that
+pre-upgrade state file (see the rollback break at the top).

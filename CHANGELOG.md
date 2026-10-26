@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> **Breaking release: tag it 0.29.0, not 0.28.5.** The public API changes below break
+> source under 0.x semver. Consumer repos move to 0.29 together, and sdc's two mecmcp pins
+> (the tag guard and the SBOM guard) move in the same change.
+>
+> **Rollback break: snapshot before upgrading.** Once an OAuth caller has created a change
+> set, a pre-0.29 binary refuses the change-set state file
+> (`invalid changeset state JSON: unknown variant "oauth"`). To roll back: stop the server,
+> restore the pre-upgrade state file (or guest snapshot), then start the old binary.
+> Change sets created after the upgrade are lost.
+>
 > **Upgrade break: rename any static token named `oauth:*` before upgrading.** The
 > `oauth:` prefix is now reserved, and a token file containing such a name fails to load
 > **as a whole** (every token is refused, not just that one). See `docs/OAUTH.md`.
@@ -42,17 +52,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server's canonical resource URI (RFC 8707), and a fail-closed scope map
   (`docs/OAUTH.md`). `mecmcp-runtime::cli::OAuthResourceArgs` supplies the flags
   `--oauth-issuer`, `--oauth-resource`, `--oauth-scope-map`, `--oauth-audience`,
-  `--oauth-role-claim` and `--oauth-require-at-jwt-typ`. OAuth callers hold no vendor
-  grant and cannot bind a verified approver (read-mostly in v1). Tokens over about 4 KiB
-  are not supported (the `Authorization` header cap).
+  `--oauth-role-claim` and `--oauth-require-at-jwt-typ`. OAuth callers get exactly the
+  tools their scope-map entries name, write tools included (a `["*"]` wildcard never
+  grants write tools); they hold no vendor grant, so grant-gated vendor operations need a
+  static token, and they cannot bind a verified approver. The scope map refuses
+  `actor_type: "human"`. Tokens over about 4 KiB are not supported (the `Authorization`
+  header cap).
 - **mecmcp-oidc:** `TokenProfile::AccessToken` (RFC 9068: requires `jti` and a client id,
-  optionally `typ: at+jwt`), `VerifiedClaims::{scopes, client_id}`, `ResourceUri`.
-- **mecmcp-audit:** `Principal::OAuth` and `oauth_issuer` / `oauth_subject` /
-  `oauth_client_id` audit fields (empty for static-token callers). An OAuth caller's
-  change-set owner and approver identity is `oauth:<escaped issuer>:<escaped subject>`.
+  optionally `typ: at+jwt`, and refuses a body `typ: "ID"` claim as `wrong_token_type`),
+  `VerifiedClaims::{scopes, client_id}`, `ResourceUri`.
+- **mecmcp-audit:** `Principal::OAuth`. An OAuth caller's change-set owner and approver
+  identity is `oauth:<escaped issuer>:<escaped subject>`.
 
 ### Changed
 
+- **Audit line format (every server, feature on or off):** every audit event gains
+  `oauth_issuer=`, `oauth_subject=` and `oauth_client_id=` fields, empty for static-token
+  callers. Update log parsers that match the whole line.
+- **Change-set state:** a change set created by an OAuth caller persists a
+  `PersistedPrincipal::OAuth` attribution that pre-0.29 binaries cannot read (see the
+  rollback break above).
 - **Breaking for source:**
   - `mecmcp_auth::CallerCtx` has a new public field `oauth: Option<OAuthIdentity>`; code that
     builds it by struct literal (mostly vendor-repo tests) must add `oauth: None`.
