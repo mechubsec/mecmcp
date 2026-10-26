@@ -52,7 +52,8 @@ pub struct VerifiedClaims {
     /// string, an array element containing a space, a control character) is dropped
     /// rather than split or repaired, so a crafted claim can only ever *reduce*
     /// what a caller maps to. Deduplicated, at most 64 entries of at most 128 bytes.
-    /// A claim of any other JSON type yields an empty list.
+    /// A claim of any other JSON type (including an array in `scope`) yields an
+    /// empty list.
     pub scopes: Vec<String>,
     /// The OAuth client the token was issued to: `client_id` (RFC 9068), else
     /// `azp`. `None` when neither is a clean string (<= 128 bytes, no control
@@ -94,9 +95,11 @@ pub fn is_scope_token(candidate: &str) -> bool {
 
 /// Pull the token's scopes out of its extra claims (see [`VerifiedClaims::scopes`]).
 pub(crate) fn extract_scopes(extra: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
-    let raw: Vec<&str> = match extra.get("scope").or_else(|| extra.get("scp")) {
-        Some(serde_json::Value::String(joined)) => joined.split(' ').collect(),
-        Some(serde_json::Value::Array(items)) => {
+    // RFC 9068 s2.2.3 allows only a string for `scope`; arrays come only from `scp`.
+    let raw: Vec<&str> = match (extra.get("scope"), extra.get("scp")) {
+        (Some(serde_json::Value::String(joined)), _)
+        | (None, Some(serde_json::Value::String(joined))) => joined.split(' ').collect(),
+        (None, Some(serde_json::Value::Array(items))) => {
             items.iter().filter_map(serde_json::Value::as_str).collect()
         }
         _ => Vec::new(),

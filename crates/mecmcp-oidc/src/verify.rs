@@ -1175,6 +1175,22 @@ mod tests {
         assert!(verified.scopes.is_empty());
     }
 
+    /// RFC 9068 s2.2.3: `scope` is a string; an array there grants nothing (only `scp`
+    /// may be an array), and it does not fall through to `scp` either.
+    #[tokio::test]
+    async fn an_array_valued_scope_claim_yields_no_scopes() {
+        let key = generate_test_key(KID);
+        let mut claims = access_claims();
+        claims["scope"] = serde_json::json!(["junos:write"]);
+        claims["scp"] = serde_json::json!(["junos:admin"]);
+        let token = sign_token(&key, &claims, KID);
+        let verified = access_verifier(&key, false)
+            .verify(&token)
+            .await
+            .expect("verifies");
+        assert!(verified.scopes.is_empty());
+    }
+
     /// The ID-token profile is unchanged: no `jti` and no client id still verify.
     #[tokio::test]
     async fn id_token_profile_still_accepts_a_token_without_jti_or_client_id() {

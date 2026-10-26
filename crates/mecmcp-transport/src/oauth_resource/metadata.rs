@@ -38,7 +38,8 @@ pub fn metadata_router(config: &OAuthResourceConfig) -> Router {
     let specific = config.resource().metadata_path();
     let router = Router::new().route(&specific, get(handler.clone()));
     if specific == ROOT_METADATA_PATH {
-        return router;
+        // RFC 9728 s3.1 literal insertion keeps the resource's `/` path: serve that form too.
+        return router.route(&format!("{ROOT_METADATA_PATH}/"), get(handler));
     }
     router.route(ROOT_METADATA_PATH, get(handler))
 }
@@ -111,7 +112,15 @@ mod tests {
     async fn a_resource_without_a_path_registers_the_root_route_once() {
         // axum panics on a duplicate route; this test is the guard.
         let router = metadata_router(&config("https://junos.example/"));
-        let (status, _, _) = get(router, "GET", "/.well-known/oauth-protected-resource").await;
+        let (status, _, _) = get(
+            router.clone(),
+            "GET",
+            "/.well-known/oauth-protected-resource",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        // RFC 9728 s3.1 path insertion keeps the `/` path component of `https://h/`.
+        let (status, _, _) = get(router, "GET", "/.well-known/oauth-protected-resource/").await;
         assert_eq!(status, StatusCode::OK);
     }
 
