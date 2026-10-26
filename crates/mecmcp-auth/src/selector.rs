@@ -13,7 +13,7 @@
 //! `*` matches zero or more characters of the alphabet, including `-`, `.` and `_`. It is
 //! never a request for "any value": a device without the attribute matches nothing.
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::str::FromStr;
 
 /// Longest attribute value or selector pattern, in bytes.
@@ -35,7 +35,8 @@ fn in_alphabet(byte: u8) -> bool {
 }
 
 /// A validated device attribute value: 1-64 bytes of `[A-Za-z0-9._-]`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
 pub struct AttrValue(String);
 
 impl AttrValue {
@@ -72,17 +73,21 @@ impl<'de> Deserialize<'de> for AttrValue {
 /// Consumers embed this as an optional `"attributes"` object on a device entry:
 /// `{"site": "emea-lon", "vendor": "junos", "tags": ["pci"]}`. Unknown keys and invalid
 /// values fail the inventory load.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceAttrs {
     /// Site the device belongs to.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site: Option<AttrValue>,
     /// Vendor family (for example `junos`, `panos`).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vendor: Option<AttrValue>,
     /// Free-form tags.
-    #[serde(default, deserialize_with = "bounded_tags")]
+    #[serde(
+        default,
+        deserialize_with = "bounded_tags",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub tags: Vec<AttrValue>,
 }
 
@@ -352,6 +357,17 @@ mod tests {
             "prefix and suffix may not overlap"
         );
         assert!(hit("emea", "emea") && !hit("emea", "emea-1"));
+    }
+
+    #[test]
+    fn attrs_round_trip_and_omit_absent_fields() {
+        let json = r#"{"site":"lab-1","tags":["pci"]}"#;
+        let parsed: DeviceAttrs = serde_json::from_str(json).unwrap();
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), json);
+        assert_eq!(
+            serde_json::to_string(&DeviceAttrs::default()).unwrap(),
+            "{}"
+        );
     }
 
     #[test]
