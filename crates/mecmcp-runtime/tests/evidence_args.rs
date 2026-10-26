@@ -651,3 +651,112 @@ fn a_forward_endpoint_without_an_outbox_is_refused() {
         "the error must name the missing flag: {error}"
     );
 }
+
+/// Forward flags, no SSDF endpoint (mecmcp#378, option 2).
+fn forward_only_args(dir: &std::path::Path) -> Vec<String> {
+    vec![
+        "--audit-forward-endpoint".to_string(),
+        "https://collector.example/audit".to_string(),
+        "--audit-forward-outbox".to_string(),
+        dir.join("fwd-outbox").to_str().unwrap().to_string(),
+        "--audit-forward-ledger".to_string(),
+        dir.join("fwd-ledger").to_str().unwrap().to_string(),
+        "--ssdf-audit-server-id".to_string(),
+        "junos-950".to_string(),
+        "--ssdf-audit-records-per-segment".to_string(),
+        "7".to_string(),
+    ]
+}
+
+fn parse_owned(args: &[String]) -> EvidenceArgs {
+    parse(&args.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+/// Forward flags alone build a forward-only pipeline, reusing the shared
+/// chain identity and segment size.
+#[test]
+fn forward_only_args_produce_a_forward_only_config() {
+    use mecmcp_audit::EvidencePipelineConfig;
+    let dir = tempfile::tempdir().unwrap();
+    let config = parse_owned(&forward_only_args(dir.path()))
+        .into_pipeline_config()
+        .unwrap()
+        .unwrap();
+    let EvidencePipelineConfig::ForwardOnly(config) = config else {
+        panic!("expected a forward-only pipeline: {config:?}");
+    };
+    assert_eq!(config.server_id, "junos-950");
+    assert_eq!(config.records_per_segment, 7);
+    assert_eq!(config.forward.endpoint, "https://collector.example/audit");
+}
+
+/// With an SSDF endpoint, `into_pipeline_config` is the SSDF pipeline, and
+/// with neither it is nothing.
+#[test]
+fn pipeline_config_is_ssdf_with_an_ssdf_endpoint_and_none_without_any() {
+    use mecmcp_audit::EvidencePipelineConfig;
+    assert!(parse(&[]).into_pipeline_config().unwrap().is_none());
+
+    let dir = tempfile::tempdir().unwrap();
+    let write = secret(dir.path(), "w", "w");
+    let verify = secret(dir.path(), "v", "v");
+    let config = parse(&[
+        "--ssdf-audit-endpoint",
+        "http://127.0.0.1:8123",
+        "--ssdf-audit-server-id",
+        "junos-950",
+        "--ssdf-audit-password-file",
+        write.to_str().unwrap(),
+        "--ssdf-audit-verify-password-file",
+        verify.to_str().unwrap(),
+        "--ssdf-audit-outbox",
+        dir.path().join("o").to_str().unwrap(),
+        "--ssdf-audit-ledger",
+        dir.path().join("l").to_str().unwrap(),
+    ])
+    .into_pipeline_config()
+    .unwrap()
+    .unwrap();
+    assert!(matches!(config, EvidencePipelineConfig::Ssdf(_)));
+}
+
+/// The chain identity is required: without it the forward-only chain would
+/// have no key.
+#[test]
+fn forward_only_without_a_server_id_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut args = forward_only_args(dir.path());
+    args.drain(6..8);
+    let error = parse_owned(&args)
+        .into_pipeline_config()
+        .expect_err("no server id");
+    assert!(
+        format!("{error}").contains("--ssdf-audit-server-id"),
+        "{error}"
+    );
+}
+
+/// An unusable server id is refused exactly as on the SSDF path.
+#[test]
+fn forward_only_with_an_empty_server_id_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut args = forward_only_args(dir.path());
+    args[7] = String::new();
+    parse_owned(&args)
+        .into_pipeline_config()
+        .expect_err("an empty server id forks the chain");
+}
+
+/// The forward spool is the record, so its outbox and ledger are required.
+#[test]
+fn forward_only_without_outbox_or_ledger_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    for (flag_index, flag) in [(2, "--audit-forward-outbox"), (4, "--audit-forward-ledger")] {
+        let mut args = forward_only_args(dir.path());
+        args.drain(flag_index..flag_index + 2);
+        let error = parse_owned(&args)
+            .into_pipeline_config()
+            .expect_err("missing spool path");
+        assert!(format!("{error}").contains(flag), "{error}");
+    }
+}
