@@ -410,13 +410,15 @@ mod tests {
 
     impl HttpTransport for MockTransport {
         fn send(&self, request: &HttpRequest) -> Result<String, ForwardSinkError> {
-            if self.should_fail {
-                return Err(ForwardSinkError::Http("mock transport failure".to_string()));
-            }
+            // Record every attempt, failed or not, so a test can prove whether
+            // a pass actually tried to send.
             self.requests
                 .lock()
                 .expect("mock mutex not poisoned")
                 .push(request.clone());
+            if self.should_fail {
+                return Err(ForwardSinkError::Http("mock transport failure".to_string()));
+            }
             Ok(String::new())
         }
     }
@@ -599,7 +601,7 @@ mod tests {
         config.initial_backoff = Duration::from_secs(60);
         config.max_backoff = Duration::from_secs(60);
         let failing = Arc::new(MockTransport::failing());
-        let sink = ForwardSink::new_with_transport(config, failing).unwrap();
+        let sink = ForwardSink::new_with_transport(config, failing.clone()).unwrap();
 
         for seq in 0..10 {
             sink.spool(make_test_segment(seq)).unwrap();
@@ -612,8 +614,14 @@ mod tests {
         let second = sink.attempt_delivery().unwrap();
         let elapsed = started.elapsed();
 
-        // Not re-attempted (the timing bound below), but still counted as
-        // failed: the backlog is undelivered, so the pass must not look healthy.
+        // Not re-attempted -- the transport saw no new send -- but still
+        // counted as failed: the backlog is undelivered, so the pass must not
+        // look healthy.
+        assert_eq!(
+            failing.requests().len(),
+            10,
+            "no segment is due: zero new sends"
+        );
         assert_eq!(second.delivered, 0);
         assert_eq!(second.failed, 10, "skipped segments are still failing");
         assert!(
