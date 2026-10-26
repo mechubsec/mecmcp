@@ -278,6 +278,8 @@ pub struct BearerBoundary<G: Grant> {
     preflight: OptionalPreflight,
     #[cfg(feature = "verified-approver")]
     approver_assertion: Option<Arc<ApproverAssertionVerifier>>,
+    #[cfg(feature = "oauth-resource")]
+    oauth: Option<Arc<crate::oauth_resource::OAuthResource<G>>>,
 }
 
 impl<G: Grant> Clone for BearerBoundary<G> {
@@ -288,6 +290,8 @@ impl<G: Grant> Clone for BearerBoundary<G> {
             preflight: self.preflight.clone(),
             #[cfg(feature = "verified-approver")]
             approver_assertion: self.approver_assertion.clone(),
+            #[cfg(feature = "oauth-resource")]
+            oauth: self.oauth.clone(),
         }
     }
 }
@@ -323,7 +327,33 @@ impl<G: Grant> BearerBoundary<G> {
             preflight: None,
             #[cfg(feature = "verified-approver")]
             approver_assertion: None,
+            #[cfg(feature = "oauth-resource")]
+            oauth: None,
         }
+    }
+
+    /// Accept JWT access tokens as an additional credential (mecmcp#498).
+    ///
+    /// Static tokens are still tried first and are unaffected. Every 401 this boundary
+    /// emits gains `resource_metadata="<url>"` pointing at the RFC 9728 document that
+    /// `build_streamable_http_router` serves for `resource`.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: a [`mecmcp_oidc::ResourceUri`] only yields header-safe
+    /// absolute `http(s)` URLs, which is all `with_resource_metadata` checks.
+    #[cfg(feature = "oauth-resource")]
+    #[must_use]
+    pub fn with_oauth_resource(
+        mut self,
+        resource: Arc<crate::oauth_resource::OAuthResource<G>>,
+    ) -> Self {
+        self.responses = self
+            .responses
+            .with_resource_metadata(resource.config().resource().metadata_url())
+            .expect("a ResourceUri yields a header-safe absolute URL");
+        self.oauth = Some(resource);
+        self
     }
 
     /// Install a synchronous scope preflight.
@@ -548,6 +578,8 @@ pub fn apply_bearer_boundary<G: Grant>(
             responses: boundary.responses,
             #[cfg(feature = "verified-approver")]
             approver_assertion: boundary.approver_assertion,
+            #[cfg(feature = "oauth-resource")]
+            oauth: boundary.oauth,
         },
         bearer_auth_middleware::<G>,
     ))
@@ -574,6 +606,8 @@ pub struct AuthState<G: Grant> {
     pub responses: BearerResponseProfile,
     #[cfg(feature = "verified-approver")]
     pub approver_assertion: Option<Arc<ApproverAssertionVerifier>>,
+    #[cfg(feature = "oauth-resource")]
+    pub oauth: Option<Arc<crate::oauth_resource::OAuthResource<G>>>,
 }
 
 /// State for the preflight middleware layer.
@@ -615,10 +649,18 @@ pub async fn bearer_auth_middleware<G: Grant>(
     };
     // `caller.verified_approver` is only ever written to with `verified-approver`
     // on; without it, nothing in this function mutates `caller`.
+    // Static tokens first: a static hit never reaches the OAuth verifier or the network.
     #[cfg_attr(not(feature = "verified-approver"), allow(unused_mut))]
-    let Some(mut caller) = state.authenticator.authenticate(candidate) else {
-        tracing::warn!("auth_failed: no matching token");
-        return invalid_token(&state.responses);
+    let mut caller = match state.authenticator.authenticate(candidate) {
+        Some(caller) => caller,
+        None => match try_oauth(&state, candidate).await {
+            OAuthOutcome::Authenticated(caller) => *caller,
+            OAuthOutcome::Rejected(response) => return response,
+            OAuthOutcome::NotApplicable => {
+                tracing::warn!("auth_failed: no matching token");
+                return invalid_token(&state.responses);
+            }
+        },
     };
 
     if request.headers().contains_key(APPROVER_ASSERTION_HEADER) {
@@ -668,6 +710,72 @@ pub async fn bearer_auth_middleware<G: Grant>(
     request.extensions_mut().insert(caller);
 
     next.run(request).await
+}
+
+/// What the OAuth step decided about a candidate the static store did not recognise.
+enum OAuthOutcome<G: Grant> {
+    /// OAuth mode is off for this boundary: behave exactly as before.
+    NotApplicable,
+    #[cfg_attr(not(feature = "oauth-resource"), allow(dead_code))]
+    Authenticated(Box<CallerCtx<G>>),
+    #[cfg_attr(not(feature = "oauth-resource"), allow(dead_code))]
+    Rejected(Response),
+}
+
+#[cfg(not(feature = "oauth-resource"))]
+#[allow(clippy::unused_async)]
+async fn try_oauth<G: Grant>(_state: &AuthState<G>, _candidate: &str) -> OAuthOutcome<G> {
+    OAuthOutcome::NotApplicable
+}
+
+/// Verify `candidate` as an access token: 401 for a bad token, 403 (audited) for a good
+/// token that grants nothing here, 503 when the IdP's keys cannot be had.
+#[cfg(feature = "oauth-resource")]
+async fn try_oauth<G: Grant>(state: &AuthState<G>, candidate: &str) -> OAuthOutcome<G> {
+    use crate::oauth_resource::OAuthRejection;
+    let Some(resource) = state.oauth.as_ref() else {
+        return OAuthOutcome::NotApplicable;
+    };
+    match resource.authenticate(candidate).await {
+        Ok(caller) => OAuthOutcome::Authenticated(Box::new(caller)),
+        Err(OAuthRejection::Invalid(reason)) => {
+            tracing::warn!(reason, "oauth_rejected");
+            OAuthOutcome::Rejected(invalid_token(&state.responses))
+        }
+        Err(OAuthRejection::Unmapped(identity)) => {
+            tracing::warn!(reason = "unmapped_scope", "oauth_rejected");
+            let caller = CallerCtx::<G>::oauth(
+                identity,
+                mecmcp_auth::ScopeSet::Allowlist(Vec::new()),
+                mecmcp_auth::ScopeSet::Allowlist(Vec::new()),
+                mecmcp_auth::ActorType::Unknown,
+            );
+            let mut scope = AuditScope::from_caller(&caller, "oauth", "authenticate", Vec::new());
+            scope.deny("unmapped_scope");
+            OAuthOutcome::Rejected(forbidden(
+                &state.responses.realm,
+                "the token grants no access to this server",
+            ))
+        }
+        Err(OAuthRejection::Unavailable(reason)) => {
+            tracing::warn!(reason, "oauth_unavailable");
+            OAuthOutcome::Rejected(service_unavailable())
+        }
+    }
+}
+
+/// 503 for "could not verify right now": the credential is not judged invalid.
+#[cfg(feature = "oauth-resource")]
+fn service_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(header::RETRY_AFTER, "5")],
+        axum::Json(json!({
+            "error": "temporarily_unavailable",
+            "error_description": "token verification is temporarily unavailable",
+        })),
+    )
+        .into_response()
 }
 
 /// Record a rejected approver assertion as a denied `mecmcp-audit` event.

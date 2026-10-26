@@ -505,3 +505,251 @@ async fn unreachable_keys_are_unavailable_not_invalid() {
         OAuthRejection::Unavailable("keys_unavailable")
     );
 }
+
+// ---- Over HTTP: the real bearer boundary and router assembly (Task 9) ----
+
+use axum::{
+    Extension, Router,
+    body::{Body, to_bytes},
+    http::{Request, StatusCode, header},
+    routing::post,
+};
+use mecmcp_auth::{BearerSyntax, CallerCtx};
+use mecmcp_transport::{
+    BearerAuthenticator, BearerBoundary, BearerResponseProfile, BoundaryAccounting, LimitsConfig,
+    apply_bearer_boundary,
+};
+use tower::ServiceExt as _;
+
+const STATIC_TOKEN: &str = "static-secret";
+
+fn static_caller() -> CallerCtx<TestGrant> {
+    let mut caller = CallerCtx::oauth(
+        mecmcp_auth::OAuthIdentity {
+            issuer: "static".into(),
+            subject: "ci".into(),
+            client_id: None,
+        },
+        ScopeSet::Wildcard,
+        ScopeSet::Wildcard,
+        ActorType::Human,
+    );
+    // A static-token caller as the token store would build it: its own name, no OAuth identity.
+    caller.token_name = "ci-static".to_owned();
+    caller.oauth = None;
+    caller
+}
+
+/// `/` behind the real bearer boundary: one static token, optionally the OAuth resource.
+fn app_with_static(resource: Option<OAuthResource<TestGrant>>, static_token: &str) -> Router {
+    let static_token = static_token.to_owned();
+    let authenticator = BearerAuthenticator::new(BearerSyntax::Strict, move |candidate| {
+        (candidate == static_token).then(static_caller)
+    });
+    let mut boundary = BearerBoundary::new(authenticator, BearerResponseProfile::detailed("test"));
+    if let Some(resource) = resource {
+        boundary = boundary.with_oauth_resource(Arc::new(resource));
+    }
+    let router = Router::new().route(
+        "/",
+        post(
+            |Extension(caller): Extension<CallerCtx<TestGrant>>| async move {
+                json!({
+                    "token_name": caller.token_name,
+                    "tools": caller.tools.summary(),
+                    "client_id": caller.oauth.as_ref().and_then(|identity| identity.client_id.clone()),
+                })
+                .to_string()
+            },
+        ),
+    );
+    apply_bearer_boundary(
+        router,
+        boundary,
+        BoundaryAccounting {
+            session_tracker: None,
+            concurrency: None,
+            limits: Arc::new(LimitsConfig::default()),
+        },
+    )
+}
+
+fn app(resource: Option<OAuthResource<TestGrant>>) -> Router {
+    app_with_static(resource, STATIC_TOKEN)
+}
+
+async fn call(
+    app: &Router,
+    bearer: Option<&str>,
+) -> (StatusCode, Option<String>, Option<String>, Value) {
+    let mut builder = Request::builder().method("POST").uri("/");
+    if let Some(token) = bearer {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    let response = app
+        .clone()
+        .oneshot(builder.body(Body::from("{}")).expect("request"))
+        .await
+        .expect("response");
+    let status = response.status();
+    let header_text = |name| {
+        response
+            .headers()
+            .get(name)
+            .map(|value: &header::HeaderValue| value.to_str().expect("ASCII").to_owned())
+    };
+    let challenge = header_text(header::WWW_AUTHENTICATE);
+    let retry_after = header_text(header::RETRY_AFTER);
+    let bytes = to_bytes(response.into_body(), 16 * 1024)
+        .await
+        .expect("body");
+    let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, challenge, retry_after, body)
+}
+
+const METADATA_PARAM: &str =
+    r#"resource_metadata="https://panos.lab.example/.well-known/oauth-protected-resource/mcp""#;
+
+/// "Static first" is only observable if trying OAuth first would *do* something: the static
+/// token here is JWT-shaped (signed by a key the IdP does not publish), so an OAuth attempt
+/// would fetch the JWKS. The second request is the control that proves the counter counts.
+#[tokio::test]
+async fn static_tokens_are_tried_first_and_never_touch_the_idp() {
+    let key = generate_test_key(KID);
+    let stranger = generate_test_key(KID);
+    let jwt_shaped_static = sign(&stranger, &claims(json!(PANOS), "panos:read"));
+    let (panos, fetches) = resource_for(PANOS, &key);
+    let app = app_with_static(Some(panos), &jwt_shaped_static);
+
+    let (status, _, _, body) = call(&app, Some(jwt_shaped_static.as_str())).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["token_name"], "ci-static");
+    assert_eq!(
+        fetches.load(Ordering::SeqCst),
+        0,
+        "a static hit must not touch the IdP"
+    );
+
+    let token = sign(&key, &claims(json!(PANOS), "panos:read"));
+    let (status, _, _, _) = call(&app, Some(token.as_str())).await;
+    assert_eq!(status, StatusCode::OK, "control: OAuth itself works");
+    assert_eq!(
+        fetches.load(Ordering::SeqCst),
+        1,
+        "control: an OAuth request fetches"
+    );
+}
+
+#[tokio::test]
+async fn a_valid_access_token_authenticates_over_http() {
+    let key = generate_test_key(KID);
+    let (panos, _) = resource_for(PANOS, &key);
+    let app = app(Some(panos));
+    let token = sign(&key, &claims(json!(PANOS), "panos:read"));
+    let (status, _, _, body) = call(&app, Some(token.as_str())).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["token_name"], "oauth:alice");
+    assert_eq!(body["tools"], "get_panos_config");
+    assert_eq!(body["client_id"], "odysseus");
+}
+
+/// Every verification failure, including a token for another server and the identity
+/// checks layered on top of signature verification, is a 401 that points at discovery.
+#[tokio::test]
+async fn invalid_tokens_get_401_with_discovery() {
+    let key = generate_test_key(KID);
+    let (panos, _) = resource_for(PANOS, &key);
+    let app = app(Some(panos));
+    let mut bad_client = claims(json!(PANOS), "panos:read");
+    bad_client["client_id"] = json!("ody sseus");
+    for token in [
+        sign(&key, &claims(json!(JUNOS), "junos:read panos:read")),
+        sign(&key, &bad_client),
+    ] {
+        let (status, challenge, _, body) = call(&app, Some(token.as_str())).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "invalid_token");
+        let challenge = challenge.expect("challenge");
+        assert!(challenge.contains(METADATA_PARAM), "{challenge}");
+        assert!(
+            challenge.contains(r#"error="invalid_token""#),
+            "{challenge}"
+        );
+    }
+}
+
+/// A verified token that maps to nothing is 403 `insufficient_scope`, not 401, and the
+/// refusal is a denied audit event attributed to the OAuth identity.
+#[test]
+fn a_valid_token_with_no_mapped_authority_is_403_and_audited() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let key = generate_test_key(KID);
+    let (panos, _) = resource_for(PANOS, &key);
+    let app = app(Some(panos));
+    let token = sign(&key, &claims(json!(PANOS), "openid"));
+
+    let captured = mecmcp_audit::testutil::run_with_capture(|| {
+        runtime.block_on(async {
+            let (status, challenge, _, body) = call(&app, Some(token.as_str())).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert_eq!(body["error"], "insufficient_scope");
+            assert_eq!(
+                challenge.as_deref(),
+                Some(r#"Bearer realm="test", error="insufficient_scope""#)
+            );
+        });
+    });
+
+    for expected in [
+        "authorization=denied",
+        "reason=unmapped_scope",
+        "oauth_subject=alice",
+        "oauth_client_id=odysseus",
+    ] {
+        assert!(captured.contains(expected), "{expected}: {captured}");
+    }
+}
+
+/// An unreachable IdP is 503 for JWTs and never authorizes; static tokens are unaffected.
+#[tokio::test]
+async fn an_unreachable_idp_is_503_and_static_tokens_still_work() {
+    let key = generate_test_key(KID);
+    let down: OAuthResource<TestGrant> =
+        OAuthResource::new(config_for(PANOS), Arc::new(DownSource));
+    let app = app(Some(down));
+
+    let token = sign(&key, &claims(json!(PANOS), "panos:read"));
+    let (status, _, retry_after, body) = call(&app, Some(token.as_str())).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"], "temporarily_unavailable");
+    assert_eq!(retry_after.as_deref(), Some("5"));
+
+    let (status, _, _, body) = call(&app, Some(STATIC_TOKEN)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["token_name"], "ci-static");
+}
+
+#[tokio::test]
+async fn unauthenticated_requests_are_pointed_at_the_metadata_document() {
+    let key = generate_test_key(KID);
+    let (panos, _) = resource_for(PANOS, &key);
+    let app = app(Some(panos));
+    for bearer in [None, Some("not-a-jwt")] {
+        let (status, challenge, _, _) = call(&app, bearer).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(challenge.expect("challenge").contains(METADATA_PARAM));
+    }
+}
+
+#[tokio::test]
+async fn without_the_resource_installed_a_jwt_is_just_an_unknown_token() {
+    let key = generate_test_key(KID);
+    let app = app(None);
+    let token = sign(&key, &claims(json!(PANOS), "panos:read"));
+    let (status, challenge, _, _) = call(&app, Some(token.as_str())).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(!challenge.expect("challenge").contains("resource_metadata"));
+}
