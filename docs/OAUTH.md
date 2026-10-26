@@ -385,8 +385,13 @@ section 3; and decide there which client URLs may register and which scopes they
 request, since this server maps scopes and roles to tools and devices (section 4) but never
 judges who the client is. There is no automatic fallback. When the authorization
 server does not advertise CIMD, a client can only use a client ID registered ahead of time
-or Dynamic Client Registration (RFC 7591), if the server offers it. To support such a
-client, an operator registers it manually at the IdP: create a client for it, give it the
-redirect URIs it will use, allow only the scopes your scope map names for it, and give the
-client's `client_id` to whoever configures the MCP client. The resource server needs no
-change for any of these paths, but the `client_id` constraints above still apply.
+or Dynamic Client Registration (RFC 7591), if the server offers it. With DCR the client
+registers itself and the operator does nothing per client. The manual recipe below is for
+pre-registration only: the operator creates a client at the IdP, gives it the redirect URIs
+it will use, allows only the scopes your scope map names for it, and hands its `client_id`
+to whoever configures the MCP client. A client configured with only a `client_id` must be
+registered as a public (native) authorization-code client that uses PKCE with `S256` and
+`token_endpoint_auth_method=none`. For a confidential client the operator must also supply
+the client secret and its authentication method, or the token request fails. The resource
+server needs no change for any of these paths, but the `client_id` constraints above still
+apply.
