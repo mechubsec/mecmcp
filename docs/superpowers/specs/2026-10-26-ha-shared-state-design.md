@@ -168,9 +168,21 @@ for a single-instance deployment.
   and can return 503 (`health.rs:72-97`). Add an ownership check that fails
   until this process holds the owner lock. The load balancer / HA manager
   gates traffic on `/readyz`, never `/healthz`.
+- **Configuration is not on the shared volume.** `docs/FILESYSTEM-LAYOUT.md:40-55`
+  keeps `devices.json`, `audit-hmac.key`, `credentials.env` and TLS material
+  in `/etc/<binary-name>/`, outside `/var/lib/<binary-name>/`. Reloading the
+  standby's *local* `devices.json` at takeover can therefore load a stale
+  inventory/policy that the active has since changed. Require either
+  configuration on the shared volume (or a symlink/bind of `/etc/<svc>` to
+  it) or synchronous config distribution, **and** a config-version check:
+  the active writes a hash/version file on the shared volume whenever it
+  (re)loads config; a standby's `/readyz` stays 503 until its loaded
+  config hash equals that file. A missing or mismatched version file means
+  not ready, never "assume current".
 - **Takeover order:** acquire owner lock, then read state file, replay store
   and `tokens.json`, then **(re)load `FileInventory` and config** (explicit
-  `reload()`, `file.rs:70`; it does not refresh itself), then open the
+  `reload()`, `file.rs:70`; it does not refresh itself) and verify the
+  config version, then open the
   evidence recorder, then report ready. A standby never serves from data
   read before it owned the lock.
 - Acceptance: while the active lives the standby is not ready and has read
@@ -183,10 +195,12 @@ for a single-instance deployment.
   between samples. Run N=8 contenders over 1000 kill/restart cycles and
   assert persisted state is monotone. A readiness test asserts `/readyz`
   is 503 for a non-owner while `/healthz` is 200, and that inventory
-  reload happens-before ready.
+  reload happens-before ready, and that a standby whose local
+  `devices.json` differs from the shared version file stays 503.
 - Sabotage check, **separate** test run: delete the `try_acquire_owner`
   call; the overlap test must fail. Likewise remove the inventory reload;
-  the stale-inventory test must fail.
+  the stale-inventory test must fail; so must a run with the version check
+  removed.
 
 ### Phase 2: defence-in-depth epoch (not fencing)
 
@@ -228,8 +242,12 @@ needs the Phase 2 epoch semantics reimplemented as store leases.
 - Cross-site / multi-region.
 - Changing the device-side model (Proxmox cluster HA, SRX chassis cluster
   are the devices' own concern).
-- Shipping a fencing agent. We document and consume what Proxmox HA or
-  keepalived provide.
+- Shipping a fencing agent. We document and consume what Proxmox HA
+  (watchdog/STONITH) provides. keepalived/VRRP alone is **excluded**: it
+  moves an address and does not stop the old process. Bare metal is
+  supported only with an independent watchdog or STONITH device in front
+  of the takeover; VRRP may sit beside it for the address, never in place
+  of it.
 
 ## Trigger for un-deferring
 
@@ -247,8 +265,9 @@ request.
 2. Is a shared filesystem (NFS/CephFS) in scope? If yes, Phase 2's epoch is
    mandatory, not optional, since `flock` there is not trustworthy.
 3. Are the fleet's LXC guests expected to be the HA unit (Proxmox HA on
-   the container), or do customers run bare-metal Linux with keepalived?
-   This decides whether Phase 0 is Proxmox-specific.
+   the container), or do customers run bare metal? Bare metal is only in
+   scope with an independent watchdog/STONITH; is that acceptable, or is
+   Phase 0 Proxmox-only?
 4. Should an HA-capable deployment give each instance a distinct `server_id`
    for evidence, and does the SSDF verifier treat that as one logical
    server? Today it groups by `(tier, server_id)`.
