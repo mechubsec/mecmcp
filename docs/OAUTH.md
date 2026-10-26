@@ -186,6 +186,47 @@ another owner or a symlink refuses to start. A root process accepts any owner.
 - The role claim must be IdP-controlled (groups/roles), never a claim users can edit
   (`name`, `preferred_username`, `email`).
 
+### Device selectors (attribute-scoped devices)
+
+An entry may add `device_selectors` to narrow its `devices` to inventory devices by
+attribute, e.g. a role that may touch only the EMEA lab:
+
+```text
+"roles": { "emea-netops": { "tools": ["get_junos_config"], "devices": ["*"],
+                            "device_selectors": ["site=emea-*", "vendor=junos"] } }
+```
+
+- **Grammar.** `key=value`; `key` is `site`, `vendor` or `tag` (anything else refuses the
+  file at load). `value` is 1-64 bytes of `[A-Za-z0-9._-]` with `*` as the only
+  metacharacter (no `?`, classes or regex; `**` refused). A device matches an entry when it
+  is named by `devices` **and** satisfies **every** selector (AND). Selectors only narrow;
+  they never add a device `devices` does not name. 1-8 selectors per entry.
+- **Matching.** Exact bytes, no case folding, no Unicode normalization. `*` matches zero or
+  more characters of the alphabet, **including `-`, `.` and `_`**: `emea-*` matches
+  `emea-1`, `emea-lon-2` and `emea-`, never `emea`, `emea1`, `xemea-1`, `EMEA-1`. Put the
+  separator before `*` (`emea-*`, not `emea*`) or `emea*` also matches `emea2`. A device
+  without the attribute matches nothing, even `site=*`. `tag=` matches if any tag does.
+- **Attributes** come from the device inventory, never the token. A consumer adds an
+  optional `"attributes": {"site": "emea-lon", "vendor": "junos", "tags": ["pci"]}` object
+  to each device entry (`mecmcp_auth::DeviceAttrs`; unknown keys and values outside the
+  alphabet fail the inventory load), implements `mecmcp_auth::DeviceAttributeSource` over
+  its live inventory, and passes it with `OAuthResource::with_device_attributes`. Without
+  a source, a selector entry grants **no devices**.
+- **Resolution** happens on each authentication against the inventory's current contents,
+  so a SIGHUP reload (a device moving site, a retired device) takes effect on the next
+  request. The result is a device-name allowlist (so the intersection rule above applies
+  unchanged), capped at 256 names: a selector resolving to more refuses the token (403).
+  An already-issued token is not re-resolved mid-request.
+- **Claims never become selectors.** A role or scope claim is only a lookup key into this
+  file (exact string); `site=*` in a claim maps nothing unless that exact string is a key
+  you wrote. Selectors come only from `device_selectors` here.
+- **Isolation guarantee and limits.** Attribute values and selector literals share the
+  alphabet above, enforced when they are constructed, so no control, bidi, zero-width,
+  fullwidth or non-ASCII lookalike can exist to match a literal or be absorbed by `*`. The
+  guarantee is only as good as the inventory's `site` labels: a mislabelled or unlabelled
+  device is placed (or not placed) by the label alone. Static `tokens.json` scopes do not
+  support selectors yet, and selector scoping of verified-approver roles is not built.
+
 ## 5. What clients see
 
 | Status | When | Notes |
