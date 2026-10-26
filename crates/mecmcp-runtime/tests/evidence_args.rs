@@ -683,7 +683,7 @@ fn forward_only_args_produce_a_forward_only_config() {
         .unwrap()
         .unwrap();
     let EvidencePipelineConfig::ForwardOnly(config) = config else {
-        panic!("expected a forward-only pipeline: {config:?}");
+        panic!("expected a forward-only pipeline");
     };
     assert_eq!(config.server_id, "junos-950");
     assert_eq!(config.records_per_segment, 7);
