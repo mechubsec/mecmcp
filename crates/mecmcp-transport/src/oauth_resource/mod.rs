@@ -28,25 +28,35 @@ pub enum OAuthConfigError {
     /// The canonical resource URI is invalid.
     #[error(transparent)]
     Resource(#[from] ResourceUriError),
+    /// The resource parses, but its RFC 9728 metadata URL fails the stricter check every
+    /// `resource_metadata` challenge URL must pass (e.g. a trailing-dot host).
+    #[error(
+        "OAuth resource {resource:?} cannot be advertised: its metadata URL {reason} (host labels must be 1-63 bytes, no trailing dot)"
+    )]
+    ResourceMetadata {
+        /// The rejected resource URI.
+        resource: String,
+        /// Why its metadata URL was refused.
+        reason: &'static str,
+    },
 }
 
-/// `issuer` for an error message (it reaches logs). Same rule as mecmcp-http's
-/// `SafeUrl::from_unparsed`, which this crate does not link: cut the query and fragment
-/// first, then hide everything up to the last `@` of what remains, so an `@` inside a
-/// query cannot anchor the userinfo scan past the `?`.
+/// `issuer` for an error message (it reaches logs). Any `@` anywhere means userinfo may be
+/// present, and no delimiter order can be trusted to bound it (`https://u:p?@h` puts the
+/// secret before a `?`, `https://h/?e=a@b&k=secret` puts it after an `@`), so only the
+/// scheme survives. Otherwise the query and fragment are cut, as in mecmcp-http's
+/// `SafeUrl::from_unparsed`.
 fn redact_issuer(issuer: &str) -> String {
-    let (head, tail_present) = match issuer.find(['?', '#']) {
-        Some(cut) => (&issuer[..cut], true),
-        None => (issuer, false),
-    };
-    let mut rendered = match head.rfind('@') {
-        Some(at) => format!("[redacted]{}", &head[at..]),
-        None => head.to_owned(),
-    };
-    if tail_present {
-        rendered.push_str("[redacted]");
+    if issuer.contains('@') {
+        return match issuer.split_once("://") {
+            Some((scheme, _)) => format!("{scheme}://[redacted]"),
+            None => "[redacted]".to_owned(),
+        };
     }
-    rendered
+    match issuer.find(['?', '#']) {
+        Some(cut) => format!("{}[redacted]", &issuer[..cut]),
+        None => issuer.to_owned(),
+    }
 }
 
 /// Static configuration of one server's OAuth resource-server mode.
@@ -82,9 +92,19 @@ impl OAuthResourceConfig {
         if !usable {
             return Err(OAuthConfigError::Issuer(redact_issuer(issuer)));
         }
+        let resource = ResourceUri::parse(resource)?;
+        // `BearerBoundary::with_oauth_resource` advertises this URL and relies on it.
+        if let Some(reason) =
+            crate::auth::resource_metadata_unusable_reason(&resource.metadata_url())
+        {
+            return Err(OAuthConfigError::ResourceMetadata {
+                resource: resource.as_str().to_owned(),
+                reason,
+            });
+        }
         Ok(Self {
             issuer: issuer.to_owned(),
-            resource: ResourceUri::parse(resource)?,
+            resource,
             audience: None,
             scope_map,
             role_claim: "roles".to_owned(),
@@ -385,6 +405,9 @@ mod tests {
             // An `@` in the query must not anchor the userinfo scan past the `?`.
             "https://idp.example/?email=a@b.example&key=s3cr3t",
             "https://alice:s3cr3t@idp.example/?email=a@b.example",
+            // The credential sits before a `?`/`#` that precedes the `@`.
+            "https://alice:s3cr3t?@idp.example",
+            "https://alice:s3cr3t#@idp.example",
         ] {
             let error = OAuthResourceConfig::new(issuer, "https://junos.example/mcp", map())
                 .unwrap_err()
@@ -425,6 +448,19 @@ mod tests {
                 .with_max_concurrent_verifications(usize::MAX)
                 .max_concurrent_verifications(),
             Semaphore::MAX_PERMITS
+        );
+    }
+
+    /// ResourceUri accepts a trailing-dot host; the strict metadata-URL check does not, so
+    /// the config must refuse it rather than leave BearerBoundary to fail at startup.
+    #[test]
+    fn a_resource_whose_metadata_url_cannot_be_advertised_is_refused() {
+        let resource = "https://h.example./mcp";
+        assert!(ResourceUri::parse(resource).is_ok(), "precondition");
+        let result = OAuthResourceConfig::new("https://idp.example", resource, map());
+        assert!(
+            matches!(result, Err(OAuthConfigError::ResourceMetadata { .. })),
+            "{result:?}"
         );
     }
 

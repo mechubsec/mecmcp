@@ -226,16 +226,20 @@ impl BearerResponseProfile {
         url: impl Into<String>,
     ) -> Result<Self, BearerAuthError> {
         let url = url.into();
-        if let Some(reason) = header_unsafe_reason(&url) {
+        if let Some(reason) = resource_metadata_unusable_reason(&url) {
             return Err(BearerAuthError::InvalidResourceMetadata(reason));
-        }
-        if !is_absolute_http_url(&url) {
-            return Err(BearerAuthError::InvalidResourceMetadata(
-                "not an absolute http(s) URL",
-            ));
         }
         self.resource_metadata = Some(url);
         Ok(self)
+    }
+
+    /// Set a URL already checked by [`resource_metadata_unusable_reason`] (the
+    /// `OAuthResourceConfig::new` invariant), so the OAuth wiring has no panic path.
+    #[cfg(feature = "oauth-resource")]
+    fn with_checked_resource_metadata(mut self, url: String) -> Self {
+        debug_assert!(resource_metadata_unusable_reason(&url).is_none());
+        self.resource_metadata = Some(url);
+        self
     }
 
     /// Compact profile returning `invalid_token` for every 401.
@@ -339,10 +343,7 @@ impl<G: Grant> BearerBoundary<G> {
     /// emits gains `resource_metadata="<url>"` pointing at the RFC 9728 document that
     /// `build_streamable_http_router` serves for `resource`.
     ///
-    /// # Panics
-    ///
-    /// Never in practice: a [`mecmcp_oidc::ResourceUri`] only yields header-safe
-    /// absolute `http(s)` URLs, which is all `with_resource_metadata` checks.
+    /// The URL was validated when the `OAuthResourceConfig` was built, so this cannot fail.
     #[cfg(feature = "oauth-resource")]
     #[must_use]
     pub fn with_oauth_resource(
@@ -351,8 +352,7 @@ impl<G: Grant> BearerBoundary<G> {
     ) -> Self {
         self.responses = self
             .responses
-            .with_resource_metadata(resource.config().resource().metadata_url())
-            .expect("a ResourceUri yields a header-safe absolute URL");
+            .with_checked_resource_metadata(resource.config().resource().metadata_url());
         self.oauth = Some(resource);
         self
     }
@@ -1533,6 +1533,14 @@ fn validate_realm(realm: String) -> Result<String, BearerAuthError> {
         Some(reason) => Err(BearerAuthError::InvalidRealm(reason)),
         None => Ok(realm),
     }
+}
+
+/// Why `url` cannot be a `resource_metadata` challenge parameter, if so.
+pub(crate) fn resource_metadata_unusable_reason(url: &str) -> Option<&'static str> {
+    if let Some(reason) = header_unsafe_reason(url) {
+        return Some(reason);
+    }
+    (!is_absolute_http_url(url)).then_some("not an absolute http(s) URL")
 }
 
 /// An `http(s)` URL with a well-formed host (DNS name or bracketed IPv6), no userinfo,
