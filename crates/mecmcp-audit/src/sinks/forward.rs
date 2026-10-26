@@ -612,11 +612,10 @@ mod tests {
         let second = sink.attempt_delivery().unwrap();
         let elapsed = started.elapsed();
 
-        assert_eq!(
-            second.delivered + second.failed,
-            0,
-            "no segment is due for retry yet, so none should be re-attempted"
-        );
+        // Not re-attempted (the timing bound below), but still counted as
+        // failed: the backlog is undelivered, so the pass must not look healthy.
+        assert_eq!(second.delivered, 0);
+        assert_eq!(second.failed, 10, "skipped segments are still failing");
         assert!(
             elapsed < Duration::from_secs(5),
             "a pass over segments still within their backoff window must not block: took {elapsed:?}"
