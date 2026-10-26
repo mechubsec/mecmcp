@@ -173,6 +173,7 @@ mod tests {
             request_id: uuid::Uuid::nil(),
             token_verified_fields: mecmcp_audit::TokenVerifiedFields::default(),
             verified_approver,
+            verified_proposer: None,
             approver: None,
             change_set_id: None,
         }

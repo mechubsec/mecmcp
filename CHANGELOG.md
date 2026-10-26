@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Approver roles are selector-scoped through the same field: approval already checks the
   approver's device scope against the change set's one device, so a `site=lab-*` approver
   cannot approve a prod change set. Pinned by an integration test; no new flag (#400).
+- `Mecmcp-Proposer-Assertion` step-up header (#400): a fresh IdP assertion whose subject equals
+  the proposing token's bound `oidc_subject`, bound with `bind_proposer`, which needs neither a
+  `human` token nor the approver role. A separate header and a separate field
+  (`CallerCtx::verified_proposer`, `Attribution::verified_proposer`) so it is never approval
+  evidence; it shares the `jti` replay set, so one assertion is good once in either role.
+  A server with no verifier answers the header 400, as for the approver header.
 
 ## [0.29.4] - 2026-10-26
 

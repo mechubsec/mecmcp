@@ -97,6 +97,7 @@ fn verified_approver_attribution(principal: &str) -> Attribution {
             APPROVER_ISSUER,
             APPROVER_SUBJECT,
         )),
+        verified_proposer: None,
         approver: None,
         change_set_id: None,
     }

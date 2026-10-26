@@ -40,7 +40,7 @@ pub mod test_client;
 pub mod test_harness;
 pub mod tls;
 
-pub use approver_assertion::APPROVER_ASSERTION_HEADER;
+pub use approver_assertion::{APPROVER_ASSERTION_HEADER, PROPOSER_ASSERTION_HEADER};
 #[cfg(feature = "verified-approver")]
 pub use approver_assertion::{ApproverAssertionError, ApproverAssertionVerifier};
 #[cfg(feature = "verified-approver")]

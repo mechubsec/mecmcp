@@ -156,6 +156,11 @@ pub struct CallerCtx<G: Grant = NoGrant> {
     /// carried one that was not yet checked at the point `CallerCtx` was
     /// built. Set by the bearer preflight middleware, never by a token entry.
     pub verified_approver: Option<crate::approver::VerifiedApprover>,
+    /// The verified proposer identity bound to this request, when a
+    /// `Mecmcp-Proposer-Assertion` header passed [`crate::approver::bind_proposer`]
+    /// (mecmcp#400). Set by the bearer middleware, never by a token entry; a separate field
+    /// from `verified_approver` so a proposer assertion is never approval evidence.
+    pub verified_proposer: Option<crate::approver::VerifiedProposer>,
     /// Client-asserted MCP client name from `initialize` request.
     ///
     /// Captured from the MCP session identified by `Mcp-Session-Id` header.
@@ -229,6 +234,7 @@ impl<G: Grant> CallerCtx<G> {
             actor_type: entry.effective_actor_type(),
             oidc_subject: entry.oidc_subject.clone(),
             verified_approver: None,
+            verified_proposer: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -263,6 +269,7 @@ impl<G: Grant> CallerCtx<G> {
             actor_type,
             oidc_subject: None,
             verified_approver: None,
+            verified_proposer: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -438,6 +445,7 @@ mod tests {
             actor_type: _,
             oidc_subject: _,
             verified_approver: _,
+            verified_proposer: _,
             client_name: _,
             model_id: _,
             session_id: _,
@@ -518,6 +526,7 @@ mod tests {
             actor_type: crate::ActorType::Human,
             oidc_subject: None,
             verified_approver: None,
+            verified_proposer: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -542,6 +551,7 @@ mod tests {
             actor_type: crate::ActorType::Human,
             oidc_subject: None,
             verified_approver: None,
+            verified_proposer: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -580,6 +590,7 @@ mod tests {
             actor_type: crate::ActorType::Human,
             oidc_subject: None,
             verified_approver: None,
+            verified_proposer: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -605,6 +616,7 @@ mod tests {
             actor_type: crate::ActorType::Human,
             oidc_subject: None,
             verified_approver: None,
+            verified_proposer: None,
             client_name: None,
             model_id: None,
             session_id: None,

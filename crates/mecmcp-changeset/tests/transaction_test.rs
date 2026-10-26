@@ -548,6 +548,7 @@ fn test_attribution() -> Attribution {
         // provider and delegated user here are claims, not verified facts.
         token_verified_fields: TokenVerifiedFields::none(),
         verified_approver: None,
+        verified_proposer: None,
         approver: None,
         change_set_id: None,
     }
@@ -563,6 +564,7 @@ fn test_human_attribution() -> Attribution {
         request_id: Uuid::new_v4(),
         token_verified_fields: TokenVerifiedFields::none(),
         verified_approver: None,
+        verified_proposer: None,
         approver: None,
         change_set_id: None,
     }

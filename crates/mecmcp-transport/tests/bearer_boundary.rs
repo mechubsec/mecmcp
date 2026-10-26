@@ -46,6 +46,7 @@ fn caller() -> CallerCtx<TestGrant> {
         actor_type: ActorType::Human,
         oidc_subject: None,
         verified_approver: None,
+        verified_proposer: None,
         client_name: None,
         model_id: None,
         session_id: None,

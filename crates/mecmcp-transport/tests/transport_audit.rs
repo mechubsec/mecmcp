@@ -59,6 +59,7 @@ fn emit_transport_audit(tool: &'static str, client_name: Option<&'static str>) {
         actor_type: ActorType::Human,
         oidc_subject: None,
         verified_approver: None,
+        verified_proposer: None,
         client_name,
         model_id: None,
         session_id: None,

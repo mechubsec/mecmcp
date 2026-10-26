@@ -244,6 +244,7 @@ fn test_attribution(principal: &str) -> Attribution {
         request_id: Uuid::new_v4(),
         token_verified_fields: mecmcp_audit::TokenVerifiedFields::none(),
         verified_approver: None,
+        verified_proposer: None,
         approver: None,
         change_set_id: None,
     }

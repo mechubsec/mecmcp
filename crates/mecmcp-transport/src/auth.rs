@@ -1,8 +1,8 @@
 //! Shared bearer authentication and scope-preflight HTTP boundary.
 
-use crate::approver_assertion::APPROVER_ASSERTION_HEADER;
 #[cfg(feature = "verified-approver")]
 use crate::approver_assertion::ApproverAssertionVerifier;
+use crate::approver_assertion::{APPROVER_ASSERTION_HEADER, PROPOSER_ASSERTION_HEADER};
 use crate::preflight::{OptionalPreflight, ScopePreflight, run_preflight};
 use axum::{
     Router,
@@ -684,7 +684,7 @@ pub async fn bearer_auth_middleware<G: Grant>(
                 .expect("header presence just checked above");
             let Ok(assertion) = header_value.to_str() else {
                 tracing::warn!(reason = "malformed_header", "approver_assertion_rejected");
-                audit_approver_assertion_rejection(&caller, "malformed_header");
+                audit_assertion_rejection(&caller, "approver_assertion", "malformed_header");
                 return invalid_token(&state.responses);
             };
             let now = chrono::Utc::now().timestamp();
@@ -696,7 +696,7 @@ pub async fn bearer_auth_middleware<G: Grant>(
                         detail = %error,
                         "approver_assertion_rejected"
                     );
-                    audit_approver_assertion_rejection(&caller, error.reason_code());
+                    audit_assertion_rejection(&caller, "approver_assertion", error.reason_code());
                     return invalid_token(&state.responses);
                 }
             }
@@ -705,6 +705,45 @@ pub async fn bearer_auth_middleware<G: Grant>(
         // configure at all — behave exactly as the feature-on path does when
         // `state.approver_assertion` is `None`: fail closed with the same
         // configuration-mismatch response, never silently accept the header.
+        #[cfg(not(feature = "verified-approver"))]
+        {
+            return approver_assertion_not_configured();
+        }
+    }
+
+    if request.headers().contains_key(PROPOSER_ASSERTION_HEADER) {
+        #[cfg(feature = "verified-approver")]
+        {
+            let Some(verifier) = state.approver_assertion.as_ref() else {
+                return approver_assertion_not_configured();
+            };
+            let header_value = request
+                .headers()
+                .get(PROPOSER_ASSERTION_HEADER)
+                .expect("header presence just checked above");
+            let Ok(assertion) = header_value.to_str() else {
+                tracing::warn!(reason = "malformed_header", "proposer_assertion_rejected");
+                audit_assertion_rejection(&caller, "proposer_assertion", "malformed_header");
+                return invalid_token(&state.responses);
+            };
+            let now = chrono::Utc::now().timestamp();
+            match verifier
+                .verify_and_bind_proposer(assertion, &caller, now)
+                .await
+            {
+                Ok(proposer) => caller.verified_proposer = Some(proposer),
+                Err(error) => {
+                    tracing::warn!(
+                        reason = error.reason_code(),
+                        detail = %error,
+                        "proposer_assertion_rejected"
+                    );
+                    audit_assertion_rejection(&caller, "proposer_assertion", error.reason_code());
+                    return invalid_token(&state.responses);
+                }
+            }
+        }
+        // Same fail-closed rule as the approver header with no verifier compiled in.
         #[cfg(not(feature = "verified-approver"))]
         {
             return approver_assertion_not_configured();
@@ -806,8 +845,12 @@ fn service_unavailable() -> Response {
 /// verification was even attempted) already carried in the `tracing::warn!`
 /// above, so the two never drift apart.
 #[cfg(feature = "verified-approver")]
-fn audit_approver_assertion_rejection<G: Grant>(caller: &CallerCtx<G>, reason: &'static str) {
-    let mut scope = AuditScope::from_caller(caller, "approver_assertion", "verify", Vec::new());
+fn audit_assertion_rejection<G: Grant>(
+    caller: &CallerCtx<G>,
+    tool: &'static str,
+    reason: &'static str,
+) {
+    let mut scope = AuditScope::from_caller(caller, tool, "verify", Vec::new());
     scope.deny(reason);
 }
 
@@ -1978,6 +2021,7 @@ mod tests {
             actor_type: ActorType::Human,
             oidc_subject: None,
             verified_approver: None,
+            verified_proposer: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -2036,6 +2080,7 @@ mod tests {
             actor_type: ActorType::Human,
             oidc_subject: None,
             verified_approver: None,
+            verified_proposer: None,
             client_name: None,
             model_id: None,
             session_id: None,
@@ -2085,6 +2130,7 @@ mod tests {
             actor_type: ActorType::Agent,
             oidc_subject: None,
             verified_approver: None,
+            verified_proposer: None,
             client_name: None,
             model_id: None,
             session_id: None,

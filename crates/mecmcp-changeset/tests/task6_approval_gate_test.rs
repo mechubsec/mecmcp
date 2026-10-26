@@ -40,6 +40,7 @@ fn oidc_verified_approver(principal: &str, issuer: &str, subject: &str) -> Appro
         request_id: uuid::Uuid::nil(),
         token_verified_fields: mecmcp_audit::TokenVerifiedFields::default(),
         verified_approver: Some(mecmcp_auth::VerifiedApprover::for_test(issuer, subject)),
+        verified_proposer: None,
         approver: None,
         change_set_id: None,
     };
