@@ -214,9 +214,12 @@ attribute, e.g. a role that may touch only the EMEA lab:
   a source, a selector entry grants **no devices**.
 - **Resolution** happens on each authentication against the inventory's current contents,
   so a SIGHUP reload (a device moving site, a retired device) takes effect on the next
-  request. The result is a device-name allowlist (so the intersection rule above applies
-  unchanged), capped at 256 names: a selector resolving to more refuses the token (403).
-  An already-issued token is not re-resolved mid-request.
+  request, against one snapshot of the attributes taken per authentication (every matched
+  entry sees the same inventory generation). Each entry resolves to a device-name allowlist,
+  so the intersection rule above applies unchanged. The 256-name cap applies to the final
+  intersected allowlist, not to each entry: a token whose result exceeds it is refused
+  (403). An already-issued token is not re-resolved mid-request. An explicit
+  `"device_selectors": null` is refused at load (only omitting the key means no selectors).
 - **Claims never become selectors.** A role or scope claim is only a lookup key into this
   file (exact string); `site=*` in a claim maps nothing unless that exact string is a key
   you wrote. Selectors come only from `device_selectors` here.

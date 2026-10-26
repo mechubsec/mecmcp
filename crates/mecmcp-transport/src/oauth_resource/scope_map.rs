@@ -4,7 +4,7 @@
 //! authority. Everything here fails closed: no default entry, no implicit wildcard,
 //! no partial matching.
 
-use mecmcp_auth::{ActorType, DeviceAttributeSource, ScopeSet, SelectorSet};
+use mecmcp_auth::{ActorType, DeviceAttributeSource, DeviceAttrs, ScopeSet, SelectorSet};
 use mecmcp_oidc::is_scope_token;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -37,27 +37,33 @@ struct GrantSpec {
     tools: ScopeSet,
     devices: ScopeSet,
     /// Optional attribute selectors (AND) that narrow `devices` to matching inventory devices.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "selectors_not_null")]
     device_selectors: Option<Vec<String>>,
     /// `device_selectors`, compiled at load; never read from the file.
     #[serde(skip)]
     compiled: Option<SelectorSet>,
 }
 
+/// Absent means "no selectors"; an explicit `null` must not silently mean the same, or an
+/// operator's broken edit would widen the entry to every device its `devices` names.
+fn selectors_not_null<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error> {
+    Vec::<String>::deserialize(deserializer).map(Some)
+}
+
 impl GrantSpec {
     /// Devices this entry grants right now. Selectors are resolved against the live
     /// inventory attributes, so a SIGHUP reload takes effect on the next request; an absent
     /// source or an attribute-less device matches nothing (fail closed).
-    fn effective_devices(&self, source: Option<&dyn DeviceAttributeSource>) -> ScopeSet {
+    fn effective_devices(&self, snapshot: &[(String, DeviceAttrs)]) -> ScopeSet {
         let Some(selectors) = &self.compiled else {
             return self.devices.clone();
         };
-        let mut names: Vec<String> = source
-            .map(DeviceAttributeSource::device_attributes)
-            .unwrap_or_default()
-            .into_iter()
+        let mut names: Vec<String> = snapshot
+            .iter()
             .filter(|(name, attrs)| self.devices.allows(name) && selectors.matches(attrs))
-            .map(|(name, _)| name)
+            .map(|(name, _)| name.clone())
             .collect();
         names.sort();
         names.dedup();
@@ -246,11 +252,20 @@ impl OAuthScopeMap {
         if matched.is_empty() {
             return None;
         }
+        // One snapshot per authentication: every entry is judged against the same inventory
+        // generation, so a concurrent reload cannot let two entries disagree about a device.
+        let snapshot = if matched.iter().any(|spec| spec.compiled.is_some()) {
+            attributes
+                .map(DeviceAttributeSource::device_attributes)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let mut tools = ScopeSet::Allowlist(Vec::new());
         let mut devices = ScopeSet::Wildcard;
         for spec in matched {
             tools = union(tools, &spec.tools);
-            devices = intersect(devices, &spec.effective_devices(attributes));
+            devices = intersect(devices, &spec.effective_devices(&snapshot));
         }
         // The union can exceed MAX_SCOPE_NAMES; refuse rather than truncate.
         if tools.is_empty()
@@ -874,6 +889,49 @@ mod tests {
         assert_eq!(
             with,
             plain.map(&strings(&["junos:read"]), &strings(&["netops"]))
+        );
+    }
+
+    #[test]
+    fn a_null_device_selectors_is_refused_not_read_as_absent() {
+        let json = r#"{"version":1,"scopes":{"a":{"tools":["t"],"devices":["*"],"device_selectors":null}}}"#;
+        assert!(OAuthScopeMap::from_json(json.as_bytes()).is_err());
+        let absent = r#"{"version":1,"scopes":{"a":{"tools":["t"],"devices":["*"]}}}"#;
+        assert!(OAuthScopeMap::from_json(absent.as_bytes()).is_ok());
+    }
+
+    /// Each call returns the next inventory generation. A device that is lab/panos in
+    /// generation 0 and emea/junos in generation 1 satisfies neither conjunction at any
+    /// instant, so per-entry reads would grant it via lab-* (gen 0) and junos (gen 1).
+    struct Flapping(std::sync::atomic::AtomicUsize);
+
+    impl DeviceAttributeSource for Flapping {
+        fn device_attributes(&self) -> Vec<(String, mecmcp_auth::DeviceAttrs)> {
+            let generation = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let json = if generation == 0 {
+                r#"{"site":"lab-1","vendor":"panos"}"#
+            } else {
+                r#"{"site":"emea-1","vendor":"junos"}"#
+            };
+            vec![("x".to_owned(), serde_json::from_str(json).unwrap())]
+        }
+    }
+
+    #[test]
+    fn every_entry_is_judged_against_one_attribute_snapshot() {
+        let json = r#"{"version":1,"scopes":{
+            "a":{"tools":["t"],"devices":["*"],"device_selectors":["site=lab-*"]},
+            "b":{"tools":["t"],"devices":["*"],"device_selectors":["vendor=junos"]}}}"#;
+        let map = OAuthScopeMap::from_json(json.as_bytes()).unwrap();
+        let source = Flapping(std::sync::atomic::AtomicUsize::new(0));
+        let granted = map
+            .map_with(&strings(&["a", "b"]), &[], Some(&source))
+            .unwrap();
+        assert!(!granted.devices.allows("x"));
+        assert_eq!(
+            source.0.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "read once"
         );
     }
 
