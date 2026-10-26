@@ -51,6 +51,13 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
    or into a tool result — verification happens once at the bearer boundary, and only
    issuer+subject survive it. JWKS unreachable fails closed: approvals are refused, but
    reads and proposals on existing bearer tokens are unaffected.
+6. **Client → server, OAuth bearer (opt-in, [#498](https://github.com/mechubsec/mecmcp/issues/498)).**
+   With `mecmcp-transport`'s `oauth-resource` feature and `--oauth-issuer`, a JWT access token
+   from the configured issuer is accepted as the `/mcp` credential after the static token
+   store misses. The server fetches JWKS over boundary 5's channel. The token is verified
+   once at the bearer boundary, mapped through the operator's scope map, and never
+   forwarded or retained; only issuer, subject and client id survive it. See
+   [`OAUTH.md`](OAUTH.md).
 
 ## Threats and mitigations
 
@@ -68,6 +75,8 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
 | T10 | **Supply chain.** A malicious crate or image. | Gitleaks, `cargo audit`, and `cargo deny` (advisories, licences, bans, sources) run in CI ([`security.yml`](../.github/workflows/security.yml)). **`Cargo.lock` is committed**, so the audited graph is the one actually shipped, not whatever the registry currently offers. Trivy filesystem scan runs on push, PR, and a weekly schedule. Per-crate CycloneDX SBOMs are generated and validated in CI and attached to each GitHub release ([`release-sbom.yml`](../.github/workflows/release-sbom.yml)); see [#379](https://github.com/mechubsec/mecmcp/issues/379). | ✅ |
 | T11 | **Free-form command slips past the blocklist.** A model with command scope runs an operational command the operator did not list. | Library: fail-closed token-prefix allowlist mode (`CommandMode::Allowlist`, the default) exists in `mecmcp-policy` ([#390](https://github.com/mechubsec/mecmcp/pull/390)). Wired into rustjunosmcp (including PFE commands: [#465](https://github.com/mechubsec/rustjunosmcp/pull/465), [#473](https://github.com/mechubsec/rustjunosmcp/pull/473)) and rustpanosmcp ([#207](https://github.com/mechubsec/rustpanosmcp/pull/207)); both run fail-closed by default. Fail-open blocklist mode (`CommandMode::Blocklist`) remains for backwards compatibility. It is selected explicitly, **or inferred when an existing config has deny rules and no `mode` key** (a startup warning is logged). In that mode, any command no deny pattern matches runs, including abbreviations and re-spellings. | 🟡 |
 | T12 | **MITM on the device channel (NETCONF/SSH, SCP).** An on-path host impersonates a device. It reads configs, returns forged output, and captures passwords (key auth does not hand over the key). | This repository has no NETCONF client. Each server uses `rustnetconf`. The shared SCP client supports strict `known_hosts`, trust-on-first-use (changed keys rejected) and pinned fingerprints, but it also offers `AcceptAll` and has no default, so each server chooses ([`mecmcp-scp/src/config.rs`](../crates/mecmcp-scp/src/config.rs)). In rustjunosmcp, `--ssh-accept-new-host-keys` currently sets NETCONF to `AcceptAll`, which is no verification at all: [rustjunosmcp#415](https://github.com/mechubsec/rustjunosmcp/issues/415). | 🟡 |
+| T13 | **Token minted for one server replayed against another.** A token a user obtained for the junos server is presented to the panos server. | Exact audience binding: `aud` must equal the receiving server's canonical resource string (RFC 8707), with no substring or prefix match; the audience list form passes only if one element matches exactly. Pinned by `a_junos_audience_token_is_refused_by_a_panos_resource` and `audience_must_equal_the_resource_not_resemble_it` ([`oauth_resource.rs`](../crates/mecmcp-transport/tests/oauth_resource.rs)). Operator duty: one resource URI per server, and an IdP configured to issue single-audience tokens (a multi-audience token that lists this server is accepted). OAuth callers hold no vendor grant and cannot bind a verified approver. | ✅ where enabled |
+| T14 | **Unauthenticated load on the verification path, or an IdP outage.** Junk or flooded JWT-shaped bearers drive signature checks and JWKS fetches. | Shape prefilter before any async work, header-first decode, cache-driven JWKS fetch (an unknown `kid` never forces a refetch), at most 32 concurrent verifications with a 3 s timeout and a refusal (503 `busy`/`timeout`/`keys_unavailable`) instead of a queue. Static tokens never reach the verifier. **No eager JWKS warm-up and no revocation list**: a stolen token lives until `exp`, and a flood of JWT-shaped junk can briefly exhaust the permits for valid OAuth callers. | 🟡 |
 
 ## Residual risk (accepted)
 
@@ -104,6 +113,9 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
   operator who ran that command typed in, not something the IdP vouches for at propose
   time. Strict mode refuses to approve a change set whose `owner_subject` went missing
   after proposal (MEC-994 W4), but it cannot detect one that was wrong from the start.
+- **Scope-map correctness is the operator's job (T13).** A mapping that grants `["*"]` to a
+  broad IdP group grants it to every member (write tools stay excluded from the wildcard).
+  Revocation is the IdP's `exp`; there is no server-side revocation list.
 - **The host operator is trusted.** Root on the host can read credentials and rewrite
   local audit. Only the off-host SSDF copy survives that.
 - **Hosted model providers see tool output.** Even with T8 fixed, free text such as
@@ -114,14 +126,17 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
 
 - Compromise of the managed device itself.
 - The MCP client's own security.
-- OIDC/OAuth as the MCP bearer credential, session or token exchange, and retiring
-  `actor_type: human` tokens outright — step-up OIDC ([#400](https://github.com/mechubsec/mecmcp/issues/400)) only verifies identity
-  at approval time; the bearer token stays the transport credential.
+- An embedded authorization server (login, consent, token issuance, dynamic client
+  registration), token exchange, and retiring `actor_type: human` tokens outright. OAuth
+  access tokens as the MCP bearer credential are **in scope** from
+  [#498](https://github.com/mechubsec/mecmcp/issues/498) (boundary 6); step-up OIDC
+  ([#400](https://github.com/mechubsec/mecmcp/issues/400)) still only verifies identity at
+  approval time.
 - Physical access.
 
 ## Per-server delta
 
-Each server inherits T1–T12. What differs:
+Each server inherits T1–T14. What differs:
 
 - **rustjunosmcp:** NETCONF/SSH to devices. Host-key trust, commit-confirmed defaults and the free-form command blocklist: see [its threat model](https://github.com/mechubsec/rustjunosmcp/blob/main/docs/THREAT-MODEL.md).
 - **rustpanosmcp:** HTTPS with `X-PAN-KEY`. Has its own [`THREAT_MODEL.md`](https://github.com/mechubsec/rustpanosmcp/blob/main/THREAT_MODEL.md).

@@ -502,4 +502,17 @@ mod tests {
                 .contains("64 KiB")
         );
     }
+
+    #[test]
+    fn the_scope_map_example_in_the_operator_guide_loads() {
+        // Read at run time: a packaged crate has no workspace `docs/`, so skip there.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/OAUTH.md");
+        let Ok(guide) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let start = guide.find("```json\n").unwrap() + "```json\n".len();
+        let end = start + guide[start..].find("\n```").unwrap();
+        let map = OAuthScopeMap::from_json(&guide.as_bytes()[start..end]).unwrap();
+        assert_eq!(map.scopes_supported(), ["junos:lab", "junos:read"]);
+    }
 }

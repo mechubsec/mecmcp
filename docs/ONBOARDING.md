@@ -268,6 +268,13 @@ This does not replace scoping: it verifies *who* approved, not *what* they
 may approve beyond their token's existing tool and device scopes. Selector-scoped
 approver roles are a later phase of #400 and are not built yet.
 
+### OAuth bearer tokens ([#498](https://github.com/mechubsec/mecmcp/issues/498))
+
+A server built with the `oauth-resource` transport feature can also accept JWT access tokens
+from an external authorization server, alongside static tokens. Setup, scope map and
+troubleshooting: [`OAUTH.md`](OAUTH.md). Note that static token names starting `oauth:` are
+now reserved.
+
 ---
 
 ## 3. Per-server notes

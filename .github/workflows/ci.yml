@@ -71,6 +71,9 @@ jobs:
       - name: Build documentation
         run: cargo doc --workspace --no-deps --locked
 
+      - name: Check OAuth operator guide against the code
+        run: bash tests/check-oauth-docs.sh
+
       - name: Check fuzz targets compile
         # fuzz/ is outside the workspace, so nothing above builds it; a target
         # went uncompilable after a DiscoveryDocument field change unnoticed.
