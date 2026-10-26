@@ -382,6 +382,14 @@ pub struct VerifiedApproverArgs {
     /// before this flag existed.
     #[arg(long)]
     pub require_verified_approver: bool,
+
+    /// Append-only file that makes the approver-assertion `jti` replay set
+    /// survive restarts (created 0600; must be owned by the service user).
+    /// Without it, an assertion used before a restart can be replayed once
+    /// until it expires. Recommended whenever `--require-verified-approver`
+    /// is set. Requires `--oidc-issuer`.
+    #[arg(long)]
+    pub approver_replay_store: Option<PathBuf>,
 }
 
 impl VerifiedApproverArgs {
@@ -417,6 +425,9 @@ impl VerifiedApproverArgs {
         if self.oidc_issuer.is_some() && self.oidc_audience.is_none() {
             return Err(VerifiedApproverArgsError::IssuerWithoutAudience);
         }
+        if self.approver_replay_store.is_some() && self.oidc_issuer.is_none() {
+            return Err(VerifiedApproverArgsError::ReplayStoreRequiresIssuer);
+        }
         if self.require_verified_approver {
             if self.oidc_issuer.is_none() {
                 return Err(VerifiedApproverArgsError::RequiresIssuer);
@@ -442,6 +453,9 @@ pub enum VerifiedApproverArgsError {
     /// verifier — either of which is a worse failure than refusing here.
     #[error("--oidc-issuer requires --oidc-audience")]
     IssuerWithoutAudience,
+    /// A replay store protects nothing without a verifier to feed it.
+    #[error("--approver-replay-store requires --oidc-issuer")]
+    ReplayStoreRequiresIssuer,
     /// Strict verified-approver mode needs an IdP to verify assertions
     /// against.
     #[error("--require-verified-approver requires --oidc-issuer")]
@@ -1826,6 +1840,25 @@ mod composition_tests {
             Some("https://idp.example")
         );
         assert!(parsed.cli.verified_approver.require_verified_approver);
+    }
+
+    #[test]
+    fn verified_approver_args_replay_store_requires_issuer() {
+        let args = VerifiedApproverArgs {
+            approver_replay_store: Some(PathBuf::from("/var/lib/x/jti.log")),
+            ..Default::default()
+        };
+        assert_eq!(
+            args.validate(true, false),
+            Err(VerifiedApproverArgsError::ReplayStoreRequiresIssuer)
+        );
+        let args = VerifiedApproverArgs {
+            oidc_issuer: Some("https://idp.example".to_owned()),
+            oidc_audience: Some("mecmcp".to_owned()),
+            approver_replay_store: Some(PathBuf::from("/var/lib/x/jti.log")),
+            ..Default::default()
+        };
+        assert_eq!(args.validate(true, false), Ok(()));
     }
 
     #[test]
