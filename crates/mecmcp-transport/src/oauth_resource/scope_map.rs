@@ -111,6 +111,15 @@ impl OAuthScopeMap {
                 file.version
             )));
         }
+        // OAuth cannot prove a human (no verified-approver binding), and the one value would
+        // also cover client-credentials accounts, making them token-asserted human approvers.
+        if file.actor_type == ActorType::Human {
+            return Err(ScopeMapError::Invalid(
+                "actor_type \"human\" is not allowed: OAuth cannot prove a human approver; \
+                 use \"agent\" or \"unknown\""
+                    .to_owned(),
+            ));
+        }
         if file.scopes.len() > MAX_ENTRIES || file.roles.len() > MAX_ENTRIES {
             return Err(ScopeMapError::Invalid(format!(
                 "more than {MAX_ENTRIES} entries in a table"
@@ -371,6 +380,10 @@ mod tests {
                 "'*'",
             ),
             (r#"{"version":1,"scopes":{},"roles":{}}"#, "grants nothing"),
+            (
+                r#"{"version":1,"actor_type":"human","scopes":{"a":{"tools":["t"],"devices":["d"]}}}"#,
+                "actor_type \"human\"",
+            ),
             ("not json", "JSON"),
         ];
         for (json, needle) in cases {

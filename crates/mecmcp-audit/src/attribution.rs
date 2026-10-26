@@ -510,7 +510,7 @@ mod tests {
             subject: "A".into(),
             client_id: None,
         };
-        assert_ne!(literal.to_string(), "oauth:A");
+        assert_eq!(literal.to_string(), "oauth:i:%2541");
         assert_ne!(literal.to_string(), escaped.to_string());
     }
 

@@ -232,6 +232,17 @@ impl TokenVerifier {
         let scopes = extract_scopes(&token_data.claims.extra);
         let client_id = extract_client_id(&token_data.claims.extra);
         if matches!(self.config.token_profile, TokenProfile::AccessToken { .. }) {
+            // Keycloak marks ID tokens with a body `typ: "ID"`; one whose `aud` is this
+            // resource (audience override, or an "add to ID token" mapper) is not a bearer.
+            let id_token = token_data
+                .claims
+                .extra
+                .get("typ")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|typ| typ.eq_ignore_ascii_case("ID"));
+            if id_token {
+                return Err(VerificationFailure::WrongTokenType);
+            }
             if token_data.claims.jti.is_none() {
                 return Err(VerificationFailure::MissingClaim("jti".to_owned()));
             }
@@ -1230,6 +1241,28 @@ mod tests {
                 "typ {accepted:?} must be accepted"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn access_profile_refuses_a_body_typ_id_even_without_typ_enforcement() {
+        let key = generate_test_key(KID);
+        for typ in ["ID", "id", "Id"] {
+            let mut claims = access_claims();
+            claims["typ"] = serde_json::json!(typ);
+            let token = sign_token(&key, &claims, KID);
+            assert_eq!(
+                access_verifier(&key, false)
+                    .verify(&token)
+                    .await
+                    .unwrap_err(),
+                VerificationFailure::WrongTokenType,
+                "{typ}"
+            );
+        }
+        let mut bearer = access_claims();
+        bearer["typ"] = serde_json::json!("Bearer");
+        let token = sign_token(&key, &bearer, KID);
+        assert!(access_verifier(&key, false).verify(&token).await.is_ok());
     }
 
     #[test]
