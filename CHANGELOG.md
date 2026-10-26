@@ -54,6 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   IdP-verified subjects. A verified record makes the state file version 9; nothing changes
   for a deployment that leaves the flag off (#400).
 
+### Documentation
+
+- `docs/OAUTH.md` section 9: Client ID Metadata Documents are the authorization server's
+  concern, what the resource server already provides for them, and what to configure at the
+  IdP. The OIDC human-identity spec's Phases 1-4 carry status notes (#400).
+
 ## [0.29.4] - 2026-10-26
 
 ### Added

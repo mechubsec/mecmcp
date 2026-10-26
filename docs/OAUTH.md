@@ -355,3 +355,31 @@ Before upgrading, snapshot the guest or copy the change-set state file. Rolling 
 pre-0.29 binary after an OAuth caller has created a change set requires restoring that
 pre-upgrade state file, which rewinds all change-set state since the snapshot (see the
 rollback break at the top).
+
+## 9. Client ID Metadata Documents (CIMD)
+
+mecmcp is a pure resource server, so CIMD (the MCP 2025-11 authorization spec's way for a
+client to use an HTTPS URL as its `client_id`, which the authorization server fetches to
+learn the client's name, redirect URIs and keys) is the authorization server's concern, not
+this server's. The server never sees a client registration, never fetches a client's
+metadata document, and has no endpoint or flag for either; adding one would make a resource
+server fetch attacker-chosen URLs.
+
+What the resource server needs for a CIMD-using client to work is already here:
+
+- **Discovery.** RFC 9728 protected-resource metadata at the well-known route (section 2),
+  and `resource_metadata` in every 401 challenge, so the client finds the authorization
+  server from this server and then does CIMD with that server.
+- **Audience binding.** The token must carry this server's canonical resource URI as `aud`
+  (section 3, step 2), so a token a client obtained for another resource is refused
+  (`wrong_audience`), whatever client id it used.
+- **A client id in the token.** `client_id` or `azp` is required and must be 1-128 bytes of
+  printable ASCII without spaces (`invalid_client_id` otherwise). A CIMD client id is a URL,
+  so it must fit that, and it is recorded in the audit trail as given.
+
+What the operator configures at the IdP: enable CIMD (or the IdP's equivalent) on the
+authorization server; keep the one-audience-per-resource and `at+jwt` settings from
+section 3; and decide there which client URLs may register and which scopes they may
+request, since this server maps scopes and roles to tools and devices (section 4) but never
+judges who the client is. If your IdP does not support CIMD, clients fall back to the
+registration method it does support; nothing here changes.
