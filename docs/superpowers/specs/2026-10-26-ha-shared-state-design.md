@@ -175,10 +175,16 @@ for a single-instance deployment.
   inventory/policy that the active has since changed. Require either
   configuration on the shared volume (or a symlink/bind of `/etc/<svc>` to
   it) or synchronous config distribution, **and** a config-version check:
-  the active writes a hash/version file on the shared volume whenever it
-  (re)loads config; a standby's `/readyz` stays 503 until its loaded
-  config hash equals that file. A missing or mismatched version file means
-  not ready, never "assume current".
+  a hash/version marker lives on the shared volume and is written
+  **only by the config-distribution step** (the operator's deploy/sync of
+  `/etc/<svc>`), never by the server on reload. Every reload, including
+  takeover, is **compare-only**: the node's loaded config hash must equal
+  the existing marker or `/readyz` stays 503. A missing or mismatched
+  marker means not ready, never "assume current", and a node never
+  publishes a marker from its own loaded config, so a stale standby cannot
+  self-certify v1 over the active's v2. If an operator-initiated publish
+  from a server is ever wanted, it is allowed only on a node that has
+  already verified the existing marker, as an explicit command.
 - **Takeover order:** acquire owner lock, then read state file, replay store
   and `tokens.json`, then **(re)load `FileInventory` and config** (explicit
   `reload()`, `file.rs:70`; it does not refresh itself) and verify the
@@ -196,7 +202,9 @@ for a single-instance deployment.
   assert persisted state is monotone. A readiness test asserts `/readyz`
   is 503 for a non-owner while `/healthz` is 200, and that inventory
   reload happens-before ready, and that a standby whose local
-  `devices.json` differs from the shared version file stays 503.
+  `devices.json` differs from the shared version file stays 503. Add a test where a stale
+  standby takes ownership and reloads: the marker must be byte-identical
+  afterwards and the node not ready.
 - Sabotage check, **separate** test run: delete the `try_acquire_owner`
   call; the overlap test must fail. Likewise remove the inventory reload;
   the stale-inventory test must fail; so must a run with the version check
