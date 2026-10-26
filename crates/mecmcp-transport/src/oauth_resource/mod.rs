@@ -6,7 +6,7 @@ mod scope_map;
 pub use metadata::{metadata_document, metadata_router};
 pub use scope_map::{MappedAuthority, OAuthScopeMap, ScopeMapError};
 
-use mecmcp_auth::{CallerCtx, Grant, OAuthIdentity};
+use mecmcp_auth::{CallerCtx, DeviceAttributeSource, Grant, OAuthIdentity};
 use mecmcp_oidc::{
     KeySource, OidcConfig, ResourceUri, ResourceUriError, TokenProfile, TokenVerifier,
     VerificationFailure,
@@ -243,6 +243,7 @@ pub struct OAuthResource<G: Grant> {
     config: OAuthResourceConfig,
     verifier: TokenVerifier,
     permits: Semaphore,
+    attributes: Option<Arc<dyn DeviceAttributeSource>>,
     _grant: PhantomData<fn() -> G>,
 }
 
@@ -259,8 +260,17 @@ impl<G: Grant> OAuthResource<G> {
             verifier: TokenVerifier::new(oidc, source),
             permits: Semaphore::new(config.max_concurrent_verifications()),
             config,
+            attributes: None,
             _grant: PhantomData,
         }
+    }
+
+    /// Supply live device attributes so scope-map entries with `device_selectors` can
+    /// resolve. Without one, such entries grant no devices.
+    #[must_use]
+    pub fn with_device_attributes(mut self, source: Arc<dyn DeviceAttributeSource>) -> Self {
+        self.attributes = Some(source);
+        self
     }
 
     /// The configuration this resource was built from.
@@ -317,7 +327,11 @@ impl<G: Grant> OAuthResource<G> {
             subject: claims.subject,
             client_id: claims.client_id,
         };
-        let Some(authority) = self.config.scope_map().map(&claims.scopes, &claims.roles) else {
+        let Some(authority) = self.config.scope_map().map_with(
+            &claims.scopes,
+            &claims.roles,
+            self.attributes.as_deref(),
+        ) else {
             return Err(OAuthRejection::Unmapped(identity));
         };
         Ok(CallerCtx::oauth(
