@@ -239,8 +239,11 @@ never bind a display name.
 32 bytes, owner-only, owned by the service user):
 
 ```bash
-install -m 0600 -o jmcp -g jmcp /dev/null /etc/jmcp/approval-digest.key
-head -c 32 /dev/urandom > /etc/jmcp/approval-digest.key
+# As the service user, never as root: /etc/jmcp is service-owned on packaged
+# installs, so a root write could follow a planted symlink. Run from a root
+# shell (`sudo -u jmcp` works too). `set -C` keeps an existing key, since
+# replacing it orphans pending approvals.
+runuser -u jmcp -- sh -c 'umask 077; set -C; head -c 48 /dev/urandom | base64 > /etc/jmcp/approval-digest.key'
 ```
 
 **5. Start the server with the verifier configured:**
