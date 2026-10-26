@@ -282,8 +282,11 @@ With `--oidc-issuer` set and `--require-verified-approver` off, the server logs 
 `audit`-target warning at startup giving the **count** of live `human` tokens that have no
 `oidc_subject` binding (never their names). Rollout order: set the issuer, bind every
 human token until the warning stops (there is no in-place edit: `token revoke --name X`,
-then `token add --name X ... --oidc-issuer ... --oidc-subject ...`, and hand the holder the
-new secret, since the old one dies with the revoke),
+then `token add --name X ... --oidc-issuer ... --oidc-subject ...`, then reload the running
+server once, after both succeed (pass `--server-pid` to `token add` only, or send SIGHUP /
+restart; it caches the store, so the old secret keeps working until then), confirm the reload took (the old secret now gets 401 and the new one
+authenticates; a failed reload keeps the old store), and only then hand the holder the new
+secret),
 watch for rejections, then enable `--require-verified-approver`. It is a signal only; the
 static-token path is never switched off for you. Servers call
 `VerifiedApproverArgs::warn_unbound_human_tokens(&store)` once after loading the token

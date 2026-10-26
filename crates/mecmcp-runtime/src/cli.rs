@@ -430,7 +430,7 @@ impl VerifiedApproverArgs {
             unbound_human_tokens = unbound,
             "{unbound} human token(s) have no oidc_subject binding; bind each (`token revoke`, then \
              `token add --oidc-issuer ... --oidc-subject ...` under the same name, and \
-             redistribute the new secret) before enabling --require-verified-approver, \
+             reload the server, then redistribute the new secret) before enabling --require-verified-approver, \
              which will otherwise refuse them"
         );
         Some(unbound)
