@@ -217,9 +217,10 @@ impl BearerResponseProfile {
     ///
     /// # Errors
     /// Returns [`BearerAuthError::InvalidResourceMetadata`] unless `url` is an
-    /// absolute `http(s)` URL of printable ASCII with no quote or backslash (the
-    /// same header-safety rule the realm gets). The value is always emitted inside
-    /// a quoted-string, so other URL-legal characters (`,;'*{}`) are safe.
+    /// absolute `http(s)` URL (a DNS-name or bracketed-IPv6 host, no userinfo) of
+    /// printable ASCII with no quote or backslash (the same header-safety rule the
+    /// realm gets). The value is always emitted inside a quoted-string, so other
+    /// URL-legal path characters (`,;'*`) are safe.
     pub fn with_resource_metadata(
         mut self,
         url: impl Into<String>,
@@ -228,7 +229,7 @@ impl BearerResponseProfile {
         if let Some(reason) = header_unsafe_reason(&url) {
             return Err(BearerAuthError::InvalidResourceMetadata(reason));
         }
-        if !(url.starts_with("https://") || url.starts_with("http://")) {
+        if !is_absolute_http_url(&url) {
             return Err(BearerAuthError::InvalidResourceMetadata(
                 "not an absolute http(s) URL",
             ));
@@ -1535,6 +1536,42 @@ fn validate_realm(realm: String) -> Result<String, BearerAuthError> {
 }
 
 /// Why `value` cannot be interpolated into a quoted challenge parameter, if so.
+/// An `http(s)` URL with a well-formed host (DNS name or bracketed IPv6) and no userinfo.
+fn is_absolute_http_url(candidate: &str) -> bool {
+    let Ok(uri) = candidate.parse::<http::Uri>() else {
+        return false;
+    };
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    if !matches!(uri.scheme_str(), Some("https" | "http")) || authority.as_str().contains('@') {
+        return false;
+    }
+    let host = authority.host();
+    let port_ok = match authority.as_str().strip_prefix(host) {
+        Some("") => true,
+        Some(port) => port
+            .strip_prefix(':')
+            .is_some_and(|digits| digits.parse::<u16>().is_ok()),
+        None => false,
+    };
+    if !port_ok {
+        return false;
+    }
+    match host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+    {
+        Some(ipv6) => ipv6.parse::<std::net::Ipv6Addr>().is_ok(),
+        None => {
+            !host.is_empty()
+                && host
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.'))
+        }
+    }
+}
+
 fn header_unsafe_reason(value: &str) -> Option<&'static str> {
     for byte in value.bytes() {
         if byte == b'"' {

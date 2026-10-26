@@ -85,8 +85,8 @@ async fn the_compact_profile_carries_it_too() {
 
 #[tokio::test]
 async fn url_legal_delimiters_stay_inside_the_quoted_string() {
-    // `,;'*{}` are legal in a URL host/path but would split an unquoted auth-param.
-    let url = "https://a,b;c'd*e{f}.example/.well-known/oauth-protected-resource";
+    // `,;'*` are legal in a URL path but would split an unquoted auth-param.
+    let url = "https://h.example/.well-known/oauth-protected-resource/a,b;c'd*e";
     let profile = BearerResponseProfile::detailed("test")
         .with_resource_metadata(url)
         .expect("URL-legal delimiters are accepted");
@@ -127,6 +127,13 @@ fn a_url_that_could_break_out_of_the_quoted_string_is_refused() {
         "https://h/\u{e9}",
         "javascript:alert(1)",
         "/relative",
+        // Not absolute URLs with a usable host, though they start with the scheme.
+        "https://",
+        "https://bad host/metadata",
+        "https://[broken]/",
+        "https://h:bogus/metadata",
+        "https://user:pw@h.example/metadata",
+        "https://a{b}.example/metadata",
     ] {
         let result = BearerResponseProfile::detailed("test").with_resource_metadata(hostile);
         assert!(
