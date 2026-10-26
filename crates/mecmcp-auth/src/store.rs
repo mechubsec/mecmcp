@@ -84,6 +84,29 @@ impl<G: Grant> TokenStore<G> {
         &self.entries
     }
 
+    /// How many live (unexpired at `now`) tokens are `human` with no `oidc_subject` binding.
+    ///
+    /// These cannot present a verified approver identity, so they are what an operator
+    /// must bind before enabling `--require-verified-approver` (#400). A count only: never
+    /// names, so it is safe to log.
+    #[must_use]
+    pub fn unbound_human_count_at(&self, now: DateTime<Utc>) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                !entry.is_expired_at(now)
+                    && entry.effective_actor_type() == crate::ActorType::Human
+                    && entry.oidc_subject.is_none()
+            })
+            .count()
+    }
+
+    /// [`Self::unbound_human_count_at`] at the current wall clock.
+    #[must_use]
+    pub fn unbound_human_count(&self) -> usize {
+        self.unbound_human_count_at(Utc::now())
+    }
+
     /// Number of entries.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -297,6 +320,26 @@ mod tests {
             oidc_subject: None,
         };
         (plaintext, entry)
+    }
+
+    #[test]
+    fn unbound_human_count_skips_bound_agent_and_expired_tokens() {
+        let now = DateTime::from_timestamp(1_800_000_000, 0).expect("timestamp");
+        let (_, unbound) = entry_named("unbound");
+        let (_, mut bound) = entry_named("bound");
+        bound.oidc_subject = Some(crate::OidcSubject {
+            issuer: "https://idp.example".to_owned(),
+            subject: "alice".to_owned(),
+        });
+        let (_, mut agent) = entry_named("agent");
+        agent.actor_type = crate::ActorType::Agent;
+        let (_, mut unknown) = entry_named("unknown");
+        unknown.actor_type = crate::ActorType::Unknown;
+        let (_, mut expired) = entry_named("expired");
+        expired.expires_at = Some(now - chrono::Duration::seconds(1));
+        let store =
+            TokenStore::try_new(vec![unbound, bound, agent, unknown, expired]).expect("store");
+        assert_eq!(store.unbound_human_count_at(now), 1);
     }
 
     #[test]

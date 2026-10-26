@@ -72,6 +72,7 @@ pub struct OAuthResourceConfig {
     scope_map: OAuthScopeMap,
     role_claim: String,
     require_at_jwt_typ: bool,
+    max_token_lifetime: Option<Duration>,
     verify_timeout: Duration,
     max_concurrent_verifications: usize,
 }
@@ -108,6 +109,7 @@ impl OAuthResourceConfig {
             scope_map,
             role_claim: "roles".to_owned(),
             require_at_jwt_typ: false,
+            max_token_lifetime: None,
             verify_timeout: Duration::from_secs(3),
             max_concurrent_verifications: 32,
         })
@@ -135,6 +137,19 @@ impl OAuthResourceConfig {
         self
     }
 
+    /// Ceiling on how long any access token is honoured, whatever lifetime the IdP issued
+    /// (default off). A token is refused unless `exp - iat <= ceiling` (a token with no `iat`
+    /// is always refused by the verifier). The verifier already rejects a token past
+    /// `exp + leeway`, so the age bound `now - iat <= ceiling + leeway` follows and needs no
+    /// check of its own: a token the IdP has stopped vouching for works for at most
+    /// `min(exp, iat + ceiling)` plus the clock-skew leeway.
+    /// A zero ceiling is clamped to one second.
+    #[must_use]
+    pub fn with_max_token_lifetime(mut self, ceiling: Duration) -> Self {
+        self.max_token_lifetime = Some(ceiling.max(Duration::from_secs(1)));
+        self
+    }
+
     /// How long one verification (including any JWKS fetch it waits on) may take before
     /// the request is refused as unavailable (default 3 s).
     #[must_use]
@@ -150,6 +165,12 @@ impl OAuthResourceConfig {
         // Tokio's Semaphore::new panics above MAX_PERMITS; "unlimited" must not crash startup.
         self.max_concurrent_verifications = permits.clamp(1, Semaphore::MAX_PERMITS);
         self
+    }
+
+    /// The token-lifetime ceiling, if one is set.
+    #[must_use]
+    pub fn max_token_lifetime(&self) -> Option<Duration> {
+        self.max_token_lifetime
     }
 
     /// The per-verification time limit.
@@ -277,6 +298,12 @@ impl<G: Grant> OAuthResource<G> {
             }
             Err(failure) => return Err(OAuthRejection::Invalid(failure.reason_code())),
         };
+        if let Some(ceiling) = self.config.max_token_lifetime() {
+            let ceiling_secs = i64::try_from(ceiling.as_secs()).unwrap_or(i64::MAX);
+            if claims.expires_at.saturating_sub(claims.issued_at) > ceiling_secs {
+                return Err(OAuthRejection::Invalid("token_lifetime_exceeded"));
+            }
+        }
         // `sub` becomes the rate-limit key and the change-set identity, and `client_id`
         // reaches audit text: neither may carry spaces, controls or bidi/format characters.
         if !valid_identity_part(&claims.subject) {

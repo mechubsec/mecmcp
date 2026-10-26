@@ -406,6 +406,36 @@ impl VerifiedApproverArgs {
         })
     }
 
+    /// Startup deprecation signal for the legacy human-token path (#400 phase 4).
+    ///
+    /// When an IdP is configured (`--oidc-issuer`) but `--require-verified-approver` is off,
+    /// logs one warning with the *count* of live `human` tokens that have no `oidc_subject`
+    /// binding, and returns that count; otherwise logs nothing and returns `None`. A count
+    /// of zero is not warned about. Never names a token. Call it once at startup, next to
+    /// [`validate`](Self::validate), with the loaded store. The operator, not this code,
+    /// decides when to enforce: there is no cutover.
+    pub fn warn_unbound_human_tokens<G: mecmcp_auth::Grant>(
+        &self,
+        store: &mecmcp_auth::TokenStore<G>,
+    ) -> Option<usize> {
+        if self.oidc_issuer.is_none() || self.require_verified_approver {
+            return None;
+        }
+        let unbound = store.unbound_human_count();
+        if unbound == 0 {
+            return None;
+        }
+        tracing::warn!(
+            target: "audit",
+            unbound_human_tokens = unbound,
+            "{unbound} human token(s) have no oidc_subject binding; bind each (`token revoke`, then \
+             `token add --oidc-issuer ... --oidc-subject ...` under the same name, and \
+             reload the server, then redistribute the new secret) before enabling --require-verified-approver, \
+             which will otherwise refuse them"
+        );
+        Some(unbound)
+    }
+
     /// Cross-check these flags against the two pieces of server-specific
     /// context this crate cannot see on its own: whether a
     /// `--approval-digest-key-file` was configured, and whether the
@@ -518,6 +548,12 @@ pub struct OAuthResourceArgs {
     /// Require the RFC 9068 `typ: at+jwt` header on access tokens.
     #[arg(long)]
     pub oauth_require_at_jwt_typ: bool,
+
+    /// Ceiling, in seconds, on how long any access token is honoured regardless of the
+    /// lifetime the IdP issued: a token is refused unless `exp - iat` and its age are both
+    /// within it. Bounds how long a token for an offboarded user still works. Off by default.
+    #[arg(long)]
+    pub oauth_max_token_lifetime_secs: Option<u64>,
 }
 
 impl Default for OAuthResourceArgs {
@@ -530,6 +566,7 @@ impl Default for OAuthResourceArgs {
             oauth_audience: None,
             oauth_role_claim: "roles".to_owned(),
             oauth_require_at_jwt_typ: false,
+            oauth_max_token_lifetime_secs: None,
         }
     }
 }
@@ -579,6 +616,7 @@ impl OAuthResourceArgs {
     pub fn validate(&self) -> Result<(), OAuthResourceArgsError> {
         let modifier_given = self.oauth_require_at_jwt_typ
             || self.oauth_audience.is_some()
+            || self.oauth_max_token_lifetime_secs.is_some()
             || self.oauth_role_claim != "roles";
         if !self.enabled() {
             if modifier_given {
@@ -616,6 +654,9 @@ impl OAuthResourceArgs {
         {
             return Err(OAuthResourceArgsError::BadRoleClaim);
         }
+        if self.oauth_max_token_lifetime_secs == Some(0) {
+            return Err(OAuthResourceArgsError::ZeroTokenLifetime);
+        }
         Ok(())
     }
 }
@@ -642,7 +683,7 @@ pub enum OAuthResourceArgsError {
     Incomplete(Vec<&'static str>),
     /// An OAuth modifier flag was given with no OAuth configuration to modify.
     #[error(
-        "--oauth-audience, --oauth-role-claim and --oauth-require-at-jwt-typ have no effect without --oauth-issuer, --oauth-resource and --oauth-scope-map"
+        "--oauth-audience, --oauth-role-claim, --oauth-require-at-jwt-typ and --oauth-max-token-lifetime-secs have no effect without --oauth-issuer, --oauth-resource and --oauth-scope-map"
     )]
     FlagWithoutOAuth,
     /// The issuer is not https.
@@ -658,6 +699,9 @@ pub enum OAuthResourceArgsError {
         "--oauth-role-claim must be non-empty and must not be a registered claim (sub, iss, aud, exp, nbf, iat, jti, scope, scp, client_id, azp, cnf, typ, act)"
     )]
     BadRoleClaim,
+    /// `--oauth-max-token-lifetime-secs 0` would refuse every token.
+    #[error("--oauth-max-token-lifetime-secs must be greater than zero")]
+    ZeroTokenLifetime,
 }
 
 /// SSDF evidence-pipeline switches, defined once and flattened into every
@@ -1933,6 +1977,61 @@ mod composition_tests {
         );
     }
 
+    fn store_with_unbound_human() -> mecmcp_auth::TokenStore {
+        let (_, digest) = mecmcp_auth::TokenSecret::mint().expect("mint");
+        let entry = mecmcp_auth::TokenEntry {
+            name: "alice-laptop".to_owned(),
+            digest,
+            devices: mecmcp_auth::ScopeSet::Wildcard,
+            tools: mecmcp_auth::ScopeSet::Wildcard,
+            created_at: std::time::UNIX_EPOCH.into(),
+            expires_at: None,
+            grant: None,
+            provider: None,
+            provider_tier: None,
+            on_behalf_of: None,
+            actor_type: mecmcp_auth::ActorType::Human,
+            oidc_subject: None,
+        };
+        mecmcp_auth::TokenStore::try_new(vec![entry]).expect("store")
+    }
+
+    #[test]
+    fn the_unbound_human_warning_fires_only_with_an_issuer_and_enforcement_off() {
+        let store = store_with_unbound_human();
+        let args = |issuer: bool, enforce: bool| VerifiedApproverArgs {
+            oidc_issuer: issuer.then(|| "https://idp.example".to_owned()),
+            require_verified_approver: enforce,
+            ..VerifiedApproverArgs::default()
+        };
+
+        let mut warned = None;
+        let logged = mecmcp_audit::testutil::run_with_capture(|| {
+            warned = args(true, false).warn_unbound_human_tokens(&store);
+        });
+        assert_eq!(warned, Some(1));
+        assert!(
+            logged.contains("1 human token(s) have no oidc_subject"),
+            "{logged}"
+        );
+        assert!(
+            !logged.contains("alice-laptop"),
+            "never names a token: {logged}"
+        );
+
+        for (issuer, enforce) in [(false, false), (true, true), (false, true)] {
+            let mut warned = Some(0);
+            let logged = mecmcp_audit::testutil::run_with_capture(|| {
+                warned = args(issuer, enforce).warn_unbound_human_tokens(&store);
+            });
+            assert_eq!(warned, None, "issuer={issuer} enforce={enforce}");
+            assert!(!logged.contains("oidc_subject"), "{logged}");
+        }
+
+        let empty = mecmcp_auth::TokenStore::<mecmcp_auth::NoGrant>::default();
+        assert_eq!(args(true, false).warn_unbound_human_tokens(&empty), None);
+    }
+
     #[derive(Debug, Parser)]
     struct OAuthTestCli {
         #[command(flatten)]
@@ -1994,6 +2093,7 @@ mod composition_tests {
         for flag in [
             vec!["--oauth-require-at-jwt-typ"],
             vec!["--oauth-audience", "x"],
+            vec!["--oauth-max-token-lifetime-secs", "900"],
             vec!["--oauth-role-claim", "groups"],
         ] {
             assert_eq!(
@@ -2002,6 +2102,20 @@ mod composition_tests {
                 "{flag:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_oauth_token_lifetime_ceiling_must_be_positive() {
+        let mut argv = OAUTH_FULL.to_vec();
+        argv.extend(["--oauth-max-token-lifetime-secs", "0"]);
+        assert_eq!(
+            parse_oauth(&argv).validate(),
+            Err(OAuthResourceArgsError::ZeroTokenLifetime)
+        );
+        argv[6..].copy_from_slice(&["--oauth-max-token-lifetime-secs", "900"]);
+        let args = parse_oauth(&argv);
+        assert_eq!(args.oauth_max_token_lifetime_secs, Some(900));
+        assert_eq!(args.validate(), Ok(()));
     }
 
     #[test]

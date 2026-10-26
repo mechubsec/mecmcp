@@ -27,6 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [Unreleased]
+
+### Added
+
+- **transport/runtime:** `--oauth-max-token-lifetime-secs <N>` (`OAuthResourceConfig::with_max_token_lifetime`)
+  bounds the OAuth revocation window: an access token whose `exp - iat` exceeds the ceiling is
+  refused (`token_lifetime_exceeded`), so an offboarded user's token works for at most
+  `min(exp, iat + N)` plus leeway. Off by default; servers must pass it through in their
+  `build_oauth_resource` (one `if let` line). Tokens without `iat` were already refused.
+  (#400)
+- **runtime/auth:** `VerifiedApproverArgs::warn_unbound_human_tokens` (backed by
+  `TokenStore::unbound_human_count`) logs a startup warning with the count of live `human`
+  tokens lacking an `oidc_subject` binding when `--oidc-issuer` is set but
+  `--require-verified-approver` is off. A deprecation signal only: no cutover, token-store
+  format unchanged. Servers opt in with one call after loading the store. (#400)
+
 ## [0.29.2] - 2026-10-26
 
 ### Added
