@@ -42,11 +42,10 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
    at startup. No MCP call can change the security posture.
 5. **Server → IdP.** Opt-in ([#400](https://github.com/mechubsec/mecmcp/issues/400)): the core crates
    (`mecmcp-oidc`, `mecmcp-auth`, `mecmcp-changeset`, `mecmcp-transport`) can verify a
-   `Mecmcp-Approver-Assertion` step-up header, fetching JWKS from the IdP to do it, but
-   **no server in this repository wires that in yet** — a server must flatten
-   `VerifiedApproverArgs` into its own CLI, build an `ApproverAssertionVerifier`, and
-   construct its `ApproverIdentity` via `ApproverIdentity::from_attribution` for any of
-   this to run (`mecmcp-runtime#994 W8`, a pilot server, is the first one planned). Where
+   `Mecmcp-Approver-Assertion` step-up header, fetching JWKS from the IdP to do it. A
+   server opts in by flattening `VerifiedApproverArgs` into its own CLI, building an
+   `ApproverAssertionVerifier`, and constructing its `ApproverIdentity` via
+   `ApproverIdentity::from_attribution`; `rust-junosmcp` does (MEC-995). Where
    wired, no approver JWT, no raw claims and no IdP response ever flow back to the model
    or into a tool result — verification happens once at the bearer boundary, and only
    issuer+subject survive it. JWKS unreachable fails closed: approvals are refused, but
@@ -83,7 +82,7 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
 - **Prompt injection is unsolved (T1).** Controls limit *what* a hijacked model can do
   (scopes, two-person approval). They cannot stop it trying. Give read-only
   tokens to any client that reads untrusted text.
-- **"Two-person" means two tokens, not two humans, on every server shipped today
+- **"Two-person" means two tokens, not two humans, unless strict mode is on
   ([#400](https://github.com/mechubsec/mecmcp/issues/400)).** By default, one person
   holding two tokens can still approve their own change, and lab mode waives approval
   outright (the audit record shows `approval_waiver: "lab-mode"`, but the change is not
@@ -95,11 +94,11 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
   outright rather than letting any of them bypass the check. `VerifiedApprover` itself is
   sealed (`#[non_exhaustive]`, no public constructor): the only way to produce one is
   `bind_approver` succeeding at the bearer boundary, so a server cannot build one from a
-  tool argument. **This is a library
-  capability, not yet a deployed one**: no server in this repository flattens
-  `VerifiedApproverArgs` into its CLI or wires a `ChangesetCoordinator` built with it, so
-  every server shipped today still has the two-tokens gap this paragraph opened with. That
-  assertion, once a server wires it, only covers *who approved*; it does not scope *what*
+  tool argument. **Opt-in per server**:
+  `rust-junosmcp` wires it (MEC-995); a server that does not flatten
+  `VerifiedApproverArgs` and build its `ChangesetCoordinator` with it, or a deployment
+  that leaves `--require-verified-approver` off, still has the two-tokens gap this paragraph opened
+  with. The assertion only covers *who approved*; it does not scope *what*
   they may approve beyond the token's existing tool/device scopes, and selector-scoped
   approver roles (cluster/node/pool/tag/controller/site) are not yet built (tracked
   separately, see #400).

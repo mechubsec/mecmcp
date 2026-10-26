@@ -196,18 +196,15 @@ proposer's identity. The approver's existing bearer token is unchanged; the
 JWT is an extra assertion, sent as `Mecmcp-Approver-Assertion`, never as
 `Authorization` and never as a tool argument.
 
-**This is a core-library capability, not yet a feature of any server in this
-repository.** `mecmcp-oidc`, `mecmcp-auth`, `mecmcp-changeset` and
-`mecmcp-transport` all support it, but a server must opt in explicitly — flatten
+**A server must opt in.** `rust-junosmcp` does (v0.27.5 or later, MEC-995), and the
+commands below use it. `mecmcp-oidc`, `mecmcp-auth`, `mecmcp-changeset` and
+`mecmcp-transport` provide the pieces; a server flattens
 `mecmcp_runtime::cli::VerifiedApproverArgs` into its own CLI (it is standalone,
-like `WebApproverArgs`, not part of the shared `Cli`), call its `validate`
-alongside the server's own CLI validation, construct an
-`ApproverAssertionVerifier`, and build every `ApproverIdentity` it passes to
+like `WebApproverArgs`, not part of the shared `Cli`), calls its `validate`
+alongside the server's own CLI validation, constructs an
+`ApproverAssertionVerifier`, and builds every `ApproverIdentity` it passes to
 `approve_change_set`/`create_change_set` via `ApproverIdentity::from_attribution`
-rather than constructing one by hand. `rust-junosmcp` is the planned first
-server to do this (MEC-994 W8); the commands below use it as the running
-example of what that integration will look like, not something it supports
-today.
+rather than constructing one by hand.
 
 `mecmcp-transport`'s verifier sits behind its `verified-approver` feature
 (off by default, so a server that never configures this path does not link
@@ -230,7 +227,7 @@ enforces one, the audience (`aud`) the access token is minted for.
 
 ```bash
 rust-junosmcp token add --tokens-file /etc/jmcp/tokens.json --name alice \
-  --actor-type human --tools approve_change_set --devices '*' \
+  --actor-type human --tools approve_junos_change_set --devices '*' \
   --oidc-issuer https://idp.example.com/ --oidc-subject alice@example.com
 ```
 
@@ -238,10 +235,23 @@ The subject is whatever unique, stable identifier your IdP puts in the JWT's
 `sub` claim — not necessarily an email. Only issuer+subject are ever stored;
 never bind a display name.
 
-**4. Start the server with the verifier configured:**
+**4. Create the approval-digest key** (strict mode refuses to start without it; at least
+32 bytes, owner-only, owned by the service user):
 
 ```bash
-rust-junosmcp --oidc-issuer https://idp.example.com/ \
+install -m 0600 -o jmcp -g jmcp /dev/null /etc/jmcp/approval-digest.key
+head -c 32 /dev/urandom > /etc/jmcp/approval-digest.key
+```
+
+**5. Start the server with the verifier configured:**
+
+```bash
+rust-junosmcp \
+  --device-mapping /etc/jmcp/devices.json \
+  --transport streamable-http \
+  --host 127.0.0.1 --port 30030 \
+  --tokens-file /etc/jmcp/tokens.json \
+  --oidc-issuer https://idp.example.com/ \
   --oidc-audience <your-aud> \
   --oidc-role-claim roles --approver-role approver \
   --approver-max-age-secs 300 \
@@ -259,10 +269,13 @@ refuses to start on `--oidc-issuer` with no `--oidc-audience` regardless of
 `--require-verified-approver`, since `OidcConfig` has no sensible default for
 it.
 
-**5. The approving client presents the header on the approve call** — how it
+**6. The approving client presents the header on the approve call** — how it
 obtains that JWT (interactive login, device-code flow, whatever your IdP
 supports) is between the approver and their IdP; the server only ever sees
-and verifies the resulting token.
+and verifies the resulting token. Send the header **only** on the approve call:
+the server verifies it on any request that carries it, so a bad assertion on a
+read is refused too, and a good one spends its single-use `jti` before the
+approval it was meant for.
 
 This does not replace scoping: it verifies *who* approved, not *what* they
 may approve beyond their token's existing tool and device scopes. Selector-scoped
@@ -279,10 +292,11 @@ now reserved.
 
 ## 3. Per-server notes
 
-### rustjunosmcp — 0.17.0, production
+### rustjunosmcp — 1.0.0, stable
 
-35 tools with default features: 26 Junos plus 9 SRX (`srx` feature, on by
-default). Build with `--no-default-features` for the 26-tool Junos-only surface.
+44 tools with default features: 29 Junos (28 operations plus the `execute`
+dispatcher) and 15 SRX (`srx` feature, on by default). Build with
+`--no-default-features` for the 29-tool Junos-only surface.
 
 Beyond the common five steps:
 
