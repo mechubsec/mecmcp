@@ -159,20 +159,17 @@ impl OAuthScopeMap {
 
     /// Read and validate a scope-map file (at most 64 KiB).
     ///
+    /// The file defines every OAuth caller's authority, so on Unix it is held to the
+    /// workspace's no-secret config rules (`CredentialFileRole::ConfigNoSecret`): opened with
+    /// `O_NOFOLLOW` (no symlink), a regular file, mode within `0640`, owned by the process
+    /// euid or root (a root process accepts any owner). All checks run on the one fd that is
+    /// then read, so the path cannot be swapped between check and use.
+    ///
     /// # Errors
-    /// Returns a [`ScopeMapError`] if the file is unreadable, oversized, or invalid.
+    /// Returns a [`ScopeMapError`] if the file is unreadable, unsafe, oversized, or invalid.
     pub fn load(path: &Path) -> Result<Self, ScopeMapError> {
-        // Bounded read, not a metadata length: FIFOs and /dev or /proc files report 0.
-        let file =
-            std::fs::File::open(path).map_err(|error| ScopeMapError::Io(error.to_string()))?;
-        let mut bytes = Vec::new();
-        file.take(MAX_FILE_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| ScopeMapError::Io(error.to_string()))?;
-        if bytes.len() as u64 > MAX_FILE_BYTES {
-            return Err(ScopeMapError::TooLarge);
-        }
-        Self::from_json(&bytes)
+        let file = open_hardened(path)?;
+        Self::from_json(&read_bounded(file)?)
     }
 
     /// The scope names this server understands, sorted, for `scopes_supported`.
@@ -218,6 +215,67 @@ impl OAuthScopeMap {
             actor_type: self.actor_type,
         })
     }
+}
+
+/// Open `path` and refuse anything but a regular, non-symlink, tightly-moded, trusted-owner
+/// file, judged by `fstat` on the returned descriptor.
+#[cfg(unix)]
+fn open_hardened(path: &Path) -> Result<std::fs::File, ScopeMapError> {
+    use rustix::fs::{FileType, Mode, OFlags, fstat, open};
+    use rustix::io::Errno;
+
+    // NONBLOCK: a FIFO with no writer would otherwise hang the open before the type check.
+    let descriptor = open(
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|error| {
+        if error == Errno::LOOP {
+            return ScopeMapError::Io(
+                "refusing a symlink; point --oauth-scope-map at the file itself".to_owned(),
+            );
+        }
+        ScopeMapError::Io(std::io::Error::from(error).to_string())
+    })?;
+    let stat = fstat(&descriptor)
+        .map_err(|error| ScopeMapError::Io(std::io::Error::from(error).to_string()))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return Err(ScopeMapError::Io(
+            "refusing a file that is not a regular file".to_owned(),
+        ));
+    }
+    let mode = stat.st_mode & 0o777;
+    if mode & !0o640 != 0 {
+        return Err(ScopeMapError::Io(format!(
+            "refusing mode {mode:04o}, looser than 0640; run chmod 0640 on it"
+        )));
+    }
+    let effective = rustix::process::geteuid().as_raw();
+    if effective != 0 && stat.st_uid != effective && stat.st_uid != 0 {
+        return Err(ScopeMapError::Io(format!(
+            "refusing owner uid {}, neither the service user (uid {effective}) nor root",
+            stat.st_uid
+        )));
+    }
+    Ok(std::fs::File::from(descriptor))
+}
+
+#[cfg(not(unix))]
+fn open_hardened(path: &Path) -> Result<std::fs::File, ScopeMapError> {
+    std::fs::File::open(path).map_err(|error| ScopeMapError::Io(error.to_string()))
+}
+
+/// Bounded read, not a metadata length: procfs and similar files report 0.
+fn read_bounded(file: impl Read) -> Result<Vec<u8>, ScopeMapError> {
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| ScopeMapError::Io(error.to_string()))?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(ScopeMapError::TooLarge);
+    }
+    Ok(bytes)
 }
 
 fn validate_spec(name: &str, spec: &GrantSpec) -> Result<(), ScopeMapError> {
@@ -547,9 +605,62 @@ mod tests {
     }
 
     #[test]
-    fn load_bounds_a_file_that_reports_no_length() {
-        let error = OAuthScopeMap::load(Path::new("/dev/zero")).unwrap_err();
+    fn read_bounded_caps_a_source_that_reports_no_length() {
+        let error = read_bounded(std::fs::File::open("/dev/zero").unwrap()).unwrap_err();
         assert!(matches!(error, ScopeMapError::TooLarge), "{error}");
+    }
+
+    #[cfg(unix)]
+    fn set_mode(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    #[cfg(not(unix))]
+    fn set_mode(_: &Path, _: u32) {}
+
+    #[cfg(unix)]
+    fn written_map(mode: u32) -> (tempfile::TempDir, std::path::PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("map.json");
+        std::fs::write(&path, MAP).unwrap();
+        set_mode(&path, mode);
+        (directory, path)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_accepts_a_0640_file_owned_by_the_process() {
+        let (_directory, path) = written_map(0o640);
+        assert!(OAuthScopeMap::load(&path).is_ok());
+        set_mode(&path, 0o600);
+        assert!(OAuthScopeMap::load(&path).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_refuses_a_group_or_world_writable_file() {
+        for mode in [0o646, 0o660, 0o666, 0o644] {
+            let (_directory, path) = written_map(mode);
+            let error = OAuthScopeMap::load(&path).unwrap_err();
+            assert!(matches!(error, ScopeMapError::Io(_)), "{mode:o}: {error}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_refuses_a_symlink() {
+        let (directory, path) = written_map(0o640);
+        let link = directory.path().join("link.json");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        let error = OAuthScopeMap::load(&link).unwrap_err();
+        assert!(error.to_string().contains("refusing"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_refuses_a_non_regular_file() {
+        let error = OAuthScopeMap::load(Path::new("/dev/null")).unwrap_err();
+        assert!(error.to_string().contains("refusing"), "{error}");
     }
 
     #[test]
@@ -557,6 +668,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("map.json");
         std::fs::write(&path, vec![b' '; 70_000]).unwrap();
+        set_mode(&path, 0o640);
         assert!(
             OAuthScopeMap::load(&path)
                 .unwrap_err()
