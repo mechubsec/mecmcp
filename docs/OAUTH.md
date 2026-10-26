@@ -129,6 +129,11 @@ Worked notes (verify the labels in your IdP version; check your IdP's documentat
 Lives on the server like `tokens.json`; a token cannot name its own authority. Maximum
 64 KiB, 256 entries per table, unknown fields refused, duplicate keys refused.
 
+The file decides every OAuth caller's tool and device authority, so it is integrity-checked
+at load: mode `0640` or tighter, owned by the service user or root, a regular file, and not
+a symlink (`chmod 0640` and `chown root:<service group>` is the usual layout). A looser mode,
+another owner or a symlink refuses to start. A root process accepts any owner.
+
 ```json
 {
   "version": 1,

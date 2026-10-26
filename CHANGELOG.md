@@ -43,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still refuses a forward endpoint without SSDF; consumers adopt forward-only by switching to
   `into_pipeline_config` + `start_pipeline`.
 
+### Security
+
+- **transport**: `OAuthScopeMap::load` now opens the `--oauth-scope-map` file with
+  `O_NOFOLLOW` and checks the same descriptor it reads (regular file, mode within `0640`,
+  owner the process euid or root). Before, a symlink, a group/world-writable file or one
+  owned by another user was accepted, so a local user able to write it could grant their own
+  token write tools. A file that is looser than `0640` now fails to load: `chmod 0640` it.
+  No API change.
+
 ## [0.29.0] - 2026-10-25
 
 > **Breaking release.** The public API changes below break
