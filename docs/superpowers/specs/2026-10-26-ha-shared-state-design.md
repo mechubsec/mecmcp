@@ -193,7 +193,10 @@ for a single-instance deployment.
   (`crates/mecmcp-transport/src/server.rs:928-930`) and carry no tool
   execution. Quiesce is a **lease** with a deadline: if the distribution step
   dies before the rename, the lease expires and admission resumes under the
-  unchanged marker, and an explicit abort clears it early; only then does it rename
+  unchanged marker, and an explicit abort clears it early. The rename itself
+  must present the lease's fencing token and is refused once the lease has
+  expired (a distributor paused past its deadline cannot rename later); how the
+  marker store enforces that token is open question 8; only then does it rename
   the marker and trigger the reload, and admission resumes once the loaded
   hash equals the new marker. Admission and the in-flight counter share one
   lock with the quiesce flag, so no request can pass the check under H1 and
@@ -320,3 +323,15 @@ request.
    `crates/mecmcp-device/src/flock.rs`, packaged services use per-service
    dirs. Does each service pass its own dir to `FlockDeviceLock` in its
    repo? Not checked here (consumers live outside this repo).
+8. **Fencing the marker rename.** A plain file on shared storage has no
+   compare-and-swap, and neither a separately held lock nor a lock-service
+   check fences it (a paused holder blocks recovery, or the check races the
+   rename). Token validation and marker replacement must be **one atomic
+   operation of the marker store** (e.g. a CAS on a versioned key in a
+   linearizable store). The token is bound to the ownership generation, and
+   takeover bumps the generation in that same store as its **first**
+   marker-store transaction, before reading configuration or the marker, so a token granted by a fenced owner is dead even before its
+   deadline (test: grant → failover → resume must refuse the rename). Choose
+   that store before Phase 1 is built, and
+   add a pause → expiry → resume test that proves the paused distributor's
+   rename is refused.
