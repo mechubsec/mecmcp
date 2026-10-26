@@ -185,7 +185,13 @@ for a single-instance deployment.
   self-certify v1 over the active's v2. There is **no**
   server-side marker-publication command, now or optional. The
   config-distribution step must hold the deployment lock and replace the
-  marker with an atomic rename.
+  marker with an atomic rename. **Before the rename it quiesces the owner**:
+  it asks the server to stop admitting `/mcp` requests (503 + `Retry-After`)
+  and waits until the in-flight count reaches zero; only then does it rename
+  the marker and trigger the reload, and admission resumes once the loaded
+  hash equals the new marker. Admission and the in-flight counter share one
+  lock with the quiesce flag, so no request can pass the check under H1 and
+  run after the marker becomes H2.
 - **`/readyz` is not enough.** The readiness check gates only the
   load-balancer's view (`health.rs:72-84`), not `/mcp`, so requests could
   still run on stale or premature config. While the loaded hash differs
@@ -212,9 +218,12 @@ for a single-instance deployment.
   is 503 for a non-owner while `/healthz` is 200, and that inventory
   reload happens-before ready, and that a standby whose local
   `devices.json` differs from the shared version file stays 503. Add a deterministic interleaving test (fake clock, barrier between
-  "marker replaced" and "reload completes"): a request admitted in that
-  window gets 503 + `Retry-After`, an already-admitted request completes,
-  and no request ever executes under a hash != marker. Add a test where a stale
+  "marker replaced" and "reload completes"): a request arriving after
+  quiesce gets 503 + `Retry-After`; a request admitted before quiesce
+  completes before the rename (the rename waits for in-flight = 0); a request
+  that passes the admission check immediately before quiesce is set is either
+  counted in-flight (and drained) or refused, never run after the rename; so no
+  request ever executes under a hash != marker. Add a test where a stale
   standby takes ownership and reloads: the marker must be byte-identical
   afterwards and the node not ready.
 - Sabotage check, **separate** test run: delete the `try_acquire_owner`
