@@ -27,7 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
-## [Unreleased]
+## [0.30.0] - 2026-10-26
+
+> **Minor release (breaking for literal construction).** New public fields:
+> `TokenEntry.device_selectors`, `CallerCtx.verified_proposer`, `Attribution.verified_proposer`,
+> `ChangeSetRecord.owner_verified`, `TokenAction::Add.device_selector`,
+> `VerifiedApproverArgs.require_verified_proposer`; new variant
+> `VerifiedApproverArgsError::ProposerRequiresIssuer`. Behaviour is unchanged unless the new
+> options are used. Upgrade every binary that rewrites `tokens.json` before adding
+> `device_selectors`: an older binary drops the field on `token rotate`/`set-scopes`,
+> widening the token.
 
 ### Added
 
