@@ -325,6 +325,7 @@ mod verifier {
         }
 
         #[test]
+        #[cfg(target_os = "linux")]
         fn a_failed_store_write_refuses_the_approval_and_records_nothing() {
             let verifier = verifier();
             let full = std::fs::OpenOptions::new()

@@ -1,6 +1,6 @@
 //! Durable `jti` replay store for the verified-approver step-up (mecmcp#400).
 //!
-//! Append-only file, one record per line: `<hex sha256(jti)> <retain_until unix secs>\n`.
+//! Append log (periodically compacted, not an audit record), one record per line: `<hex sha256(jti)> <retain_until unix secs>\n`.
 //! The raw `jti` is never written. A record is appended and fsynced before the approval it
 //! guards is returned, so a restart inside the assertion's lifetime cannot forget it.
 
@@ -360,6 +360,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn a_failed_write_is_an_error_and_leaves_the_file_unchanged() {
         // /dev/full accepts open and fails every write with ENOSPC.
         let file = OpenOptions::new().write(true).open("/dev/full").unwrap();
