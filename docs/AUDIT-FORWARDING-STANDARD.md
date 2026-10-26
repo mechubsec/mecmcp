@@ -83,9 +83,21 @@ log collector, an object-lock bucket's HTTP front end — can enable
 `ForwardSink` (MEC-459) alongside it: `--audit-forward-endpoint <url>` plus
 `--audit-forward-outbox`/`--audit-forward-ledger` (`--audit-forward-token-file`
 for a bearer token; see `EvidenceArgs` in
-[`mecmcp-runtime/src/cli.rs`](../crates/mecmcp-runtime/src/cli.rs)). It
-requires `--ssdf-audit-endpoint` to also be set — the forward sink rides on
-the same recorder and chain identity — and is refused otherwise.
+[`mecmcp-runtime/src/cli.rs`](../crates/mecmcp-runtime/src/cli.rs)).
+
+It also runs **without SSDF** (mecmcp#378): set `--audit-forward-endpoint` and
+omit `--ssdf-audit-endpoint`, still giving `--ssdf-audit-server-id` (the chain
+identity, validated the same way) plus the signing key, segment size and
+interval flags, which are shared. The forward sink is then the only
+destination and the chain of record. Differences from the alongside-SSDF
+arrangement: the recorder is **fail-closed** on the forward spool (an error
+refuses the operation, as `spooling_to` does for SSDF), the chain resumes
+across restarts from the newest segment in the forward outbox (append-only,
+never pruned; a rebuilt host with an empty outbox starts a new root, because
+there is no remote head to ask), and `delivery_degraded` reports the forward
+sink. Consumers build it with `EvidenceArgs::into_pipeline_config` and
+`EvidenceService::start_pipeline`; `into_config` is SSDF-only and refuses a
+forward endpoint on its own.
 
 SSDF and the forward endpoint are usually different hosts with different
 trust anchors, so a deployment enabling both over `https://` should start the
@@ -98,9 +110,9 @@ same-trust-anchor, and test cases where that is fine.
 This is **not** the syslog path rejected below: it ships the same
 hash-chained `ClosedSegment` SSDF ships, `prev_hash`/`head_hash` intact, as a
 single JSON POST per segment rather than an unchained line in a table anyone
-with write access can edit undetectably. It is additive and best-effort — a
-forward-sink failure is logged and never affects SSDF's own delivery or
-`EvidenceService::delivery_degraded`. See
+with write access can edit undetectably. Alongside SSDF it is additive and
+best-effort — a forward-sink failure is logged and never affects SSDF's own
+delivery or `EvidenceService::delivery_degraded`. See
 [`crates/mecmcp-audit/src/sinks/forward.rs`](../crates/mecmcp-audit/src/sinks/forward.rs)
 for the full reasoning and the local-ledger-only dedup caveat versus SSDF's
 own high-water-mark guarantee.
