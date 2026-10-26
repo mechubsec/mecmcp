@@ -49,7 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `human` token nor the approver role. A separate header and a separate field
   (`CallerCtx::verified_proposer`, `Attribution::verified_proposer`) so it is never approval
   evidence; it shares the `jti` replay set, so one assertion is good once in either role.
-  A server with no verifier answers the header 400, as for the approver header.
+  A server with no verifier answers the header 400, as for the approver header. Both
+  assertion headers are now removed from the request once verified, so the JWT never reaches
+  tool extensions.
 - `--require-verified-proposer` (`VerifiedApproverArgs`, requires `--oidc-issuer`) and
   `ChangesetCoordinator::with_require_verified_proposer`: a proposal must carry an
   IdP-verified proposer (`ProposerIdentity`, built by `from_attribution`; an OAuth principal

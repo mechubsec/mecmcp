@@ -194,18 +194,22 @@ fn app_with_store(
         boundary = boundary.with_approver_assertion(Arc::new(verifier));
     }
 
-    let router = Router::new().route(
-        "/",
-        post(
-            |Extension(caller): Extension<CallerCtx<TestGrant>>| async move {
-                json!({
-                    "verified_approver_subject": caller.verified_approver.map(|a| a.subject),
-                    "verified_proposer_subject": caller.verified_proposer.map(|p| p.subject),
-                })
-                .to_string()
-            },
-        ),
-    );
+    let router =
+        Router::new().route(
+            "/",
+            post(
+                |headers: axum::http::HeaderMap,
+                 Extension(caller): Extension<CallerCtx<TestGrant>>| async move {
+                    json!({
+                        "saw_assertion_header": headers.contains_key(APPROVER_ASSERTION_HEADER)
+                            || headers.contains_key(PROPOSER_ASSERTION_HEADER),
+                        "verified_approver_subject": caller.verified_approver.map(|a| a.subject),
+                        "verified_proposer_subject": caller.verified_proposer.map(|p| p.subject),
+                    })
+                    .to_string()
+                },
+            ),
+        );
     apply_bearer_boundary(
         router,
         boundary,
@@ -365,4 +369,24 @@ async fn the_approver_header_still_refuses_an_agent_token() {
     let app = app_with_actor(&key, Some(bound_subject()), true, ActorType::Agent);
     let (status, _) = send(&app, Some(APPROVER_ASSERTION_HEADER), &token).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// A verified assertion is a bearer-equivalent JWT: it must not reach the handler, where rmcp
+/// would copy it into tool extensions. Both headers are removed once spent.
+#[tokio::test]
+async fn a_verified_assertion_header_is_stripped_before_the_handler() {
+    let key = generate_test_key(KID);
+    let app = app_with_actor(&key, Some(bound_subject()), true, ActorType::Human);
+    for (name, jti) in [
+        (PROPOSER_ASSERTION_HEADER, "strip-p"),
+        (APPROVER_ASSERTION_HEADER, "strip-a"),
+    ] {
+        let token = sign_token(&key, &valid_claims("alice", jti), KID);
+        let (status, body) = send(&app, Some(name), &token).await;
+        assert_eq!(status, StatusCode::OK, "{name}");
+        assert_eq!(
+            body["saw_assertion_header"], false,
+            "{name} reached the handler"
+        );
+    }
 }

@@ -700,6 +700,9 @@ pub async fn bearer_auth_middleware<G: Grant>(
                     return invalid_token(&state.responses);
                 }
             }
+            // Verified and spent: do not leave a bearer-equivalent JWT in the request for
+            // rmcp to copy into tool extensions, where a handler could log or forward it.
+            request.headers_mut().remove(APPROVER_ASSERTION_HEADER);
         }
         // With the `verified-approver` feature off, there is no verifier to
         // configure at all — behave exactly as the feature-on path does when
@@ -742,6 +745,7 @@ pub async fn bearer_auth_middleware<G: Grant>(
                     return invalid_token(&state.responses);
                 }
             }
+            request.headers_mut().remove(PROPOSER_ASSERTION_HEADER);
         }
         // Same fail-closed rule as the approver header with no verifier compiled in.
         #[cfg(not(feature = "verified-approver"))]
