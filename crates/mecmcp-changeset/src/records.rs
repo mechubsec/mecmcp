@@ -144,6 +144,17 @@ pub struct PersistedAttribution {
 pub enum PersistedPrincipal {
     /// Authenticated bearer token, identified by name.
     Token(String),
+    /// Caller authenticated by an OAuth access token (mecmcp#498).
+    #[serde(rename = "oauth")]
+    OAuth {
+        /// Issuer the token was verified against.
+        issuer: String,
+        /// The token's `sub`.
+        subject: String,
+        /// `client_id` / `azp`, when present.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_id: Option<String>,
+    },
     /// Unauthenticated request (stdio or local socket with no auth).
     Unauthenticated,
 }
@@ -171,6 +182,15 @@ impl From<&mecmcp_audit::Attribution> for PersistedAttribution {
         Self {
             principal: match &attribution.principal {
                 mecmcp_audit::Principal::Token(name) => PersistedPrincipal::Token(name.clone()),
+                mecmcp_audit::Principal::OAuth {
+                    issuer,
+                    subject,
+                    client_id,
+                } => PersistedPrincipal::OAuth {
+                    issuer: issuer.clone(),
+                    subject: subject.clone(),
+                    client_id: client_id.clone(),
+                },
                 mecmcp_audit::Principal::Unauthenticated => PersistedPrincipal::Unauthenticated,
             },
             // Rendered via Debug so a new actor-type variant lands here as its

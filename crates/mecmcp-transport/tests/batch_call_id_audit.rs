@@ -58,6 +58,7 @@ fn caller() -> CallerCtx<TestGrant> {
         model_id: None,
         session_id: None,
         request_id: uuid::Uuid::new_v4(),
+        oauth: None,
     }
 }
 

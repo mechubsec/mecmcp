@@ -11,6 +11,16 @@ use uuid::Uuid;
 pub enum Principal {
     /// An authenticated bearer token, identified by its non-secret name.
     Token(String),
+    /// A caller authenticated by an OAuth access token (mecmcp#498). Holds the
+    /// verified `iss`, `sub` and `client_id` -- never the token.
+    OAuth {
+        /// The issuer the token was verified against.
+        issuer: String,
+        /// The token's `sub`.
+        subject: String,
+        /// `client_id` / `azp`, when present.
+        client_id: Option<String>,
+    },
     /// The stdio / `--allow-no-auth` path, where no credential was presented.
     Unauthenticated,
 }
@@ -19,6 +29,19 @@ impl fmt::Display for Principal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Principal::Token(name) => write!(f, "{name}"),
+            // Display IS the identity key: downstream servers store
+            // `principal.to_string()` as the change-set owner, so it must be
+            // injective over (issuer, subject) or two-person control fails open.
+            // Both parts escape ':' and '|' (the digest separator); the
+            // `oauth:` prefix is reserved from static token names.
+            Principal::OAuth {
+                issuer, subject, ..
+            } => write!(
+                f,
+                "oauth:{}:{}",
+                crate::redact::escape_identity(issuer, &[':', '|']),
+                crate::redact::escape_identity(subject, &[':', '|'])
+            ),
             Principal::Unauthenticated => write!(f, "stdio"),
         }
     }
@@ -332,7 +355,14 @@ impl Attribution {
         };
 
         Self {
-            principal: Principal::Token(ctx.token_name.clone()),
+            principal: match &ctx.oauth {
+                Some(identity) => Principal::OAuth {
+                    issuer: identity.issuer.clone(),
+                    subject: identity.subject.clone(),
+                    client_id: identity.client_id.clone(),
+                },
+                None => Principal::Token(ctx.token_name.clone()),
+            },
             actor_type,
             agent,
             on_behalf_of: ctx.on_behalf_of.clone(),
@@ -420,6 +450,87 @@ impl Attribution {
 mod tests {
     use super::*;
     use mecmcp_auth::{CallerCtx, NoGrant, ScopeSet};
+    fn oauth_ctx(issuer: &str, subject: &str) -> CallerCtx<NoGrant> {
+        CallerCtx::oauth(
+            mecmcp_auth::OAuthIdentity {
+                issuer: issuer.into(),
+                subject: subject.into(),
+                client_id: Some("odysseus".into()),
+            },
+            ScopeSet::Allowlist(vec![]),
+            ScopeSet::Allowlist(vec![]),
+            mecmcp_auth::ActorType::Agent,
+        )
+    }
+
+    #[test]
+    fn from_caller_uses_the_oauth_principal_for_an_oauth_caller() {
+        let attribution = Attribution::from_caller(&oauth_ctx("https://idp.example", "alice"));
+        assert_eq!(
+            attribution.principal,
+            Principal::OAuth {
+                issuer: "https://idp.example".into(),
+                subject: "alice".into(),
+                client_id: Some("odysseus".into()),
+            }
+        );
+        assert_eq!(
+            attribution.principal.to_string(),
+            "oauth:https%3A//idp.example:alice"
+        );
+    }
+
+    #[test]
+    fn oauth_principal_display_cannot_forge_a_log_field_or_be_spoofed() {
+        for subject in [
+            "x result=ok\nforged",
+            "a\u{202E}b",
+            "a\u{200B}b",
+            "a\u{2028}b",
+            "100%25",
+            "a b",
+        ] {
+            let rendered = Principal::OAuth {
+                issuer: "i".into(),
+                subject: subject.into(),
+                client_id: None,
+            }
+            .to_string();
+            assert!(rendered.is_ascii(), "{rendered:?}");
+            assert!(!rendered.contains(['\n', '=', ' ']), "{rendered:?}");
+        }
+        // `%` is escaped, so a literal "%41" cannot masquerade as an escaped "A".
+        let literal = Principal::OAuth {
+            issuer: "i".into(),
+            subject: "%41".into(),
+            client_id: None,
+        };
+        let escaped = Principal::OAuth {
+            issuer: "i".into(),
+            subject: "A".into(),
+            client_id: None,
+        };
+        assert_eq!(literal.to_string(), "oauth:i:%2541");
+        assert_ne!(literal.to_string(), escaped.to_string());
+    }
+
+    #[test]
+    fn display_distinguishes_issuers_and_subjects() {
+        let key = |issuer: &str, subject: &str| {
+            Principal::OAuth {
+                issuer: issuer.into(),
+                subject: subject.into(),
+                client_id: None,
+            }
+            .to_string()
+        };
+        // Same subject, different issuer must not share an owner string.
+        assert_ne!(key("https://a", "alice"), key("https://b", "alice"));
+        // Separator smuggling across the issuer/subject boundary.
+        assert_ne!(key("https://a", "b:c"), key("https://a:b", "c"));
+        // `|` in the issuer is escaped like the subject's.
+        assert!(!key("https://a|b", "c").contains('|'));
+    }
 
     fn ctx(name: &str) -> CallerCtx<NoGrant> {
         CallerCtx {
@@ -437,6 +548,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         }
     }
 
@@ -707,6 +819,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let a = Attribution::from_caller(&ctx);
 
@@ -766,6 +879,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let a = Attribution::from_caller(&ctx);
 
@@ -798,6 +912,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let a = Attribution::from_caller(&c);
         assert_eq!(a.actor_type, ActorType::Unknown);
@@ -828,6 +943,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let a = Attribution::from_caller(&c);
         assert_eq!(a.actor_type, ActorType::Agent);
@@ -860,6 +976,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let a = Attribution::from_caller(&c);
         assert_eq!(
@@ -894,6 +1011,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let a = Attribution::from_caller(&c);
         assert_eq!(

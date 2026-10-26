@@ -238,6 +238,18 @@ impl Drop for AuditScope {
         let provider = crate::redact::escape_control_chars(provider);
         let on_behalf_of = crate::redact::escape_control_chars(on_behalf_of);
         let change_ref = crate::redact::escape_control_chars(change_ref);
+        let (oauth_issuer, oauth_subject, oauth_client_id) = match &self.attribution.principal {
+            Principal::OAuth {
+                issuer,
+                subject,
+                client_id,
+            } => (
+                crate::redact::escape_identity(issuer, &[]),
+                crate::redact::escape_identity(subject, &[]),
+                crate::redact::escape_identity(client_id.as_deref().unwrap_or(""), &[]),
+            ),
+            _ => Default::default(),
+        };
         let client_version =
             crate::redact::escape_control_chars(self.client_version.as_deref().unwrap_or(""));
         let client_call_id =
@@ -248,6 +260,9 @@ impl Drop for AuditScope {
             target: "audit",
             request_id = %self.attribution.request_id,
             caller = %self.attribution.principal,
+            oauth_issuer = %oauth_issuer,
+            oauth_subject = %oauth_subject,
+            oauth_client_id = %oauth_client_id,
             actor_type = %actor_type,
             token_verified_fields = %token_verified_fields,
             provider = %provider,
@@ -299,6 +314,76 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
+        }
+    }
+
+    #[test]
+    fn an_oauth_caller_audit_event_carries_issuer_subject_and_client() {
+        let ctx: CallerCtx<NoGrant> = CallerCtx::oauth(
+            mecmcp_auth::OAuthIdentity {
+                issuer: "https://idp.example".into(),
+                subject: "alice".into(),
+                client_id: Some("odysseus".into()),
+            },
+            ScopeSet::Wildcard,
+            ScopeSet::Wildcard,
+            mecmcp_auth::ActorType::Agent,
+        );
+        let out = run_with_capture(|| {
+            let mut scope = AuditScope::from_caller(&ctx, "get_device_list", "read", vec![]);
+            scope.succeed();
+        });
+        assert!(
+            out.contains("caller=oauth:https%3A//idp.example:alice"),
+            "{out}"
+        );
+        assert!(out.contains("oauth_subject=alice"), "{out}");
+        assert!(out.contains("oauth_client_id=odysseus"), "{out}");
+        assert!(out.contains("oauth_issuer=https://idp.example"), "{out}");
+        assert!(out.contains("authorization=allowed"), "{out}");
+    }
+
+    #[test]
+    fn oauth_audit_fields_cannot_be_spoofed_by_idp_controlled_text() {
+        let ctx: CallerCtx<NoGrant> = CallerCtx::oauth(
+            mecmcp_auth::OAuthIdentity {
+                issuer: "https://idp.example".into(),
+                subject: "al\u{202E}ice\u{200B}".into(),
+                client_id: Some("c\u{2028}x result=ok".into()),
+            },
+            ScopeSet::Wildcard,
+            ScopeSet::Wildcard,
+            mecmcp_auth::ActorType::Agent,
+        );
+        let out = run_with_capture(|| {
+            let mut scope = AuditScope::from_caller(&ctx, "get_device_list", "read", vec![]);
+            scope.succeed();
+        });
+        for hostile in ['\u{202E}', '\u{200B}', '\u{2028}'] {
+            assert!(!out.contains(hostile), "{hostile:?} survived: {out}");
+        }
+        assert!(
+            out.contains("oauth_client_id=c%E2%80%A8x%20result%3Dok"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_token_caller_audit_event_has_empty_oauth_fields() {
+        let out = run_with_capture(|| {
+            let mut scope = AuditScope::from_caller(&ctx("ci"), "get_device_list", "read", vec![]);
+            scope.succeed();
+        });
+        for field in ["oauth_issuer", "oauth_subject", "oauth_client_id"] {
+            let value = out
+                .split(&format!("{field}="))
+                .nth(1)
+                .unwrap_or_else(|| panic!("{field} missing: {out}"));
+            assert!(
+                value.is_empty() || value.starts_with(' '),
+                "{field} must be empty: {out}"
+            );
         }
     }
 
@@ -638,6 +723,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let out = run_with_capture(|| {
             let mut a = AuditScope::from_caller(&ctx, "commit_config", "commit", vec!["r1".into()]);

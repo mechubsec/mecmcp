@@ -45,6 +45,20 @@ pub struct VerifiedClaims {
     /// trimmed. `None` if the config leaves `include_display_name` as `false`
     /// (the default), or if both claims are absent or empty after trimming.
     pub display_name: Option<String>,
+    /// OAuth scopes from the `scope` claim (RFC 9068 s2.2.3: a space-delimited
+    /// string) or, when `scope` is absent, the `scp` claim (a string or an array).
+    ///
+    /// Each entry is a valid RFC 6749 s3.3 scope-token; anything else (an empty
+    /// string, an array element containing a space, a control character) is dropped
+    /// rather than split or repaired, so a crafted claim can only ever *reduce*
+    /// what a caller maps to. Deduplicated, at most 64 entries of at most 128 bytes.
+    /// A claim of any other JSON type (including an array in `scope`) yields an
+    /// empty list.
+    pub scopes: Vec<String>,
+    /// The OAuth client the token was issued to: `client_id` (RFC 9068), else
+    /// `azp`. `None` when neither is a clean string (<= 128 bytes, no control
+    /// characters). Required (non-`None`) under [`crate::TokenProfile::AccessToken`].
+    pub client_id: Option<String>,
 }
 
 /// Pull the configured role/group claim out of a token's extra claims.
@@ -60,6 +74,59 @@ pub(crate) fn extract_roles(
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// Maximum scopes retained from one token.
+const MAX_SCOPES: usize = 64;
+/// Maximum bytes in one scope-token or client id.
+const MAX_TOKEN_LEN: usize = 128;
+
+/// Whether `candidate` is a legal OAuth scope-token (RFC 6749 s3.3):
+/// `1*( %x21 / %x23-5B / %x5D-7E )`, so no space, no `"`, no `\`, no control
+/// character, no non-ASCII. Also bounded to 128 bytes.
+#[must_use]
+pub fn is_scope_token(candidate: &str) -> bool {
+    !candidate.is_empty()
+        && candidate.len() <= MAX_TOKEN_LEN
+        && candidate
+            .bytes()
+            .all(|byte| matches!(byte, 0x21 | 0x23..=0x5B | 0x5D..=0x7E))
+}
+
+/// Pull the token's scopes out of its extra claims (see [`VerifiedClaims::scopes`]).
+pub(crate) fn extract_scopes(extra: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    // RFC 9068 s2.2.3 allows only a string for `scope`; arrays come only from `scp`.
+    let raw: Vec<&str> = match (extra.get("scope"), extra.get("scp")) {
+        (Some(serde_json::Value::String(joined)), _)
+        | (None, Some(serde_json::Value::String(joined))) => joined.split(' ').collect(),
+        (None, Some(serde_json::Value::Array(items))) => {
+            items.iter().filter_map(serde_json::Value::as_str).collect()
+        }
+        _ => Vec::new(),
+    };
+    let mut scopes: Vec<String> = Vec::new();
+    for candidate in raw {
+        if !is_scope_token(candidate) || scopes.iter().any(|seen| seen == candidate) {
+            continue;
+        }
+        if scopes.len() == MAX_SCOPES {
+            break;
+        }
+        scopes.push(candidate.to_owned());
+    }
+    scopes
+}
+
+/// `client_id` (RFC 9068), else `azp`; `None` unless a clean, bounded string.
+pub(crate) fn extract_client_id(
+    extra: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    let raw = extra
+        .get("client_id")
+        .or_else(|| extra.get("azp"))?
+        .as_str()?;
+    let clean = !raw.is_empty() && raw.len() <= MAX_TOKEN_LEN && !raw.chars().any(char::is_control);
+    clean.then(|| raw.to_owned())
 }
 
 /// Extract a display name from `preferred_username` or `name`, when opted in.

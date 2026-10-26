@@ -43,6 +43,7 @@ fn both_transports_emit_the_same_tool_and_action() {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let mut authenticated = audit_scope(
             Some(&caller),

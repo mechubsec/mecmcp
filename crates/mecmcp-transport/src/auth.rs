@@ -24,6 +24,10 @@ pub enum BearerAuthError {
     /// Realm contains characters that cannot appear in HTTP header values.
     #[error("realm contains invalid characters: {0}")]
     InvalidRealm(&'static str),
+    /// The resource-metadata URL is not an absolute http(s) URL, or contains
+    /// characters that could break out of the quoted challenge parameter.
+    #[error("resource_metadata URL is invalid: {0}")]
+    InvalidResourceMetadata(&'static str),
 }
 
 /// Callback type converting an opaque credential into a grant-bearing caller.
@@ -113,6 +117,7 @@ impl<G: Grant> BearerAuthenticator<G> {
 pub struct BearerResponseProfile {
     realm: String,
     style: BearerResponseStyle,
+    resource_metadata: Option<String>,
 }
 
 /// Response detail level.
@@ -149,6 +154,7 @@ impl BearerResponseProfile {
         Ok(Self {
             realm: validate_realm(realm.into())?,
             style: BearerResponseStyle::Detailed,
+            resource_metadata: None,
         })
     }
 
@@ -201,7 +207,39 @@ impl BearerResponseProfile {
         Ok(Self {
             realm: validate_realm(realm.into())?,
             style: BearerResponseStyle::Compact,
+            resource_metadata: None,
         })
+    }
+
+    /// Advertise an RFC 9728 protected-resource-metadata document in every 401
+    /// challenge as `resource_metadata="<url>"`, so an OAuth client can discover
+    /// the authorization server from the failure.
+    ///
+    /// # Errors
+    /// Returns [`BearerAuthError::InvalidResourceMetadata`] unless `url` is an
+    /// absolute `http(s)` URL (a DNS-name or bracketed-IPv6 host, no userinfo) of
+    /// printable ASCII with no quote or backslash (the same header-safety rule the
+    /// realm gets). The value is always emitted inside a quoted-string, so other
+    /// URL-legal path characters (`,;'*`) are safe.
+    pub fn with_resource_metadata(
+        mut self,
+        url: impl Into<String>,
+    ) -> Result<Self, BearerAuthError> {
+        let url = url.into();
+        if let Some(reason) = resource_metadata_unusable_reason(&url) {
+            return Err(BearerAuthError::InvalidResourceMetadata(reason));
+        }
+        self.resource_metadata = Some(url);
+        Ok(self)
+    }
+
+    /// Set a URL already checked by [`resource_metadata_unusable_reason`] (the
+    /// `OAuthResourceConfig::new` invariant), so the OAuth wiring has no panic path.
+    #[cfg(feature = "oauth-resource")]
+    fn with_checked_resource_metadata(mut self, url: String) -> Self {
+        debug_assert!(resource_metadata_unusable_reason(&url).is_none());
+        self.resource_metadata = Some(url);
+        self
     }
 
     /// Compact profile returning `invalid_token` for every 401.
@@ -245,6 +283,8 @@ pub struct BearerBoundary<G: Grant> {
     preflight: OptionalPreflight,
     #[cfg(feature = "verified-approver")]
     approver_assertion: Option<Arc<ApproverAssertionVerifier>>,
+    #[cfg(feature = "oauth-resource")]
+    oauth: Option<Arc<crate::oauth_resource::OAuthResource<G>>>,
 }
 
 impl<G: Grant> Clone for BearerBoundary<G> {
@@ -255,6 +295,8 @@ impl<G: Grant> Clone for BearerBoundary<G> {
             preflight: self.preflight.clone(),
             #[cfg(feature = "verified-approver")]
             approver_assertion: self.approver_assertion.clone(),
+            #[cfg(feature = "oauth-resource")]
+            oauth: self.oauth.clone(),
         }
     }
 }
@@ -290,7 +332,37 @@ impl<G: Grant> BearerBoundary<G> {
             preflight: None,
             #[cfg(feature = "verified-approver")]
             approver_assertion: None,
+            #[cfg(feature = "oauth-resource")]
+            oauth: None,
         }
+    }
+
+    /// Accept JWT access tokens as an additional credential (mecmcp#498).
+    ///
+    /// Static tokens are still tried first and are unaffected. Every 401 this boundary
+    /// emits gains `resource_metadata="<url>"` pointing at the RFC 9728 document that
+    /// `build_streamable_http_router` serves for `resource`.
+    ///
+    /// The URL was validated when the `OAuthResourceConfig` was built, so this cannot fail.
+    #[cfg(feature = "oauth-resource")]
+    #[must_use]
+    pub fn with_oauth_resource(
+        mut self,
+        resource: Arc<crate::oauth_resource::OAuthResource<G>>,
+    ) -> Self {
+        self.responses = self
+            .responses
+            .with_checked_resource_metadata(resource.config().resource().metadata_url());
+        self.oauth = Some(resource);
+        self
+    }
+
+    /// The metadata router to merge outside the boundary, when OAuth mode is on.
+    #[cfg(feature = "oauth-resource")]
+    pub(crate) fn oauth_metadata_router(&self) -> Option<Router> {
+        self.oauth
+            .as_ref()
+            .map(|resource| resource.metadata_router())
     }
 
     /// Install a synchronous scope preflight.
@@ -515,6 +587,8 @@ pub fn apply_bearer_boundary<G: Grant>(
             responses: boundary.responses,
             #[cfg(feature = "verified-approver")]
             approver_assertion: boundary.approver_assertion,
+            #[cfg(feature = "oauth-resource")]
+            oauth: boundary.oauth,
         },
         bearer_auth_middleware::<G>,
     ))
@@ -541,6 +615,8 @@ pub struct AuthState<G: Grant> {
     pub responses: BearerResponseProfile,
     #[cfg(feature = "verified-approver")]
     pub approver_assertion: Option<Arc<ApproverAssertionVerifier>>,
+    #[cfg(feature = "oauth-resource")]
+    pub oauth: Option<Arc<crate::oauth_resource::OAuthResource<G>>>,
 }
 
 /// State for the preflight middleware layer.
@@ -582,10 +658,18 @@ pub async fn bearer_auth_middleware<G: Grant>(
     };
     // `caller.verified_approver` is only ever written to with `verified-approver`
     // on; without it, nothing in this function mutates `caller`.
+    // Static tokens first: a static hit never reaches the OAuth verifier or the network.
     #[cfg_attr(not(feature = "verified-approver"), allow(unused_mut))]
-    let Some(mut caller) = state.authenticator.authenticate(candidate) else {
-        tracing::warn!("auth_failed: no matching token");
-        return invalid_token(&state.responses);
+    let mut caller = match state.authenticator.authenticate(candidate) {
+        Some(caller) => caller,
+        None => match try_oauth(&state, candidate).await {
+            OAuthOutcome::Authenticated(caller) => *caller,
+            OAuthOutcome::Rejected(response) => return response,
+            OAuthOutcome::NotApplicable => {
+                tracing::warn!("auth_failed: no matching token");
+                return invalid_token(&state.responses);
+            }
+        },
     };
 
     if request.headers().contains_key(APPROVER_ASSERTION_HEADER) {
@@ -627,6 +711,12 @@ pub async fn bearer_auth_middleware<G: Grant>(
         }
     }
 
+    if caller.oauth.is_some() {
+        // No token passthrough: rmcp copies request parts into tool contexts, so the bearer
+        // must not survive authentication. Static-token requests are left as they were.
+        request.headers_mut().remove(header::AUTHORIZATION);
+    }
+
     // Insert both the grant-bearing CallerCtx and the grant-neutral
     // AuthenticatedToken so accounting layers can work regardless of G.
     request
@@ -635,6 +725,76 @@ pub async fn bearer_auth_middleware<G: Grant>(
     request.extensions_mut().insert(caller);
 
     next.run(request).await
+}
+
+/// What the OAuth step decided about a candidate the static store did not recognise.
+enum OAuthOutcome<G: Grant> {
+    /// OAuth mode is off for this boundary: behave exactly as before.
+    NotApplicable,
+    #[cfg_attr(not(feature = "oauth-resource"), allow(dead_code))]
+    Authenticated(Box<CallerCtx<G>>),
+    #[cfg_attr(not(feature = "oauth-resource"), allow(dead_code))]
+    Rejected(Response),
+}
+
+#[cfg(not(feature = "oauth-resource"))]
+#[allow(clippy::unused_async)]
+async fn try_oauth<G: Grant>(_state: &AuthState<G>, _candidate: &str) -> OAuthOutcome<G> {
+    OAuthOutcome::NotApplicable
+}
+
+/// Verify `candidate` as an access token: 401 for a bad token, 403 (audited) for a good
+/// token that grants nothing here, 503 when the IdP's keys cannot be had.
+#[cfg(feature = "oauth-resource")]
+async fn try_oauth<G: Grant>(state: &AuthState<G>, candidate: &str) -> OAuthOutcome<G> {
+    use crate::oauth_resource::OAuthRejection;
+    let Some(resource) = state.oauth.as_ref() else {
+        return OAuthOutcome::NotApplicable;
+    };
+    // Not a JWT: an unknown static token or a guess. Keep it off the verifier entirely.
+    if !crate::oauth_resource::looks_like_jwt(candidate) {
+        return OAuthOutcome::NotApplicable;
+    }
+    match resource.authenticate(candidate).await {
+        Ok(caller) => OAuthOutcome::Authenticated(Box::new(caller)),
+        Err(OAuthRejection::Invalid(reason)) => {
+            tracing::warn!(reason, "oauth_rejected");
+            OAuthOutcome::Rejected(invalid_token(&state.responses))
+        }
+        Err(OAuthRejection::Unmapped(identity)) => {
+            tracing::warn!(reason = "unmapped_scope", "oauth_rejected");
+            let caller = CallerCtx::<G>::oauth(
+                identity,
+                mecmcp_auth::ScopeSet::Allowlist(Vec::new()),
+                mecmcp_auth::ScopeSet::Allowlist(Vec::new()),
+                mecmcp_auth::ActorType::Unknown,
+            );
+            let mut scope = AuditScope::from_caller(&caller, "oauth", "authenticate", Vec::new());
+            scope.deny("unmapped_scope");
+            OAuthOutcome::Rejected(forbidden(
+                &state.responses.realm,
+                "the token grants no access to this server",
+            ))
+        }
+        Err(OAuthRejection::Unavailable(reason)) => {
+            tracing::warn!(reason, "oauth_unavailable");
+            OAuthOutcome::Rejected(service_unavailable())
+        }
+    }
+}
+
+/// 503 for "could not verify right now": the credential is not judged invalid.
+#[cfg(feature = "oauth-resource")]
+fn service_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(header::RETRY_AFTER, "5")],
+        axum::Json(json!({
+            "error": "temporarily_unavailable",
+            "error_description": "token verification is temporarily unavailable",
+        })),
+    )
+        .into_response()
 }
 
 /// Record a rejected approver assertion as a denied `mecmcp-audit` event.
@@ -1150,13 +1310,24 @@ fn unauthorized(profile: &BearerResponseProfile, description: &str) -> Response 
     match profile.style {
         BearerResponseStyle::Detailed => response(
             StatusCode::UNAUTHORIZED,
-            format!(r#"Bearer realm="{}""#, profile.realm),
+            challenge_base(profile),
             json!({
                 "error": "invalid_request",
                 "error_description": description,
             }),
         ),
         BearerResponseStyle::Compact => invalid_token(profile),
+    }
+}
+
+/// `Bearer realm="R"` plus, when configured, `resource_metadata="U"`.
+fn challenge_base(profile: &BearerResponseProfile) -> String {
+    match &profile.resource_metadata {
+        Some(url) => format!(
+            r#"Bearer realm="{}", resource_metadata="{url}""#,
+            profile.realm
+        ),
+        None => format!(r#"Bearer realm="{}""#, profile.realm),
     }
 }
 
@@ -1174,11 +1345,11 @@ fn invalid_token(profile: &BearerResponseProfile) -> Response {
     };
     let challenge = match profile.style {
         BearerResponseStyle::Detailed => format!(
-            r#"Bearer realm="{}", error="invalid_token", error_description="The access token is invalid""#,
-            profile.realm
+            r#"{}, error="invalid_token", error_description="The access token is invalid""#,
+            challenge_base(profile)
         ),
         BearerResponseStyle::Compact => {
-            format!(r#"Bearer realm="{}", error="invalid_token""#, profile.realm)
+            format!(r#"{}, error="invalid_token""#, challenge_base(profile))
         }
     };
     response(StatusCode::UNAUTHORIZED, challenge, body)
@@ -1358,21 +1529,128 @@ async fn normalize_body_limit_response(_request: Request, next: Next) -> Respons
 /// without echoing the offending bytes (to avoid logging credentials if a
 /// credential is passed by mistake).
 fn validate_realm(realm: String) -> Result<String, BearerAuthError> {
-    for byte in realm.bytes() {
+    match header_unsafe_reason(&realm) {
+        Some(reason) => Err(BearerAuthError::InvalidRealm(reason)),
+        None => Ok(realm),
+    }
+}
+
+/// Why `url` cannot be a `resource_metadata` challenge parameter, if so.
+pub(crate) fn resource_metadata_unusable_reason(url: &str) -> Option<&'static str> {
+    if let Some(reason) = header_unsafe_reason(url) {
+        return Some(reason);
+    }
+    (!is_absolute_http_url(url)).then_some("not an absolute http(s) URL")
+}
+
+/// An `http(s)` URL with a well-formed host (DNS name or bracketed IPv6), no userinfo,
+/// no fragment, and only RFC 3986 characters after the authority. `http::Uri` alone is
+/// too lenient: it accepts `{}` in a path and silently drops a fragment.
+pub(crate) fn is_absolute_http_url(candidate: &str) -> bool {
+    let Ok(uri) = candidate.parse::<http::Uri>() else {
+        return false;
+    };
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    if !matches!(uri.scheme_str(), Some("https" | "http")) || authority.as_str().contains('@') {
+        return false;
+    }
+    let host = authority.host();
+    let port_ok = match authority.as_str().strip_prefix(host) {
+        Some("") => true,
+        Some(port) => port
+            .strip_prefix(':')
+            .is_some_and(|digits| digits.parse::<u16>().is_ok()),
+        None => false,
+    };
+    if !port_ok {
+        return false;
+    }
+    let prefix_len = uri.scheme_str().map_or(0, str::len) + "://".len() + authority.as_str().len();
+    let host_ok = match host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+    {
+        Some(ipv6) => ipv6.parse::<std::net::Ipv6Addr>().is_ok(),
+        None => is_dns_host(host),
+    };
+    host_ok
+        && candidate
+            .get(prefix_len..)
+            .is_some_and(is_rfc3986_path_and_query)
+}
+
+/// RFC 1123 host: dot-separated labels of 1-63 alphanumerics or `-`, no label starting
+/// or ending with `-`, at most 253 bytes. A trailing dot (empty label) is refused.
+fn is_dns_host(host: &str) -> bool {
+    host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
+/// RFC 3986 `path-abempty [ "?" query ]`: pchar, `/` and `?` only, every `%` followed by
+/// two hex digits. No fragment, no `[]{}|^<>` or backtick.
+fn is_rfc3986_path_and_query(rest: &str) -> bool {
+    if !(rest.is_empty() || rest.starts_with('/') || rest.starts_with('?')) {
+        return false;
+    }
+    let bytes = rest.as_bytes();
+    bytes.iter().enumerate().all(|(index, byte)| match byte {
+        b'%' => bytes
+            .get(index + 1..index + 3)
+            .is_some_and(|hex| hex.iter().all(u8::is_ascii_hexdigit)),
+        _ => {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'-' | b'.'
+                        | b'_'
+                        | b'~'
+                        | b'!'
+                        | b'$'
+                        | b'&'
+                        | b'\''
+                        | b'('
+                        | b')'
+                        | b'*'
+                        | b'+'
+                        | b','
+                        | b';'
+                        | b'='
+                        | b':'
+                        | b'@'
+                        | b'/'
+                        | b'?'
+                )
+        }
+    })
+}
+
+/// Why `value` cannot be interpolated into a quoted challenge parameter, if so.
+fn header_unsafe_reason(value: &str) -> Option<&'static str> {
+    for byte in value.bytes() {
         if byte == b'"' {
-            return Err(BearerAuthError::InvalidRealm("contains quotes"));
+            return Some("contains quotes");
         }
         if byte == b'\\' {
-            return Err(BearerAuthError::InvalidRealm("contains backslashes"));
+            return Some("contains backslashes");
         }
         if byte.is_ascii_control() {
-            return Err(BearerAuthError::InvalidRealm("contains control characters"));
+            return Some("contains control characters");
         }
         if !byte.is_ascii() {
-            return Err(BearerAuthError::InvalidRealm("contains non-ASCII"));
+            return Some("contains non-ASCII");
         }
     }
-    Ok(realm)
+    None
 }
 
 #[cfg(test)]
@@ -1704,6 +1982,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
 
         let body = br#"{"method":"tools/call","params":{"name":"list_devices","arguments":{}}}"#;
@@ -1761,6 +2040,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
 
         let body = br#"{"method":"tools/call","params":{"name":"get_config","arguments":{}}}"#;
@@ -1809,6 +2089,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
         let mut attr = Attribution::from_caller(&caller);
 

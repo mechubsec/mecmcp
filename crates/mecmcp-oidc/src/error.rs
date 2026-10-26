@@ -100,6 +100,12 @@ pub enum VerificationFailure {
     /// failure.
     #[error("token is missing the required 'iat' (issued-at) claim")]
     MissingIssuedAt,
+    /// The token's `typ` header is not `at+jwt` / `application/at+jwt` and the
+    /// verifier is configured to require it (RFC 9068 s2.1). Stops an ID token or
+    /// another JWT type from being replayed as an access token. Also returned, under the
+    /// access-token profile, for a payload `typ` claim of `"ID"` (Keycloak's ID-token marker).
+    #[error("token typ is not an access-token type")]
+    WrongTokenType,
     /// No usable signing keys were available: the IdP has never been
     /// reachable, or the last known-good keys are older than the configured
     /// maximum age. This is the fail-closed path for an unreachable IdP.
@@ -151,6 +157,7 @@ impl VerificationFailure {
             Self::WrongIssuer => "wrong_issuer",
             Self::MissingClaim(_) => "missing_claim",
             Self::MissingIssuedAt => "missing_issued_at",
+            Self::WrongTokenType => "wrong_token_type",
             Self::KeysUnavailable { .. } => "keys_unavailable",
             Self::NonceMissing => "nonce_missing",
             Self::NonceMismatch => "nonce_mismatch",

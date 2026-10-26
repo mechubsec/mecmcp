@@ -27,6 +27,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [Unreleased]
+
+> **Breaking release: tag it 0.29.0, not 0.28.5.** The public API changes below break
+> source under 0.x semver. Consumer repos move to 0.29 together, and sdc's two mecmcp pins
+> (the tag guard and the SBOM guard) move in the same change.
+>
+> **Rollback break: snapshot before upgrading.** Once an OAuth caller has created a change
+> set, a pre-0.29 binary refuses the change-set state file
+> (`invalid changeset state JSON: unknown variant "oauth"`). To roll back: stop the server,
+> restore the pre-upgrade state file (or guest snapshot), then start the old binary.
+> That discards all change-set state since the snapshot: new change sets, and the
+> approvals, cancellations, apply statuses and operation records of existing ones.
+> Device changes applied in that window are not reverted; reconcile before restarting.
+>
+> **Upgrade break: rename any static token named `oauth:*` before upgrading.** The
+> `oauth:` prefix is now reserved, and a token file containing such a name fails to load
+> **as a whole** (every token is refused, not just that one). See `docs/OAUTH.md`.
+
+### Added
+
+- **OAuth 2.1 resource-server mode** (mecmcp#498), opt-in per server. `mecmcp-transport`
+  feature `oauth-resource` (off by default): RFC 9728 metadata at
+  `/.well-known/oauth-protected-resource[/<path>]`, `resource_metadata` on 401 challenges,
+  JWT access tokens accepted after the static token store misses, audience bound to the
+  server's canonical resource URI (RFC 8707), and a fail-closed scope map
+  (`docs/OAUTH.md`). `mecmcp-runtime::cli::OAuthResourceArgs` supplies the flags
+  `--oauth-issuer`, `--oauth-resource`, `--oauth-scope-map`, `--oauth-audience`,
+  `--oauth-role-claim` and `--oauth-require-at-jwt-typ`. OAuth callers get exactly the
+  tools their scope-map entries name, write tools included (a `"tools": ["*"]` wildcard never
+  grants write tools). When a token matches several entries, tools are unioned and
+  devices **intersected** (`["*"]` is the identity), so a write entry never reaches
+  another entry's devices; the cost is that such a token loses reads outside the
+  narrowest device set, and disjoint sets leave it no devices. They hold no vendor grant, so grant-gated vendor operations need a
+  static token, and they cannot bind a verified approver. The scope map refuses
+  `actor_type: "human"`. Tokens over about 4 KiB are not supported (the `Authorization`
+  header cap).
+- **mecmcp-oidc:** `TokenProfile::AccessToken` (RFC 9068: requires `jti` and a client id,
+  optionally `typ: at+jwt`, and refuses a body `typ: "ID"` claim as `wrong_token_type`),
+  `VerifiedClaims::{scopes, client_id}`, `ResourceUri`.
+- **mecmcp-audit:** `Principal::OAuth`. An OAuth caller's change-set owner and approver
+  identity is `oauth:<escaped issuer>:<escaped subject>`.
+
+### Changed
+
+- **Audit line format (every server, feature on or off):** every per-call audit record
+  (`AuditScope::emit`) gains `oauth_issuer=`, `oauth_subject=` and `oauth_client_id=`
+  fields, empty for static-token callers. Operational `target: "audit"` events (sink
+  flush, startup and redaction warnings) are unchanged and do not carry them, so parsers
+  must not require the fields on every audit line.
+- **Change-set state:** a change set created by an OAuth caller persists a
+  `PersistedPrincipal::OAuth` attribution that pre-0.29 binaries cannot read (see the
+  rollback break above).
+- **Breaking for source:**
+  - `mecmcp_auth::CallerCtx` has a new public field `oauth: Option<OAuthIdentity>`; code that
+    builds it by struct literal (mostly vendor-repo tests) must add `oauth: None`.
+  - `mecmcp_audit::Principal` and `mecmcp_changeset::records::PersistedPrincipal` gain an
+    `OAuth` variant; exhaustive matches need an arm.
+  - `mecmcp_oidc::VerifiedClaims` gains public fields `scopes` and `client_id`, and
+    `OidcConfig` gains `token_profile`; struct-literal construction must set them.
+  - `mecmcp_oidc::VerificationFailure` gains `WrongTokenType`; exhaustive matches need an arm.
+  - `BearerAuthError` gains `InvalidResourceMetadata`.
+- `TokenEntry::validate` now rejects token names starting with `oauth:` (reserved).
+
 ## [0.28.4] - 2026-10-25
 
 ### Added

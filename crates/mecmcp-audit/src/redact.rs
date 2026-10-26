@@ -249,6 +249,23 @@ pub(crate) fn escape_control_chars(s: &str) -> String {
     escape_field(s, &['=', '"'])
 }
 
+/// Percent-encode everything except printable ASCII (and `%`, `=`, `"`, plus
+/// `extra`). Used for IdP-controlled identity text (`sub`, `iss`, `client_id`)
+/// where `is_always_escaped` is not enough: it misses zero-width and other
+/// Unicode format characters (U+200B, U+200E, U+FEFF...) that spoof a value
+/// without any visible difference. Injective because `%` is always encoded.
+pub(crate) fn escape_identity(s: &str, extra: &[char]) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch.is_ascii_graphic() && !matches!(ch, '%' | '=' | '"') && !extra.contains(&ch) {
+            out.push(ch);
+        } else {
+            push_percent_encoded(&mut out, ch);
+        }
+    }
+    out
+}
+
 /// Render the `devices` and `metadata` strings with `redaction` applied.
 /// `None` → cleartext, identical to the pre-redaction join modulo
 /// field escaping. `devices` is transformed per-name then re-joined so
@@ -496,6 +513,19 @@ mod tests {
             !out.contains('='),
             "an `=` in a client-asserted field must not survive to form a fake key=value pair: {out:?}"
         );
+    }
+
+    #[test]
+    fn escape_identity_encodes_invisible_and_bidi_characters_and_percent() {
+        for hostile in [
+            '\u{202E}', '\u{200B}', '\u{2028}', '\u{FEFF}', '\u{200E}', ' ', '\n',
+        ] {
+            let out = escape_identity(&format!("a{hostile}b"), &[]);
+            assert!(out.is_ascii() && !out.contains(hostile), "{out:?}");
+        }
+        assert_eq!(escape_identity("a%41", &[]), "a%2541");
+        assert_eq!(escape_identity("https://i", &[]), "https://i");
+        assert_eq!(escape_identity("a:b", &[':']), "a%3Ab");
     }
 
     #[test]

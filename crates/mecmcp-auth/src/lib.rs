@@ -8,6 +8,7 @@ pub mod approver;
 pub mod bearer;
 pub mod entry;
 pub mod grant;
+pub mod oauth;
 pub mod scope;
 pub mod stale;
 pub mod store;
@@ -24,6 +25,7 @@ pub use file::{
     FileError, KnownNames, ResolvedTokenPath, TokenStoreFile, resolve_token_path, write_atomic,
 };
 pub use grant::{Grant, GrantError, NoAction, NoGrant, StoredGrant};
+pub use oauth::{OAUTH_TOKEN_NAME_PREFIX, OAuthIdentity};
 pub use scope::{MAX_SCOPE_NAMES, ScopeError, ScopeSet};
 pub use stale::{StaleReason, StaleSecret, find_stale_secrets};
 pub use store::{

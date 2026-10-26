@@ -41,11 +41,18 @@ pub mod tls;
 pub use approver_assertion::APPROVER_ASSERTION_HEADER;
 #[cfg(feature = "verified-approver")]
 pub use approver_assertion::{ApproverAssertionError, ApproverAssertionVerifier};
+#[cfg(feature = "oauth-resource")]
+pub mod oauth_resource;
 pub use auth::{
     BearerAuthError, BearerAuthenticator, BearerBoundary, BearerResponseProfile,
     BearerResponseStyle, BoundaryAccounting, apply_bearer_boundary,
 };
 pub use client_info::{ClientExtras, ClientInfo, RequestProvenance};
+#[cfg(feature = "oauth-resource")]
+pub use oauth_resource::{
+    MappedAuthority, OAuthConfigError, OAuthRejection, OAuthResource, OAuthResourceConfig,
+    OAuthScopeMap, ScopeMapError,
+};
 
 // Internal types and functions exported only for testing
 #[doc(hidden)]

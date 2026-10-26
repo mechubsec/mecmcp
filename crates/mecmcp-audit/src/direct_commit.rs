@@ -143,6 +143,7 @@ mod tests {
             model_id: None,
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
+            oauth: None,
         };
 
         let stdio_out = run_with_capture(|| {
