@@ -105,6 +105,55 @@ async fn approving_records_the_approver_and_the_decision() {
         "the approval must name the device it approved, carried from the proposal"
     );
     assert_eq!(approval.diff_hash, output.digest);
+    // The mechanism is evidence too, on the unkeyed digest path as well.
+    assert_eq!(
+        approval.metadata.as_ref().unwrap()["approver_mechanism"],
+        "token"
+    );
+}
+
+/// An IdP-verified approval says so, with the issuer and subject that vouched for it.
+#[tokio::test]
+async fn an_oidc_approval_records_its_mechanism_and_verified_subject() {
+    let (coordinator, recorder) = coordinator_with_evidence();
+    let output = coordinator
+        .create_change_set(
+            "vsrx-ci".to_string(),
+            vec![serde_json::json!({"op": "set"})],
+            "agent:planner".to_string(),
+            fingerprint(),
+            "sig".to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+    let attribution = mecmcp_audit::Attribution {
+        principal: mecmcp_audit::Principal::Token("user:bob".to_string()),
+        actor_type: mecmcp_audit::ActorType::Human,
+        verified_approver: Some(mecmcp_auth::VerifiedApprover::for_test(
+            "https://idp.example",
+            "bob-sub",
+        )),
+        ..mecmcp_audit::Attribution::stdio()
+    };
+    coordinator
+        .approve_change_set(
+            output.change_set_id.clone(),
+            "vsrx-ci".to_string(),
+            &mecmcp_changeset::ApproverIdentity::from_attribution(&attribution),
+            output.digest.clone(),
+        )
+        .await
+        .unwrap();
+
+    let closed = recorder.close_current().unwrap();
+    let EvidenceRecord::Approval(approval) = &closed.records()[1] else {
+        panic!("expected an approval");
+    };
+    let metadata = approval.metadata.as_ref().unwrap();
+    assert_eq!(metadata["approver_mechanism"], "oidc");
+    assert_eq!(metadata["approver_issuer"], "https://idp.example");
+    assert_eq!(metadata["approver_subject"], "bob-sub");
 }
 
 /// A coordinator without a recorder must behave exactly as before: evidence is

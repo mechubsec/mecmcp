@@ -250,6 +250,19 @@ impl Drop for AuditScope {
             ),
             _ => Default::default(),
         };
+        // How the caller's identity was established, so an auditor can tell regimes apart
+        // from the audit line alone. Static strings, so nothing to escape.
+        let identity_mechanism = if self.attribution.verified_approver.is_some()
+            || self.attribution.verified_proposer.is_some()
+        {
+            "oidc-step-up"
+        } else {
+            match &self.attribution.principal {
+                Principal::OAuth { .. } => "oauth",
+                Principal::Token(_) => "token",
+                _ => "none",
+            }
+        };
         let client_version =
             crate::redact::escape_control_chars(self.client_version.as_deref().unwrap_or(""));
         let client_call_id =
@@ -263,6 +276,7 @@ impl Drop for AuditScope {
             oauth_issuer = %oauth_issuer,
             oauth_subject = %oauth_subject,
             oauth_client_id = %oauth_client_id,
+            identity_mechanism = %identity_mechanism,
             actor_type = %actor_type,
             token_verified_fields = %token_verified_fields,
             provider = %provider,
@@ -368,6 +382,41 @@ mod tests {
             out.contains("oauth_client_id=c%E2%80%A8x%20result%3Dok"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn the_audit_line_names_the_identity_mechanism() {
+        let mechanism = |ctx: &CallerCtx<NoGrant>| {
+            let out = run_with_capture(|| {
+                let mut scope = AuditScope::from_caller(ctx, "approve", "approve", vec![]);
+                scope.succeed();
+            });
+            out.split("identity_mechanism=")
+                .nth(1)
+                .and_then(|rest| rest.split_whitespace().next())
+                .unwrap_or_else(|| panic!("identity_mechanism missing: {out}"))
+                .to_owned()
+        };
+        assert_eq!(mechanism(&ctx("ci")), "token");
+        let mut stepped_up = ctx("alice");
+        stepped_up.verified_approver =
+            Some(mecmcp_auth::VerifiedApprover::for_test("https://i", "a"));
+        assert_eq!(mechanism(&stepped_up), "oidc-step-up");
+        let mut proposer = ctx("agent");
+        proposer.verified_proposer =
+            Some(mecmcp_auth::VerifiedProposer::for_test("https://i", "a"));
+        assert_eq!(mechanism(&proposer), "oidc-step-up");
+        let oauth: CallerCtx<NoGrant> = CallerCtx::oauth(
+            mecmcp_auth::OAuthIdentity {
+                issuer: "https://idp.example".into(),
+                subject: "alice".into(),
+                client_id: None,
+            },
+            ScopeSet::Wildcard,
+            ScopeSet::Wildcard,
+            mecmcp_auth::ActorType::Agent,
+        );
+        assert_eq!(mechanism(&oauth), "oauth");
     }
 
     #[test]

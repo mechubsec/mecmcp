@@ -501,11 +501,14 @@ impl ChangesetCoordinator {
         // A human decided. Recorded after the state write, so the trail cannot
         // claim an approval the coordinator failed to persist.
         if let Some(evidence) = self.evidence() {
-            evidence.approval(
+            // The mechanism comes from the identity itself, not from `ApprovalRecord`, whose
+            // `mechanism` is absent on the unkeyed digest path.
+            evidence.approval_with_identity(
                 &change_set_id,
                 &change_set_id,
                 &approver_principal,
                 "approved",
+                Some((approver.mechanism(), approver.oidc_subject())),
             );
         }
 

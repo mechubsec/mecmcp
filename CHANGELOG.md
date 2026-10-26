@@ -62,6 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `apply_change_set` also refuse a record whose owner was not verified at propose time, so a
   change set proposed before the mode was on cannot skip it (#400).
 
+### Changed
+
+- Every audit line gains `identity_mechanism` (`token`, `oauth`, `oidc-step-up`, `none`), and an
+  approval's evidence record carries `metadata.approver_mechanism` (`token`/`oidc`, plus the
+  verified issuer and subject), via the new `EvidenceRecorder::approval_with_identity`. The
+  plain `approval` is unchanged (#400).
+
 ### Documentation
 
 - `docs/OAUTH.md` section 9: Client ID Metadata Documents are the authorization server's

@@ -170,8 +170,12 @@ proven identity turns into something usable across a session:
 
 > **Status (2026-10-26): built.** `tokens.json` loads unchanged with no OIDC configuration.
 > Coexistence: a static `human` token bound to an `oidc_subject` plus a step-up assertion
-> and an unbound token both approve, and the approval record names its `mechanism`
-> (`token` or `oidc`) in the keyed v7 digest. The deprecation signal is
+> and an unbound token both approve, and the mechanism is recorded in three places: the
+> evidence approval record's `metadata.approver_mechanism` (`token` or `oidc`, with the
+> verified issuer and subject for `oidc`; always written), the `identity_mechanism` field of
+> every audit line (`token`, `oauth`, `oidc-step-up`, or `none` on stdio), and the state-file
+> approval record's `mechanism`, which is bound into the keyed v7 digest and so exists only
+> under `--approval-digest-key-file`. The deprecation signal is
 > `VerifiedApproverArgs::warn_unbound_human_tokens`; the operator turns on
 > `--require-verified-approver` when ready, with no cutover date in code. The proposer side
 > is closed too: `--require-verified-proposer` makes the owner's `owner_subject`
