@@ -222,6 +222,9 @@ impl ChangesetCoordinator {
 
         // Retrieve and validate the change set before acquiring the device guard
         let mut change_set = self.change_set(&change_set_id, &device).await?;
+        // A change set proposed before strict verified-proposer mode was on may already be
+        // approved or waived; it must not reach the device on that approval alone.
+        self.refuse_unverified_owner(&change_set)?;
 
         if change_set.owner != owner {
             return Err(CoordinatorError::new(

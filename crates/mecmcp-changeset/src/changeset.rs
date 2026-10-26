@@ -353,13 +353,7 @@ impl ChangesetCoordinator {
         // IdP-verified too; a token-asserted `owner_subject` is a value an operator typed.
         // Checked on the record, not the caller, so it also refuses a change set proposed
         // before the mode was turned on.
-        if self.require_verified_proposer() && !record.owner_verified {
-            return Err(CoordinatorError::new(
-                "owner_subject",
-                "strict verified-proposer mode requires the change set's owner to have been \
-                 IdP-verified when it was proposed; this one was not",
-            ));
-        }
+        self.refuse_unverified_owner(&record)?;
 
         // The house rule is two *people*, not two tokens. A verified subject
         // equal to the owner's recorded subject means the same human proposed
@@ -518,6 +512,54 @@ impl ChangesetCoordinator {
         Ok(record.into())
     }
 
+    /// Under strict verified-proposer mode, refuse a record whose owner was not IdP-verified
+    /// at propose time. Shared by approval, both waiver transitions and apply, so no path to
+    /// `Approved` or to the device skips it for a record proposed before the mode was on.
+    pub(crate) fn refuse_unverified_owner(
+        &self,
+        record: &ChangeSetRecord,
+    ) -> Result<(), CoordinatorError> {
+        if self.require_verified_proposer() && !record.owner_verified {
+            return Err(CoordinatorError::new(
+                "owner_subject",
+                "strict verified-proposer mode requires the change set's owner to have been \
+                 IdP-verified when it was proposed; this one was not",
+            ));
+        }
+        Ok(())
+    }
+
+    /// [`approve_change_set`](Self::approve_change_set), first requiring that **every** device
+    /// the change set targets is inside the approver's device scope (mecmcp#400).
+    ///
+    /// `in_scope` answers "may this approver address this device", typically
+    /// `|name| caller.devices.allows(name)`. A multi-target record is checked on all of
+    /// `ChangeSetRecord::targets()`, not just its primary device, so an approver scoped to
+    /// `site=lab-*` cannot approve a set that also touches a prod device. Fails closed: one
+    /// out-of-scope target refuses the approval and nothing changes. A server's approve
+    /// handler should call this rather than `approve_change_set`.
+    ///
+    /// # Errors
+    /// As [`approve_change_set`](Self::approve_change_set), and if any target is out of scope.
+    pub async fn approve_change_set_within(
+        &self,
+        change_set_id: String,
+        device: String,
+        approver: &ApproverIdentity,
+        expected_digest: String,
+        in_scope: &dyn Fn(&str) -> bool,
+    ) -> Result<ChangeSetOutput, CoordinatorError> {
+        let record = self.change_set(&change_set_id, &device).await?;
+        if record.targets().iter().any(|target| !in_scope(target)) {
+            return Err(CoordinatorError::new(
+                "device",
+                "the approver's device scope does not cover every device this change set targets",
+            ));
+        }
+        self.approve_change_set(change_set_id, device, approver, expected_digest)
+            .await
+    }
+
     /// Waives approval for a change set in lab mode, allowing single-operator application.
     ///
     /// This is the lab-mode path: when lab mode is enabled, a change set can transition
@@ -574,6 +616,7 @@ impl ChangesetCoordinator {
             .map_err(|e| CoordinatorError::new("expected_digest", e.to_string()))?;
 
         let mut record = self.change_set(&change_set_id, &device).await?;
+        self.refuse_unverified_owner(&record)?;
 
         if record.owner != owner {
             return Err(CoordinatorError::new(
@@ -714,6 +757,7 @@ impl ChangesetCoordinator {
             .map_err(|e| CoordinatorError::new("expected_digest", e.to_string()))?;
 
         let mut record = self.change_set(&change_set_id, &device).await?;
+        self.refuse_unverified_owner(&record)?;
 
         if record.owner != owner {
             return Err(CoordinatorError::new(

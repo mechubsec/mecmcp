@@ -231,10 +231,12 @@ attribute, e.g. a role that may touch only the EMEA lab:
 
 #### Approver roles
 
-Approval is device-scoped already: a change set targets exactly one device, and a server's
-approve handler checks the caller's device scope against it (`authorize_target`) before the
-coordinator is reached. A human approver token carrying `device_selectors` is therefore
-confined to the change sets on devices its selectors match. An approver scoped to
+Approval is device-scoped: a server's approve handler calls
+`ChangesetCoordinator::approve_change_set_within(.., &|name| caller.devices.allows(name))`,
+which requires **every** device in the change set's `targets()` (a multi-target set has
+more than its primary device) to be inside the approver's scope before approving. A handler
+that calls plain `approve_change_set` checks only the one device it was given. A human approver token carrying `device_selectors` is therefore
+confined to the change sets whose devices all match. An approver scoped to
 `site=lab-*` is refused on a prod change set, which stays `Planned`. No new flag is needed,
 and an approver with `devices: ["*"]` and no selectors behaves as before. OAuth principals
 cannot be human approvers (`actor_type "human"` is refused in the scope map), so approver

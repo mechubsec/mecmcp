@@ -40,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Approver roles are selector-scoped through the same field: approval already checks the
   approver's device scope against the change set's one device, so a `site=lab-*` approver
   cannot approve a prod change set. Pinned by an integration test; no new flag (#400).
+- `ChangesetCoordinator::approve_change_set_within`: approves only if every device in the
+  change set's `targets()` passes the caller's scope check, so a `site=lab-*` approver cannot
+  approve a multi-target set that also names a prod device. Servers' approve handlers should
+  call it instead of `approve_change_set` (#400).
 - `Mecmcp-Proposer-Assertion` step-up header (#400): a fresh IdP assertion whose subject equals
   the proposing token's bound `oidc_subject`, bound with `bind_proposer`, which needs neither a
   `human` token nor the approver role. A separate header and a separate field
@@ -52,7 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   counts), proposed through the new `create_change_set_as`. The change set records
   `owner_verified` and approval refuses one without it, so the two-person rule compares two
   IdP-verified subjects. A verified record makes the state file version 9; nothing changes
-  for a deployment that leaves the flag off (#400).
+  for a deployment that leaves the flag off. Under the mode, both waiver transitions and
+  `apply_change_set` also refuse a record whose owner was not verified at propose time, so a
+  change set proposed before the mode was on cannot skip it (#400).
 
 ### Documentation
 

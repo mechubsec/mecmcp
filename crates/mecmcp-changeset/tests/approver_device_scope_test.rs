@@ -138,3 +138,74 @@ async fn a_lab_scoped_approver_cannot_approve_a_prod_change_set() {
     .await
     .expect("a wildcard approver is unchanged");
 }
+
+/// A multi-target change set is judged on every target, not just its primary device.
+#[tokio::test]
+async fn a_lab_scoped_approver_cannot_approve_a_set_that_also_targets_prod() {
+    use mecmcp_changeset::records::ChangeSetRecord;
+    use mecmcp_changeset::{ChangeSetState, change_set_digest_with_targets};
+
+    let dir = tempfile::tempdir().unwrap();
+    let coordinator = ChangesetCoordinator::load(
+        Some(&dir.path().join("state.json")),
+        OperationLimits::default(),
+        Duration::from_secs(900),
+        false,
+    )
+    .unwrap();
+    let fingerprint = format!("sha256:{}", "b".repeat(64));
+    let actions = vec![serde_json::json!({"op": "set"})];
+    let targets = vec!["lab-fw-1".to_owned(), "prod-fw-1".to_owned()];
+    let digest =
+        change_set_digest_with_targets("owner", "lab-fw-1", &fingerprint, &actions, &targets)
+            .unwrap();
+    let record = ChangeSetRecord {
+        id: "a".repeat(64),
+        owner: "owner".to_owned(),
+        device: "lab-fw-1".to_owned(),
+        expected_candidate_fingerprint: fingerprint,
+        actions,
+        digest: digest.clone(),
+        state: ChangeSetState::Planned,
+        approver: None,
+        approval: None,
+        expires_at_unix: u64::MAX / 2,
+        operation_id: None,
+        policy_signature: String::new(),
+        targets,
+        preview: None,
+        task_id: None,
+        apply_without_handle: false,
+        owner_subject: None,
+        owner_verified: false,
+    };
+    let id = record.id.clone();
+    coordinator.insert_change_set(record).await.unwrap();
+
+    let lab_approver = approver_token(Some(vec!["site=lab-*".to_owned()]));
+    let approver = ApproverIdentity::TokenAsserted {
+        principal: lab_approver.token_name.clone(),
+        actor_type: mecmcp_audit::ActorType::Human,
+    };
+    let in_lab = |name: &str| lab_approver.devices.allows(name);
+    let refused = coordinator
+        .approve_change_set_within(
+            id.clone(),
+            "lab-fw-1".to_owned(),
+            &approver,
+            digest.clone(),
+            &in_lab,
+        )
+        .await;
+    assert!(refused.unwrap_err().message().contains("every device"));
+    let still = coordinator.change_set(&id, "lab-fw-1").await.unwrap();
+    assert_eq!(still.state, ChangeSetState::Planned);
+
+    // Control: an approver whose scope covers both targets approves it.
+    let wide = approver_token(None);
+    let in_wide = |name: &str| wide.devices.allows(name);
+    coordinator
+        .approve_change_set_within(id, "lab-fw-1".to_owned(), &approver, digest, &in_wide)
+        .await
+        .expect("a wildcard approver covers every target");
+}
