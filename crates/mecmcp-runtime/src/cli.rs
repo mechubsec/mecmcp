@@ -383,7 +383,7 @@ pub struct VerifiedApproverArgs {
     #[arg(long)]
     pub require_verified_approver: bool,
 
-    /// Append-only file that makes the approver-assertion `jti` replay set
+    /// Append log (periodically compacted; not an audit record) that makes the approver-assertion `jti` replay set
     /// survive restarts (created 0600; must be owned by the service user).
     /// Without it, an assertion used before a restart can be replayed once
     /// until it expires. Recommended whenever `--require-verified-approver`

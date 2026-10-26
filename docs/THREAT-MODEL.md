@@ -104,7 +104,7 @@ LLM / MCP client ──(1)── mecmcp server ──(2)── network device / 
   separately, see #400).
 - **The `jti` replay guard is durable only with `--approver-replay-store`.** With the
   flag set, each first-use `jti` is recorded (as a SHA-256, never the raw value) in an
-  append-only 0600 file and fsynced before the approval is granted; a failed write refuses
+  append log (0600, periodically compacted, not an audit record) and fsynced before the approval is granted; a failed write refuses
   the approval (`replay_store_unavailable`), and a malformed file refuses startup. Without
   it the guard is in-memory only: a restart inside `--approver-max-age-secs` (300s default)
   forgets used assertions, so a captured-but-not-yet-expired assertion could be replayed
