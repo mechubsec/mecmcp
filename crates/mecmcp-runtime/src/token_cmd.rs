@@ -342,7 +342,7 @@ where
             // Cloned out of the store: `store()` returns a guard, and holding
             // a borrow into it across the write below would not compile.
             let store_file = TokenStoreFile::<G>::load(&tokens_file)?;
-            let (before_devices, before_tools, before_grant) = {
+            let (before_devices, before_tools, before_grant, selectors) = {
                 let store = store_file.store();
                 let existing = store
                     .entries()
@@ -355,6 +355,7 @@ where
                     existing.devices.clone(),
                     existing.tools.clone(),
                     existing.grant.clone(),
+                    existing.device_selectors.clone(),
                 )
             };
 
@@ -390,6 +391,9 @@ where
             println!("  devices: {before_devices:?}");
             if let Some(next) = devices_scope.as_ref() {
                 println!("        -> {next:?}");
+            }
+            if let Some(selectors) = &selectors {
+                println!("  device_selectors (unchanged): {selectors:?}");
             }
             println!("  tools:   {before_tools:?}");
             if let Some(next) = tools_scope.as_ref() {
@@ -604,6 +608,19 @@ fn parse_scope(values: Vec<String>, field: &'static str) -> Result<ScopeSet, Tok
     Ok(ScopeSet::Allowlist(values))
 }
 
+/// The DEVICES column: the device scope plus any selectors, which narrow it. Omitting the
+/// selectors would show a scoped token as unrestricted.
+fn devices_label(devices: &ScopeSet, selectors: Option<&[String]>) -> String {
+    let base = match devices {
+        ScopeSet::Wildcard => "*".to_owned(),
+        ScopeSet::Allowlist(v) => v.join(","),
+    };
+    match selectors {
+        Some(selectors) => format!("{base} [{}]", selectors.join(" ")),
+        None => base,
+    }
+}
+
 fn list<G>(path: &Path) -> Result<(), TokenCommandError>
 where
     G: StoredGrant,
@@ -621,10 +638,7 @@ where
         "NAME", "DEVICES", "TOOLS"
     )?;
     for entry in store.entries() {
-        let devices = match &entry.devices {
-            ScopeSet::Wildcard => "*".into(),
-            ScopeSet::Allowlist(v) => v.join(","),
-        };
+        let devices = devices_label(&entry.devices, entry.device_selectors.as_deref());
         let tools = match &entry.tools {
             ScopeSet::Wildcard => "*".into(),
             ScopeSet::Allowlist(v) => v.join(","),
@@ -716,6 +730,16 @@ fn signal_reload(pid: Option<i32>) -> Result<(), TokenCommandError> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn devices_label_shows_selectors_that_narrow_the_scope() {
+        let selectors = vec!["site=lab-*".to_owned(), "tag=pci".to_owned()];
+        assert_eq!(
+            devices_label(&ScopeSet::Wildcard, Some(&selectors)),
+            "* [site=lab-* tag=pci]"
+        );
+        assert_eq!(devices_label(&ScopeSet::Wildcard, None), "*");
+    }
 
     #[test]
     fn oidc_subject_absent_when_neither_flag_given() {
