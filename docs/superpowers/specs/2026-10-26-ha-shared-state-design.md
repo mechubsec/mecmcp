@@ -1,6 +1,6 @@
 # Shared state for high availability: change sets, locks, sessions
 
-**Issue:** mecmcp#409 · **Date:** 2026-10-26 · **Status:** deferred, design only
+**Issue:** mecmcp#409 · **Date:** 2026-10-26 · **Status:** Proposed — not scheduled; #409 stays deferred until customer demand
 
 This is a design spike. **No code changes ship with this document.** Per the
 issue, no Proxmox customer has asked for HA and a single instance is acceptable
@@ -182,9 +182,18 @@ for a single-instance deployment.
   the existing marker or `/readyz` stays 503. A missing or mismatched
   marker means not ready, never "assume current", and a node never
   publishes a marker from its own loaded config, so a stale standby cannot
-  self-certify v1 over the active's v2. If an operator-initiated publish
-  from a server is ever wanted, it is allowed only on a node that has
-  already verified the existing marker, as an explicit command.
+  self-certify v1 over the active's v2. There is **no**
+  server-side marker-publication command, now or optional. The
+  config-distribution step must hold the deployment lock and replace the
+  marker with an atomic rename.
+- **`/readyz` is not enough.** The readiness check gates only the
+  load-balancer's view (`health.rs:72-84`), not `/mcp`, so requests could
+  still run on stale or premature config. While the loaded hash differs
+  from the marker (including during any config reload), `/mcp` returns 503
+  with `Retry-After`; in-flight requests finish (drain), new ones are
+  refused, and service resumes only when loaded hash == marker. This
+  applies on the active too: a config edit on the shared volume pauses new
+  requests until the active has reloaded to match.
 - **Takeover order:** acquire owner lock, then read state file, replay store
   and `tokens.json`, then **(re)load `FileInventory` and config** (explicit
   `reload()`, `file.rs:70`; it does not refresh itself) and verify the
@@ -202,7 +211,10 @@ for a single-instance deployment.
   assert persisted state is monotone. A readiness test asserts `/readyz`
   is 503 for a non-owner while `/healthz` is 200, and that inventory
   reload happens-before ready, and that a standby whose local
-  `devices.json` differs from the shared version file stays 503. Add a test where a stale
+  `devices.json` differs from the shared version file stays 503. Add a deterministic interleaving test (fake clock, barrier between
+  "marker replaced" and "reload completes"): a request admitted in that
+  window gets 503 + `Retry-After`, an already-admitted request completes,
+  and no request ever executes under a hash != marker. Add a test where a stale
   standby takes ownership and reloads: the marker must be byte-identical
   afterwards and the node not ready.
 - Sabotage check, **separate** test run: delete the `try_acquire_owner`
