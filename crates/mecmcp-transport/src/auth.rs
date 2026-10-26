@@ -1535,8 +1535,9 @@ fn validate_realm(realm: String) -> Result<String, BearerAuthError> {
     }
 }
 
-/// Why `value` cannot be interpolated into a quoted challenge parameter, if so.
-/// An `http(s)` URL with a well-formed host (DNS name or bracketed IPv6) and no userinfo.
+/// An `http(s)` URL with a well-formed host (DNS name or bracketed IPv6), no userinfo,
+/// no fragment, and only RFC 3986 characters after the authority. `http::Uri` alone is
+/// too lenient: it accepts `{}` in a path and silently drops a fragment.
 pub(crate) fn is_absolute_http_url(candidate: &str) -> bool {
     let Ok(uri) = candidate.parse::<http::Uri>() else {
         return false;
@@ -1558,20 +1559,74 @@ pub(crate) fn is_absolute_http_url(candidate: &str) -> bool {
     if !port_ok {
         return false;
     }
-    match host
+    let prefix_len = uri.scheme_str().map_or(0, str::len) + "://".len() + authority.as_str().len();
+    let host_ok = match host
         .strip_prefix('[')
         .and_then(|inner| inner.strip_suffix(']'))
     {
         Some(ipv6) => ipv6.parse::<std::net::Ipv6Addr>().is_ok(),
-        None => {
-            !host.is_empty()
-                && host
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.'))
-        }
-    }
+        None => is_dns_host(host),
+    };
+    host_ok
+        && candidate
+            .get(prefix_len..)
+            .is_some_and(is_rfc3986_path_and_query)
 }
 
+/// RFC 1123 host: dot-separated labels of 1-63 alphanumerics or `-`, no label starting
+/// or ending with `-`, at most 253 bytes. A trailing dot (empty label) is refused.
+fn is_dns_host(host: &str) -> bool {
+    host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
+/// RFC 3986 `path-abempty [ "?" query ]`: pchar, `/` and `?` only, every `%` followed by
+/// two hex digits. No fragment, no `[]{}|^<>` or backtick.
+fn is_rfc3986_path_and_query(rest: &str) -> bool {
+    if !(rest.is_empty() || rest.starts_with('/') || rest.starts_with('?')) {
+        return false;
+    }
+    let bytes = rest.as_bytes();
+    bytes.iter().enumerate().all(|(index, byte)| match byte {
+        b'%' => bytes
+            .get(index + 1..index + 3)
+            .is_some_and(|hex| hex.iter().all(u8::is_ascii_hexdigit)),
+        _ => {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'-' | b'.'
+                        | b'_'
+                        | b'~'
+                        | b'!'
+                        | b'$'
+                        | b'&'
+                        | b'\''
+                        | b'('
+                        | b')'
+                        | b'*'
+                        | b'+'
+                        | b','
+                        | b';'
+                        | b'='
+                        | b':'
+                        | b'@'
+                        | b'/'
+                        | b'?'
+                )
+        }
+    })
+}
+
+/// Why `value` cannot be interpolated into a quoted challenge parameter, if so.
 fn header_unsafe_reason(value: &str) -> Option<&'static str> {
     for byte in value.bytes() {
         if byte == b'"' {

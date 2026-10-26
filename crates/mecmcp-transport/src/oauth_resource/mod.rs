@@ -30,13 +30,23 @@ pub enum OAuthConfigError {
     Resource(#[from] ResourceUriError),
 }
 
-/// `issuer` for an error message, with anything before an `@` hidden: a refused issuer
-/// may carry `user:password@` and the message reaches logs.
-fn redact_userinfo(issuer: &str) -> String {
-    match issuer.rsplit_once('@') {
-        Some((_, after)) => format!("https://<redacted>@{after}"),
-        None => issuer.to_owned(),
+/// `issuer` for an error message (it reaches logs). Same rule as mecmcp-http's
+/// `SafeUrl::from_unparsed`, which this crate does not link: cut the query and fragment
+/// first, then hide everything up to the last `@` of what remains, so an `@` inside a
+/// query cannot anchor the userinfo scan past the `?`.
+fn redact_issuer(issuer: &str) -> String {
+    let (head, tail_present) = match issuer.find(['?', '#']) {
+        Some(cut) => (&issuer[..cut], true),
+        None => (issuer, false),
+    };
+    let mut rendered = match head.rfind('@') {
+        Some(at) => format!("[redacted]{}", &head[at..]),
+        None => head.to_owned(),
+    };
+    if tail_present {
+        rendered.push_str("[redacted]");
     }
+    rendered
 }
 
 /// Static configuration of one server's OAuth resource-server mode.
@@ -70,7 +80,7 @@ impl OAuthResourceConfig {
             && !issuer.contains(['?', '#'])
             && crate::auth::is_absolute_http_url(issuer);
         if !usable {
-            return Err(OAuthConfigError::Issuer(redact_userinfo(issuer)));
+            return Err(OAuthConfigError::Issuer(redact_issuer(issuer)));
         }
         Ok(Self {
             issuer: issuer.to_owned(),
@@ -368,15 +378,20 @@ mod tests {
 
     #[test]
     fn a_refused_issuer_does_not_echo_its_credentials() {
-        let error = OAuthResourceConfig::new(
+        for issuer in [
             "https://alice:s3cr3t@idp.example/realms/lab",
-            "https://junos.example/mcp",
-            map(),
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(!error.contains("s3cr3t"), "{error}");
-        assert!(!error.contains("alice"), "{error}");
+            "https://idp.example/realms/lab?api_key=s3cr3t",
+            "https://idp.example/realms/lab#s3cr3t",
+            // An `@` in the query must not anchor the userinfo scan past the `?`.
+            "https://idp.example/?email=a@b.example&key=s3cr3t",
+            "https://alice:s3cr3t@idp.example/?email=a@b.example",
+        ] {
+            let error = OAuthResourceConfig::new(issuer, "https://junos.example/mcp", map())
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("s3cr3t"), "{error}");
+            assert!(!error.contains("alice"), "{error}");
+        }
     }
 
     #[test]

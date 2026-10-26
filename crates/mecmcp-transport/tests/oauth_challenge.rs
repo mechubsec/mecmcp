@@ -119,6 +119,24 @@ async fn without_it_the_challenge_is_byte_identical_to_before() {
 }
 
 #[test]
+fn well_formed_urls_are_accepted() {
+    for url in [
+        "https://h.example/.well-known/oauth-protected-resource/mcp",
+        "http://127.0.0.1:8080/.well-known/oauth-protected-resource",
+        "http://[::1]:8080/.well-known/oauth-protected-resource",
+        "https://a-b.example:8443/p%2Fq?x=1",
+        &format!("https://{}.example/", "a".repeat(63)),
+    ] {
+        assert!(
+            BearerResponseProfile::detailed("test")
+                .with_resource_metadata(url)
+                .is_ok(),
+            "{url:?} must be accepted"
+        );
+    }
+}
+
+#[test]
 fn a_url_that_could_break_out_of_the_quoted_string_is_refused() {
     for hostile in [
         "https://h/\", error=\"insufficient_scope",
@@ -134,6 +152,18 @@ fn a_url_that_could_break_out_of_the_quoted_string_is_refused() {
         "https://h:bogus/metadata",
         "https://user:pw@h.example/metadata",
         "https://a{b}.example/metadata",
+        // http::Uri accepts these; a strict URL parser does not.
+        "https://h.example/{x}",
+        "https://h.example/#frag with spaces",
+        "https://h.example/meta#frag",
+        "https://h.example/a%zz",
+        "https://h.example/a|b",
+        // Host labels: empty, over 63 bytes, leading or trailing hyphen.
+        "https://a..example/metadata",
+        "https://h.example./metadata",
+        "https://-a.example/metadata",
+        "https://a-.example/metadata",
+        &format!("https://{}.example/metadata", "a".repeat(64)),
     ] {
         let result = BearerResponseProfile::detailed("test").with_resource_metadata(hostile);
         assert!(
