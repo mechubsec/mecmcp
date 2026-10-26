@@ -19,7 +19,8 @@ use tokio::sync::Semaphore;
 /// Why an [`OAuthResourceConfig`] was refused.
 #[derive(Debug, thiserror::Error)]
 pub enum OAuthConfigError {
-    /// The issuer is not an `https` URL of printable ASCII with a host.
+    /// The issuer is not an `https` URL of printable ASCII with a host and no userinfo,
+    /// query or fragment. Any userinfo in the rejected value is redacted.
     #[error(
         "OAuth issuer must be an https URL with a host, of printable ASCII without spaces: {0:?}"
     )]
@@ -27,6 +28,15 @@ pub enum OAuthConfigError {
     /// The canonical resource URI is invalid.
     #[error(transparent)]
     Resource(#[from] ResourceUriError),
+}
+
+/// `issuer` for an error message, with anything before an `@` hidden: a refused issuer
+/// may carry `user:password@` and the message reaches logs.
+fn redact_userinfo(issuer: &str) -> String {
+    match issuer.rsplit_once('@') {
+        Some((_, after)) => format!("https://<redacted>@{after}"),
+        None => issuer.to_owned(),
+    }
 }
 
 /// Static configuration of one server's OAuth resource-server mode.
@@ -53,19 +63,14 @@ impl OAuthResourceConfig {
         resource: &str,
         scope_map: OAuthScopeMap,
     ) -> Result<Self, OAuthConfigError> {
-        let printable = issuer.bytes().all(|byte| byte.is_ascii_graphic());
-        let Some(after_scheme) = issuer.strip_prefix("https://") else {
-            return Err(OAuthConfigError::Issuer(issuer.to_owned()));
-        };
-        let authority = after_scheme
-            .split(['/', '?', '#'])
-            .next()
-            .unwrap_or_default();
-        // Refused at startup rather than surfacing later as every token's `iss` mismatching.
-        let has_host =
-            !authority.is_empty() && !authority.starts_with(':') && !authority.contains('@');
-        if !printable || !has_host {
-            return Err(OAuthConfigError::Issuer(issuer.to_owned()));
+        // Refused at startup rather than surfacing later as every token's `iss` mismatching,
+        // or as a discovery URL with the well-known suffix inside a query or fragment.
+        let usable = issuer.bytes().all(|byte| byte.is_ascii_graphic())
+            && issuer.starts_with("https://")
+            && !issuer.contains(['?', '#'])
+            && crate::auth::is_absolute_http_url(issuer);
+        if !usable {
+            return Err(OAuthConfigError::Issuer(redact_userinfo(issuer)));
         }
         Ok(Self {
             issuer: issuer.to_owned(),
@@ -339,6 +344,11 @@ mod tests {
             "https://:443/realms/lab",
             "https://?x",
             "https://user@/realms/lab",
+            "https://[broken",
+            "https://idp.example:bogus/path",
+            "https://idp.example/realms/lab?x=1",
+            "https://idp.example/realms/lab#frag",
+            "https://user@idp.example/realms/lab",
         ] {
             assert!(
                 OAuthResourceConfig::new(bad, "https://junos.example/mcp", map()).is_err(),
@@ -353,6 +363,19 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn a_refused_issuer_does_not_echo_its_credentials() {
+        let error = OAuthResourceConfig::new(
+            "https://alice:s3cr3t@idp.example/realms/lab",
+            "https://junos.example/mcp",
+            map(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(!error.contains("s3cr3t"), "{error}");
+        assert!(!error.contains("alice"), "{error}");
     }
 
     #[test]

@@ -1537,7 +1537,7 @@ fn validate_realm(realm: String) -> Result<String, BearerAuthError> {
 
 /// Why `value` cannot be interpolated into a quoted challenge parameter, if so.
 /// An `http(s)` URL with a well-formed host (DNS name or bracketed IPv6) and no userinfo.
-fn is_absolute_http_url(candidate: &str) -> bool {
+pub(crate) fn is_absolute_http_url(candidate: &str) -> bool {
     let Ok(uri) = candidate.parse::<http::Uri>() else {
         return false;
     };
