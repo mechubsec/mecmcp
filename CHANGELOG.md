@@ -27,6 +27,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [Unreleased]
+
+### Fixed
+
+- **`token list` and `token set-scopes` show `device_selectors`.** The DEVICES column now
+  reads e.g. `* [site=lab-*]`, and `set-scopes` prints the selectors it leaves unchanged;
+  before, a selector-scoped token was listed as if it had its full `devices` scope.
+- **0.30.0 upgrade note corrected.** An older server (mecmcp ≤ 0.29.4) that merely *reads*
+  a `tokens.json` containing `device_selectors` ignores the field and grants the broad
+  `devices` scope at once — not only when a token is rewritten. Upgrade every binary that
+  reads or rewrites the store before adding selectors.
+
 ## [0.30.0] - 2026-10-26
 
 > **Minor release (breaking for literal construction).** New public fields:
@@ -34,9 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `ChangeSetRecord.owner_verified`, `TokenAction::Add.device_selector`,
 > `VerifiedApproverArgs.require_verified_proposer`; new variant
 > `VerifiedApproverArgsError::ProposerRequiresIssuer`. Behaviour is unchanged unless the new
-> options are used. Upgrade every binary that rewrites `tokens.json` before adding
-> `device_selectors`: an older binary drops the field on `token rotate`/`set-scopes`,
-> widening the token.
+> options are used. Upgrade every binary that reads or rewrites `tokens.json` before
+> adding `device_selectors`: an older binary ignores the field when reading (granting the
+> broad `devices` scope) and drops it on `token rotate`/`set-scopes`.
 
 ### Added
 
