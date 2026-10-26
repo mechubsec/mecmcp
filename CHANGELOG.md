@@ -27,9 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
-## [Unreleased]
+## [0.29.0] - 2026-10-25
 
-> **Breaking release: tag it 0.29.0, not 0.28.5.** The public API changes below break
+> **Breaking release.** The public API changes below break
 > source under 0.x semver. Consumer repos move to 0.29 together, and sdc's two mecmcp pins
 > (the tag guard and the SBOM guard) move in the same change.
 >
