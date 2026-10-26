@@ -10,6 +10,7 @@ pub mod entry;
 pub mod grant;
 pub mod oauth;
 pub mod scope;
+pub mod selector;
 pub mod stale;
 pub mod store;
 pub mod token;
@@ -27,6 +28,9 @@ pub use file::{
 pub use grant::{Grant, GrantError, NoAction, NoGrant, StoredGrant};
 pub use oauth::{OAUTH_TOKEN_NAME_PREFIX, OAuthIdentity};
 pub use scope::{MAX_SCOPE_NAMES, ScopeError, ScopeSet};
+pub use selector::{
+    AttrValue, DeviceAttributeSource, DeviceAttrs, Selector, SelectorError, SelectorSet,
+};
 pub use stale::{StaleReason, StaleSecret, find_stale_secrets};
 pub use store::{
     CallerCtx, MAX_TOKENS, StoreError, TokenStore, filter_device_names, filter_target_names,
