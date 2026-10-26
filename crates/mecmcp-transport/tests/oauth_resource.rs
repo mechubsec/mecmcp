@@ -596,14 +596,19 @@ async fn call(
         .await
         .expect("response");
     let status = response.status();
-    let header_text = |name| {
-        response
-            .headers()
-            .get(name)
-            .map(|value: &header::HeaderValue| value.to_str().expect("ASCII").to_owned())
+    // Scoped so the borrowing closure is not held across the await (keeps `call` Send).
+    let (challenge, retry_after) = {
+        let header_text = |name| {
+            response
+                .headers()
+                .get(name)
+                .map(|value: &header::HeaderValue| value.to_str().expect("ASCII").to_owned())
+        };
+        (
+            header_text(header::WWW_AUTHENTICATE),
+            header_text(header::RETRY_AFTER),
+        )
     };
-    let challenge = header_text(header::WWW_AUTHENTICATE);
-    let retry_after = header_text(header::RETRY_AFTER);
     let bytes = to_bytes(response.into_body(), 16 * 1024)
         .await
         .expect("body");
@@ -843,4 +848,199 @@ async fn the_assembled_router_serves_metadata_unauthenticated_and_guards_mcp() {
 
     shutdown.cancel();
     served.serving.await.expect("join").expect("clean shutdown");
+}
+
+// ---- Hardening: shape prefilter, bounded verification, no passthrough (Task 10) ----
+
+use std::time::Duration;
+
+/// An IdP that accepts the connection and never answers.
+struct HangingSource;
+
+#[async_trait::async_trait]
+impl KeySource for HangingSource {
+    async fn fetch_discovery(&self, _issuer: &str) -> Result<DiscoveryDocument, FetchError> {
+        std::future::pending().await
+    }
+    async fn fetch_jwks(&self, _jwks_uri: &str) -> Result<JwkSet, FetchError> {
+        std::future::pending().await
+    }
+}
+
+fn hanging_resource(timeout: Duration, permits: usize) -> OAuthResource<TestGrant> {
+    let config = config_for(PANOS)
+        .with_verify_timeout(timeout)
+        .with_max_concurrent_verifications(permits);
+    OAuthResource::new(config, Arc::new(HangingSource))
+}
+
+/// Each candidate carries a header segment that decodes, so without the shape prefilter
+/// `decode_header` accepts it and the verifier goes on to fetch the JWKS. All stay under
+/// the 4096-byte Authorization cap, so it is the shape check that refuses them.
+#[tokio::test]
+async fn candidates_that_are_not_jwt_shaped_never_reach_the_idp() {
+    let key = generate_test_key(KID);
+    let (panos, fetches) = resource_for(PANOS, &key);
+    let app = app(Some(panos));
+    let token = sign(&key, &claims(json!(PANOS), "panos:read"));
+    let header = token.split('.').next().expect("header segment");
+    for guess in [
+        format!("{header}..sig"),
+        format!("{header}.payload."),
+        format!("{header}.payload.sig=="),
+        format!("{header}.payload.si+g/"),
+        format!("{header}.payload.sig~"),
+        format!("{header}.{}.sig=", "p".repeat(3000)),
+    ] {
+        assert!(guess.len() < 4000);
+        let (status, _, _, _) = call(&app, Some(guess.as_str())).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{guess:.40}");
+    }
+    assert_eq!(
+        fetches.load(Ordering::SeqCst),
+        0,
+        "a non-JWT credential must not reach the IdP"
+    );
+}
+
+#[tokio::test]
+async fn jwt_shaped_garbage_is_rejected_before_any_key_fetch() {
+    let key = generate_test_key(KID);
+    let (panos, fetches) = resource_for(PANOS, &key);
+    let app = app(Some(panos));
+    for _ in 0..20 {
+        let (status, _, _, _) = call(&app, Some("aaaa.bbbb.cccc")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(
+        fetches.load(Ordering::SeqCst),
+        0,
+        "decode_header fails first"
+    );
+}
+
+#[tokio::test]
+async fn a_flood_of_unknown_kid_tokens_costs_one_fetch() {
+    let key = generate_test_key(KID);
+    let (panos, fetches) = resource_for(PANOS, &key);
+    let app = app(Some(panos));
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some("not-in-the-jwks".to_owned());
+    let token = jsonwebtoken::encode(
+        &header,
+        &claims(json!(PANOS), "panos:read"),
+        &key.encoding_key,
+    )
+    .expect("sign");
+    for _ in 0..50 {
+        let (status, _, _, _) = call(&app, Some(token.as_str())).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(
+        fetches.load(Ordering::SeqCst),
+        1,
+        "the cache, not the request rate, drives fetches"
+    );
+}
+
+/// A slow IdP holds the key cache while it fetches. A JWT caller waiting on it gets a 503
+/// once the verification timeout lapses; a static-token caller meanwhile is never queued.
+#[tokio::test]
+async fn a_hanging_idp_yields_503_quickly_and_leaves_static_tokens_alone() {
+    let key = generate_test_key(KID);
+    let app = app(Some(hanging_resource(Duration::from_millis(300), 4)));
+    let token = sign(&key, &claims(json!(PANOS), "panos:read"));
+
+    let pending = {
+        let app = app.clone();
+        tokio::spawn(async move { call(&app, Some(token.as_str())).await })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await; // the JWT request is now in the fetch
+
+    let (status, _, _, body) =
+        tokio::time::timeout(Duration::from_secs(1), call(&app, Some(STATIC_TOKEN)))
+            .await
+            .expect("a static token must not wait on the IdP");
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["token_name"], "ci-static");
+    assert!(
+        !pending.is_finished(),
+        "control: the JWT request was still waiting"
+    );
+
+    let (status, _, retry_after, body) = tokio::time::timeout(Duration::from_secs(2), pending)
+        .await
+        .expect("verification must be bounded by the timeout")
+        .expect("task");
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"], "temporarily_unavailable");
+    assert_eq!(retry_after.as_deref(), Some("5"));
+}
+
+#[tokio::test]
+async fn verifications_beyond_the_permit_limit_are_refused_immediately() {
+    let key = generate_test_key(KID);
+    let resource = Arc::new(hanging_resource(Duration::from_secs(30), 1));
+    let token = sign(&key, &claims(json!(PANOS), "panos:read"));
+
+    let holder = {
+        let resource = Arc::clone(&resource);
+        let token = token.clone();
+        tokio::spawn(async move { resource.authenticate(&token).await })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await; // let it take the permit
+    let refused = tokio::time::timeout(Duration::from_millis(500), resource.authenticate(&token))
+        .await
+        .expect("must not queue behind the holder");
+    assert_eq!(
+        refused.expect_err("refused"),
+        OAuthRejection::Unavailable("busy")
+    );
+    assert!(!holder.is_finished(), "control: the permit was still held");
+    holder.abort();
+}
+
+/// rmcp copies request parts into tool contexts, so after OAuth authentication nothing
+/// downstream may see the bearer. Static-token requests keep their header as before.
+#[tokio::test]
+async fn the_bearer_is_stripped_from_oauth_requests_only() {
+    let key = generate_test_key(KID);
+    let (panos, _) = resource_for(PANOS, &key);
+    let authenticator = BearerAuthenticator::new(BearerSyntax::Strict, |candidate| {
+        (candidate == STATIC_TOKEN).then(static_caller)
+    });
+    let boundary = BearerBoundary::new(authenticator, BearerResponseProfile::detailed("test"))
+        .with_oauth_resource(Arc::new(panos));
+    let router = Router::new().route(
+        "/",
+        post(|request: Request<Body>| async move {
+            json!({
+                "authorization_present": request.headers().contains_key(header::AUTHORIZATION),
+            })
+            .to_string()
+        }),
+    );
+    let app = apply_bearer_boundary(
+        router,
+        boundary,
+        BoundaryAccounting {
+            session_tracker: None,
+            concurrency: None,
+            limits: Arc::new(LimitsConfig::default()),
+        },
+    );
+    let token = sign(&key, &claims(json!(PANOS), "panos:read"));
+    let (status, _, _, body) = call(&app, Some(token.as_str())).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["authorization_present"], false,
+        "no inner layer or handler may see the bearer"
+    );
+
+    let (status, _, _, body) = call(&app, Some(STATIC_TOKEN)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["authorization_present"], true,
+        "static requests unchanged"
+    );
 }

@@ -710,6 +710,12 @@ pub async fn bearer_auth_middleware<G: Grant>(
         }
     }
 
+    if caller.oauth.is_some() {
+        // No token passthrough: rmcp copies request parts into tool contexts, so the bearer
+        // must not survive authentication. Static-token requests are left as they were.
+        request.headers_mut().remove(header::AUTHORIZATION);
+    }
+
     // Insert both the grant-bearing CallerCtx and the grant-neutral
     // AuthenticatedToken so accounting layers can work regardless of G.
     request
@@ -744,6 +750,10 @@ async fn try_oauth<G: Grant>(state: &AuthState<G>, candidate: &str) -> OAuthOutc
     let Some(resource) = state.oauth.as_ref() else {
         return OAuthOutcome::NotApplicable;
     };
+    // Not a JWT: an unknown static token or a guess. Keep it off the verifier entirely.
+    if !crate::oauth_resource::looks_like_jwt(candidate) {
+        return OAuthOutcome::NotApplicable;
+    }
     match resource.authenticate(candidate).await {
         Ok(caller) => OAuthOutcome::Authenticated(Box::new(caller)),
         Err(OAuthRejection::Invalid(reason)) => {

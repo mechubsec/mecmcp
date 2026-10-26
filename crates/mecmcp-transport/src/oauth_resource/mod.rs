@@ -13,6 +13,8 @@ use mecmcp_oidc::{
 };
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Semaphore;
 
 /// Why an [`OAuthResourceConfig`] was refused.
 #[derive(Debug, thiserror::Error)]
@@ -36,6 +38,8 @@ pub struct OAuthResourceConfig {
     scope_map: OAuthScopeMap,
     role_claim: String,
     require_at_jwt_typ: bool,
+    verify_timeout: Duration,
+    max_concurrent_verifications: usize,
 }
 
 impl OAuthResourceConfig {
@@ -70,6 +74,8 @@ impl OAuthResourceConfig {
             scope_map,
             role_claim: "roles".to_owned(),
             require_at_jwt_typ: false,
+            verify_timeout: Duration::from_secs(3),
+            max_concurrent_verifications: 32,
         })
     }
 
@@ -93,6 +99,34 @@ impl OAuthResourceConfig {
     pub fn with_require_at_jwt_typ(mut self, required: bool) -> Self {
         self.require_at_jwt_typ = required;
         self
+    }
+
+    /// How long one verification (including any JWKS fetch it waits on) may take before
+    /// the request is refused as unavailable (default 3 s).
+    #[must_use]
+    pub fn with_verify_timeout(mut self, timeout: Duration) -> Self {
+        self.verify_timeout = timeout;
+        self
+    }
+
+    /// How many verifications may be in flight at once; beyond that a request is refused
+    /// as unavailable rather than queued (default 32, minimum 1).
+    #[must_use]
+    pub fn with_max_concurrent_verifications(mut self, permits: usize) -> Self {
+        self.max_concurrent_verifications = permits.max(1);
+        self
+    }
+
+    /// The per-verification time limit.
+    #[must_use]
+    pub fn verify_timeout(&self) -> Duration {
+        self.verify_timeout
+    }
+
+    /// The concurrent-verification limit.
+    #[must_use]
+    pub fn max_concurrent_verifications(&self) -> usize {
+        self.max_concurrent_verifications
     }
 
     /// The issuer, exactly as configured.
@@ -152,6 +186,7 @@ pub enum OAuthRejection {
 pub struct OAuthResource<G: Grant> {
     config: OAuthResourceConfig,
     verifier: TokenVerifier,
+    permits: Semaphore,
     _grant: PhantomData<fn() -> G>,
 }
 
@@ -166,6 +201,7 @@ impl<G: Grant> OAuthResource<G> {
         };
         Self {
             verifier: TokenVerifier::new(oidc, source),
+            permits: Semaphore::new(config.max_concurrent_verifications()),
             config,
             _grant: PhantomData,
         }
@@ -190,7 +226,16 @@ impl<G: Grant> OAuthResource<G> {
     /// # Errors
     /// See [`OAuthRejection`].
     pub async fn authenticate(&self, token: &str) -> Result<CallerCtx<G>, OAuthRejection> {
-        let claims = match self.verifier.verify(token).await {
+        // A slow IdP holds the key cache while it fetches: refuse rather than queue, and
+        // stop waiting after the timeout, so unauthenticated callers cannot pile up on it.
+        let Ok(_permit) = self.permits.try_acquire() else {
+            return Err(OAuthRejection::Unavailable("busy"));
+        };
+        let verified =
+            tokio::time::timeout(self.config.verify_timeout(), self.verifier.verify(token))
+                .await
+                .map_err(|_elapsed| OAuthRejection::Unavailable("timeout"))?;
+        let claims = match verified {
             Ok(claims) => claims,
             Err(VerificationFailure::KeysUnavailable { .. }) => {
                 return Err(OAuthRejection::Unavailable("keys_unavailable"));
@@ -220,6 +265,25 @@ impl<G: Grant> OAuthResource<G> {
             authority.actor_type,
         ))
     }
+}
+
+/// Cheap shape test run before any async work: exactly three non-empty base64url segments.
+///
+/// Length is bounded upstream: an `Authorization` header over 4096 bytes is refused before
+/// this runs, so access tokens larger than about 4 KiB are not supported.
+pub(crate) fn looks_like_jwt(candidate: &str) -> bool {
+    let mut segments = 0;
+    for segment in candidate.split('.') {
+        segments += 1;
+        let clean = !segment.is_empty()
+            && segment
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+        if !clean {
+            return false;
+        }
+    }
+    segments == 3
 }
 
 /// 1-128 bytes of printable ASCII without spaces.
@@ -288,6 +352,33 @@ mod tests {
                 map()
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn looks_like_jwt_accepts_only_three_base64url_segments() {
+        assert!(looks_like_jwt("aaa.bbb.ccc"));
+        assert!(looks_like_jwt("a-_.B9.c"));
+        for bad in [
+            "", "a", "a.b", "a.b.c.d", "a..c", ".b.c", "a.b.", "a.b.c=", "a.b.c d", "a.b.é",
+            "a.b+.c", "a/.b.c", "a.b.c~",
+        ] {
+            assert!(!looks_like_jwt(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn verification_limits_default_and_floor() {
+        let config =
+            OAuthResourceConfig::new("https://idp.example", "https://junos.example/mcp", map())
+                .unwrap();
+        assert_eq!(config.verify_timeout(), Duration::from_secs(3));
+        assert_eq!(config.max_concurrent_verifications(), 32);
+        assert_eq!(
+            config
+                .with_max_concurrent_verifications(0)
+                .max_concurrent_verifications(),
+            1
         );
     }
 
