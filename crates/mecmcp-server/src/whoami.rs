@@ -47,7 +47,12 @@ pub fn whoami<G: Grant>(caller: Option<&CallerCtx<G>>) -> rmcp::model::CallToolR
             max_text_bytes: 4096,
             max_json_bytes: 4096,
         },
-        OutputRedaction::Apply,
+        // Token names are non-secret by design, and `Apply` would replace a valid
+        // secret-shaped name such as `$9$...` with `[REDACTED]`.
+        OutputRedaction::SkipForInternalRead {
+            tool: mecmcp_auth::WHOAMI_TOOL,
+            reason: "reports the caller's own token entry, which never reached a device",
+        },
     )
 }
 
@@ -143,6 +148,15 @@ mod tests {
         assert_eq!(json["auth"], "oauth");
         assert!(!json.as_object().unwrap().contains_key("created_at"));
         assert!(!json.as_object().unwrap().contains_key("expires_at"));
+    }
+
+    #[test]
+    fn a_secret_shaped_token_name_is_reported_verbatim() {
+        // `TokenEntry::validate` accepts any name without whitespace or NUL,
+        // including one shaped like a Junos `$9$` secret.
+        let mut ctx = caller(ScopeSet::Wildcard, ScopeSet::Wildcard);
+        ctx.token_name = "$9$legitimate-name".to_owned(); // gitleaks:allow -- synthetic name
+        assert_eq!(json_of(&whoami(Some(&ctx)))["name"], "$9$legitimate-name"); // gitleaks:allow -- synthetic name
     }
 
     #[test]

@@ -45,10 +45,11 @@ impl ScopeSet {
     /// supplies its own write-tool registry so this crate stays vendor-neutral.
     /// An empty allowlist permits nothing — the set is simply empty, so no name
     /// can match. [`WHOAMI_TOOL`] is the exception: every scope permits it, even an
-    /// empty allowlist.
+    /// empty allowlist — unless the server lists it in `write_tools`, which means its
+    /// `whoami` is its own mutating tool, not the built-in.
     #[must_use]
     pub fn allows_tool(&self, name: &str, write_tools: &[&str]) -> bool {
-        if name == WHOAMI_TOOL {
+        if name == WHOAMI_TOOL && !write_tools.contains(&name) {
             return true;
         }
         match self {
@@ -213,6 +214,15 @@ mod tests {
         let scope = ScopeSet::Allowlist(vec![]);
         assert!(!scope.allows_tool("get_junos_config", WRITE_TOOLS));
         assert!(!scope.allows_tool("load_and_commit_config", WRITE_TOOLS));
+    }
+
+    #[test]
+    fn a_server_write_tool_named_whoami_gets_no_exemption() {
+        let write_tools = &["apply_change_set", WHOAMI_TOOL];
+        assert!(!ScopeSet::Wildcard.allows_tool(WHOAMI_TOOL, write_tools));
+        assert!(!ScopeSet::Allowlist(vec![]).allows_tool(WHOAMI_TOOL, write_tools));
+        let named = ScopeSet::Allowlist(vec![WHOAMI_TOOL.to_owned()]);
+        assert!(named.allows_tool(WHOAMI_TOOL, write_tools));
     }
 
     #[test]

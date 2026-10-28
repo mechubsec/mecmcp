@@ -215,7 +215,9 @@ are therefore encoded rather than documented elsewhere:
    `WHOAMI_TOOL` for any scope, even an empty allowlist, so a token can always
    read its own name and expiry (mecmcp#580). It returns nothing else — never
    scopes, digests or other tokens. A server opts in by registering a `whoami`
-   tool method that returns `mecmcp_server::whoami(caller)`.
+   tool method that returns `mecmcp_server::whoami(caller)`. The name is
+   reserved: a server that lists `whoami` in its write tools loses the
+   exemption, so a colliding mutating tool is never opened to every token.
 
 `authorize_target` deliberately does **no** inventory lookup. It answers "is this
 name inside the caller's scope", which is a question about the token. Whether the
