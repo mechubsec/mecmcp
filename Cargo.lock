@@ -2144,6 +2144,7 @@ dependencies = [
 name = "mecmcp-server"
 version = "0.30.1"
 dependencies = [
+ "chrono",
  "http",
  "mecmcp-audit",
  "mecmcp-auth",

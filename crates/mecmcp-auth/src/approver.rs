@@ -343,6 +343,8 @@ mod tests {
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
             oauth: None,
+            token_created_at: None,
+            token_expires_at: None,
         }
     }
 

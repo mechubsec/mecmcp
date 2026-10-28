@@ -65,6 +65,8 @@ fn emit_transport_audit(tool: &'static str, client_name: Option<&'static str>) {
         session_id: None,
         request_id: uuid::Uuid::new_v4(),
         oauth: None,
+        token_created_at: None,
+        token_expires_at: None,
     };
 
     let mut scope = mecmcp_audit::AuditScope::from_caller(&caller, tool, "transport", Vec::new());

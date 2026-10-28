@@ -31,6 +31,7 @@ thiserror   = { workspace = true }
 tracing     = { workspace = true }
 
 [dev-dependencies]
+chrono = { workspace = true }
 mecmcp-audit = { version = "0.30.1", path = "../mecmcp-audit", features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 # Test-only: CallerCtx carries a per-request correlation ID (mecmcp#269).
