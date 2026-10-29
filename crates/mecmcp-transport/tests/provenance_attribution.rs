@@ -34,6 +34,8 @@ fn provenance_fields_flow_from_meta_to_audit_attribution() {
         session_id: Some("01JXYZ123456789".to_owned()),
         request_id: uuid::Uuid::new_v4(),
         oauth: None,
+        token_created_at: None,
+        token_expires_at: None,
     };
 
     let captured = run_with_capture(|| {
@@ -78,6 +80,8 @@ fn missing_provenance_fields_work() {
         session_id: None,
         request_id: uuid::Uuid::new_v4(),
         oauth: None,
+        token_created_at: None,
+        token_expires_at: None,
     };
 
     let captured = run_with_capture(|| {
@@ -126,6 +130,8 @@ fn provenance_populated_in_both_attribution_arms() {
         session_id: Some("01JVERIFIED".to_owned()),
         request_id: uuid::Uuid::new_v4(),
         oauth: None,
+        token_created_at: None,
+        token_expires_at: None,
     };
 
     let captured_verified = run_with_capture(|| {
@@ -165,6 +171,8 @@ fn provenance_populated_in_both_attribution_arms() {
         session_id: Some("01JFALLBACK".to_owned()),
         request_id: uuid::Uuid::new_v4(),
         oauth: None,
+        token_created_at: None,
+        token_expires_at: None,
     };
 
     let captured_fallback = run_with_capture(|| {

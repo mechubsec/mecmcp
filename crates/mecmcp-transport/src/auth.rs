@@ -2031,6 +2031,8 @@ mod tests {
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
             oauth: None,
+            token_created_at: None,
+            token_expires_at: None,
         };
 
         let body = br#"{"method":"tools/call","params":{"name":"list_devices","arguments":{}}}"#;
@@ -2090,6 +2092,8 @@ mod tests {
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
             oauth: None,
+            token_created_at: None,
+            token_expires_at: None,
         };
 
         let body = br#"{"method":"tools/call","params":{"name":"get_config","arguments":{}}}"#;
@@ -2140,6 +2144,8 @@ mod tests {
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
             oauth: None,
+            token_created_at: None,
+            token_expires_at: None,
         };
         let mut attr = Attribution::from_caller(&caller);
 

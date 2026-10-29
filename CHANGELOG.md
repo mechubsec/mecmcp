@@ -37,12 +37,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `session-init`/`session-close`/`limit-session` keywords, and
   `show security flow session ...` filters with one address or integer
   argument (rustjunosmcp#579).
+- **mecmcp-server**: the built-in `whoami` tool (`mecmcp_server::whoami`,
+  `WHOAMI_DESCRIPTION`). It returns the calling token's own name, auth type
+  and actor type, plus `created_at` and `expires_at` for a static token
+  (`null` means it never expires), so an unattended client sees an expiring
+  token before the 401. A server opts in by registering the tool (#580).
+- **mecmcp-auth**: `WHOAMI_TOOL`; `ScopeSet::allows_tool` permits it under
+  every tool scope, including an empty allowlist, unless the server lists a
+  `whoami` of its own in `write_tools` (#580).
 
 ### Changed
 
 - **mecmcp-redact**: `junos::redact_json_value` string values now go through
   the same session-preserving scan. Generic and other-vendor paths are
   unchanged.
+- **Breaking for source (#580):** `mecmcp_auth::CallerCtx` has two new public
+  fields, `token_created_at` and `token_expires_at`, both
+  `Option<DateTime<Utc>>`. Code that builds a `CallerCtx` by struct literal
+  must add `token_created_at: None, token_expires_at: None`. The store fills
+  them for a static token, and an OAuth caller leaves both `None`. A GitHub
+  code search (not exhaustive) found such literals in rustjunosmcp
+  (`rust-junosmcp/src/server.rs`, `rust-junosmcp/src/server/srx.rs`),
+  rustsdcmcp (`crates/rustsdcmcp/src/server.rs`), rustmistmcp
+  (`crates/rustmistmcp/src/server/mod.rs`) and rustunifimcp
+  (`rustunifimcp/src/server/mod.rs`).
 
 ### Fixed
 

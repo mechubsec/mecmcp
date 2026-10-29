@@ -556,6 +556,8 @@ mod tests {
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
             oauth: None,
+            token_created_at: None,
+            token_expires_at: None,
         }
     }
 
@@ -828,6 +830,8 @@ mod tests {
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
             oauth: None,
+            token_created_at: None,
+            token_expires_at: None,
         };
         let a = Attribution::from_caller(&ctx);
 
@@ -889,6 +893,8 @@ mod tests {
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
             oauth: None,
+            token_created_at: None,
+            token_expires_at: None,
         };
         let a = Attribution::from_caller(&ctx);
 
@@ -923,6 +929,8 @@ mod tests {
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
             oauth: None,
+            token_created_at: None,
+            token_expires_at: None,
         };
         let a = Attribution::from_caller(&c);
         assert_eq!(a.actor_type, ActorType::Unknown);
@@ -955,6 +963,8 @@ mod tests {
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
             oauth: None,
+            token_created_at: None,
+            token_expires_at: None,
         };
         let a = Attribution::from_caller(&c);
         assert_eq!(a.actor_type, ActorType::Agent);
@@ -989,6 +999,8 @@ mod tests {
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
             oauth: None,
+            token_created_at: None,
+            token_expires_at: None,
         };
         let a = Attribution::from_caller(&c);
         assert_eq!(
@@ -1025,6 +1037,8 @@ mod tests {
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
             oauth: None,
+            token_created_at: None,
+            token_expires_at: None,
         };
         let a = Attribution::from_caller(&c);
         assert_eq!(

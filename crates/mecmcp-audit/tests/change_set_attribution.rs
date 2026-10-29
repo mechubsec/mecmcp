@@ -113,6 +113,8 @@ fn from_caller_never_invents_an_approver_or_change_set() {
         session_id: None,
         request_id: uuid::Uuid::nil(),
         oauth: None,
+        token_created_at: None,
+        token_expires_at: None,
     };
 
     let attribution = Attribution::from_caller(&ctx);

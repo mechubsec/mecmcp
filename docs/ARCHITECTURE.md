@@ -195,7 +195,7 @@ unbounded-cardinality path.
 The transport's decision is not the last word. A handler recovers its caller with
 `caller_from_extensions` and re-checks via `authorize_call`.
 
-Three rules in `crates/mecmcp-server/src/authorize.rs` are easy to get wrong and
+Four rules in `crates/mecmcp-server/src/authorize.rs` are easy to get wrong and
 are therefore encoded rather than documented elsewhere:
 
 1. **A `None` caller is the stdio path and is authorized.** So a handler must
@@ -211,6 +211,13 @@ are therefore encoded rather than documented elsewhere:
    write tools.** `authorize_tool` takes that registry as a parameter because
    only the server knows it — and passing an empty slice silently turns every
    wildcard token into a writer.
+4. **`whoami` is in every tool scope.** `ScopeSet::allows_tool` permits
+   `WHOAMI_TOOL` for any scope, even an empty allowlist, so a token can always
+   read its own name and expiry (mecmcp#580). It returns nothing else — never
+   scopes, digests or other tokens. A server opts in by registering a `whoami`
+   tool method that returns `mecmcp_server::whoami(caller)`. The name is
+   reserved: a server that lists `whoami` in its write tools loses the
+   exemption, so a colliding mutating tool is never opened to every token.
 
 `authorize_target` deliberately does **no** inventory lookup. It answers "is this
 name inside the caller's scope", which is a question about the token. Whether the
