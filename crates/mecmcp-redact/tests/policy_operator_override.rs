@@ -84,6 +84,10 @@ fn disabling_redaction_only_happens_through_install_and_is_logged_and_audited() 
         redact_json_str(r#"{"password":"FAKEhunter2"}"#).unwrap(),
         r#"{"password":"FAKEhunter2"}"#
     );
+    assert_eq!(
+        mecmcp_redact::junos::redact_text("password: FAKEhunter2"),
+        "password: FAKEhunter2"
+    );
     let xml = "<password>FAKEhunter2</password>";
     assert_eq!(redact_xml_str(xml).unwrap(), xml);
 

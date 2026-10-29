@@ -9,4 +9,7 @@ use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &str| {
     let _ = mecmcp_redact::redact_json_str(data);
+    if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(data) {
+        mecmcp_redact::junos::redact_json_value(&mut value);
+    }
 });

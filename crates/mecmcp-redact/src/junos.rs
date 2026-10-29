@@ -1,4 +1,4 @@
-//! Junos profile (MEC-1245): two pieces of redaction coverage rustjunosmcp's
+//! Junos profile (MEC-1245): pieces of redaction coverage rustjunosmcp's
 //! `collect_jtac_support_bundle` (`redact=true`, the default) needs that this
 //! crate's vendor-agnostic `crate::xml`/`crate::text` passes do not provide
 //! on their own.
@@ -45,6 +45,7 @@
 
 use crate::RedactError;
 use crate::denylist::is_denylisted_key;
+use crate::junos_session::scan_preserving_sessions;
 use crate::policy::{RedactionPolicy, active};
 use crate::shape::looks_like_secret_value;
 use crate::xml;
@@ -101,12 +102,34 @@ pub fn redact_xml(input: &str) -> Result<String, RedactError> {
 /// Redact a JSON value in place with the Junos-specific keyword waiver: the
 /// closed `session` vocabulary of [`redact_xml`] is kept when its value is
 /// benign (null, bool, number, empty or digits-only string); every other
-/// value, nested secret and real `session*` key is still redacted.
+/// value, nested secret and real `session*` key is still redacted. String
+/// values go through the session-preserving generic text scan (not
+/// [`redact_log_text`]), so vetted `session` counters and keywords survive.
 pub fn redact_json_value(value: &mut serde_json::Value) {
     if matches!(active(), RedactionPolicy::DisabledByOperator { .. }) {
         return;
     }
-    crate::json::redact_with_waiver(value, &is_session_keyword_element);
+    crate::json::redact_with_waiver(value, &is_session_keyword_element, &|text| {
+        scan_preserving_sessions(text, crate::text::redact)
+    });
+}
+
+/// Redact unstructured Junos CLI/config text: the generic
+/// [`crate::redact_text`] denylist, then [`redact_log_text`]'s Junos
+/// vocabulary, with non-secret `session` text preserved (counter rows such
+/// as `Valid sessions: 12`, the `session-init`/`session-close`/`limit-session`
+/// keywords, and `show security flow session ...` filters with an address or
+/// integer argument). Preservation only removes the `session`-substring
+/// trigger from vetted keyword and counter text: a keyword is shielded only
+/// when the rest of its line holds only vetted keywords and filter arguments, and everything the generic and Junos
+/// passes mask on their own is still masked. Passes input through unchanged
+/// when [`active`] is [`RedactionPolicy::DisabledByOperator`].
+#[must_use]
+pub fn redact_text(input: &str) -> String {
+    if matches!(active(), RedactionPolicy::DisabledByOperator { .. }) {
+        return input.to_string();
+    }
+    scan_preserving_sessions(input, |text| redact_log_text(&crate::redact_text(text)))
 }
 
 /// Redact a Junos non-XML support-bundle artefact (`/var/log/*` files,

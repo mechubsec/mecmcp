@@ -19,7 +19,15 @@ pub(crate) const PLACEHOLDER: &str = "[REDACTED]";
 
 /// Redact `value` in place.
 pub fn redact(value: &mut Value) {
-    redact_inner(value, None, false, &[], Opts::NONE, &|_| false);
+    redact_inner(
+        value,
+        None,
+        false,
+        &[],
+        Opts::NONE,
+        &|_| false,
+        &crate::text::redact,
+    );
 }
 
 /// Redact `value` in place, except that a key whose normalized form appears
@@ -32,7 +40,15 @@ pub fn redact(value: &mut Value) {
 /// flag: only when set does a `community` field under a `bgp` scope get the
 /// routing-policy exemption below.
 pub(crate) fn redact_with_exemptions(value: &mut Value, exempt: &[&str], opts: Opts) {
-    redact_inner(value, None, false, exempt, opts, &|_| false);
+    redact_inner(
+        value,
+        None,
+        false,
+        exempt,
+        opts,
+        &|_| false,
+        &crate::text::redact,
+    );
 }
 
 /// Redact `value` in place like [`redact`], except that a key for which
@@ -46,8 +62,12 @@ pub(crate) fn redact_with_exemptions(value: &mut Value, exempt: &[&str], opts: O
 /// that flag fails closed (a non-inert value under a session-config name is
 /// redacted wholesale) and is off unless a profile opts in. This waiver is
 /// the Junos path's closed keyword set and keeps benign siblings.
-pub(crate) fn redact_with_waiver(value: &mut Value, waive: &dyn Fn(&str) -> bool) {
-    redact_inner(value, None, false, &[], Opts::NONE, waive);
+pub(crate) fn redact_with_waiver(
+    value: &mut Value,
+    waive: &dyn Fn(&str) -> bool,
+    scan: &dyn Fn(&str) -> String,
+) {
+    redact_inner(value, None, false, &[], Opts::NONE, waive, scan);
 }
 
 /// Scalar with no secret-bearing content of its own: a counter or limit.
@@ -131,7 +151,8 @@ fn looks_like_bgp_community_value(value: &Value) -> bool {
 /// consulted only when the profile session flag did not already decide the
 /// key: a non-inert value under an opted-in session-config name is redacted
 /// wholesale (fail closed), and a waived key otherwise keeps benign scalars
-/// while masking the rest.
+/// while masking the rest. `scan` is the text scan applied to string values
+/// (the generic one, or a vendor-aware wrapper around it).
 fn redact_inner(
     value: &mut Value,
     parent_key: Option<&str>,
@@ -139,6 +160,7 @@ fn redact_inner(
     exempt: &[&str],
     opts: Opts,
     waive: &dyn Fn(&str) -> bool,
+    scan: &dyn Fn(&str) -> String,
 ) {
     match value {
         Value::Object(map) => {
@@ -146,7 +168,7 @@ fn redact_inner(
             for (key, v) in map.iter_mut() {
                 let child_under_bgp = under_bgp || is_bgp_scope_key(key);
                 if exempt.contains(&normalize(key).as_str()) {
-                    redact_inner(v, Some(key), child_under_bgp, exempt, opts, waive);
+                    redact_inner(v, Some(key), child_under_bgp, exempt, opts, waive, scan);
                 } else {
                     let is_bgp_field = opts.bgp_route_communities
                         && is_bgp_community_field(key, under_bgp)
@@ -167,19 +189,19 @@ fn redact_inner(
                         && waive(key)
                         && !is_wep_keys_field(key, parent_key, sibling_type.as_deref())
                     {
-                        redact_inner(v, Some(key), child_under_bgp, exempt, opts, waive);
+                        redact_inner(v, Some(key), child_under_bgp, exempt, opts, waive, scan);
                         mask_non_benign(v);
                     } else if is_secret {
                         *v = redact_leaf(v);
                     } else {
-                        redact_inner(v, Some(key), child_under_bgp, exempt, opts, waive);
+                        redact_inner(v, Some(key), child_under_bgp, exempt, opts, waive, scan);
                     }
                 }
             }
         }
         Value::Array(items) => {
             for item in items.iter_mut() {
-                redact_inner(item, parent_key, under_bgp, exempt, opts, waive);
+                redact_inner(item, parent_key, under_bgp, exempt, opts, waive, scan);
             }
         }
         Value::String(s) => {
@@ -193,7 +215,7 @@ fn redact_inner(
                 // `k=v` scan (N5). `text::redact`'s non-forced path only
                 // touches known value shapes, so this is a no-op on
                 // ordinary strings.
-                *s = crate::text::redact(s);
+                *s = scan(s);
             }
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
