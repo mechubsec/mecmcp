@@ -30,7 +30,7 @@ fn contains_pem_marker(value: &str) -> bool {
 /// characters — `1`, `5`, `6`, `9`) and there must be content after the
 /// second `$`. This over-matches things like `$100$` in ordinary prose; that
 /// is the direction it is safe to be wrong in.
-fn is_crypt_hash(value: &str) -> bool {
+pub(crate) fn is_crypt_hash(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.first() != Some(&b'$') {
         return false;
@@ -55,7 +55,7 @@ fn contains_pan_aq_suffix(value: &str) -> bool {
 /// `ENC` marker prefix (e.g. `ENC(...)`, `ENC abcdef==`), followed by a
 /// non-alphanumeric so ordinary words like `Encoding` never match — the
 /// marker is upper-case `ENC` immediately followed by a delimiter.
-fn is_enc_marker(value: &str) -> bool {
+pub(crate) fn is_enc_marker(value: &str) -> bool {
     let trimmed = value.trim_start();
     let Some(rest) = trimmed.strip_prefix("ENC") else {
         return false;
