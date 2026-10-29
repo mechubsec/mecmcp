@@ -22,11 +22,11 @@ Every mechub MCP server is built on it:
 | Server | Vendor | Device transport | Latest release | Status |
 |---|---|---|---|---|
 | [`rustjunosmcp`](https://github.com/mechubsec/rustjunosmcp) | Juniper Junos / SRX | NETCONF over SSH (`rustnetconf`) | [v2.4.0](https://github.com/mechubsec/rustjunosmcp/releases/tag/v2.4.0) | ![status](https://img.shields.io/badge/status-stable-brightgreen) |
-| [`rustpanosmcp`](https://github.com/mechubsec/rustpanosmcp) | Palo Alto PAN-OS | HTTPS XML-API | [v0.16.2](https://github.com/mechubsec/rustpanosmcp/releases/tag/v0.16.2) | ![status](https://img.shields.io/badge/status-beta-yellow) |
+| [`rustpanosmcp`](https://github.com/mechubsec/rustpanosmcp) | Palo Alto PAN-OS | HTTPS XML-API | [v0.17.0](https://github.com/mechubsec/rustpanosmcp/releases/tag/v0.17.0) | ![status](https://img.shields.io/badge/status-beta-yellow) |
 | [`rustproxmoxmcp`](https://github.com/mechubsec/rustproxmoxmcp) | Proxmox VE | HTTPS REST API | [v0.12.0](https://github.com/mechubsec/rustproxmoxmcp/releases/tag/v0.12.0) | ![status](https://img.shields.io/badge/status-beta-yellow) |
 | [`rustsdcmcp`](https://github.com/mechubsec/rustsdcmcp) | Juniper Security Director Cloud | HTTPS REST API | [v0.5.1](https://github.com/mechubsec/rustsdcmcp/releases/tag/v0.5.1) | ![status](https://img.shields.io/badge/status-alpha-orange) |
 | [`rustmistmcp`](https://github.com/mechubsec/rustmistmcp) | HPE Juniper Mist | HTTPS REST API | [v0.4.0](https://github.com/mechubsec/rustmistmcp/releases/tag/v0.4.0) | ![status](https://img.shields.io/badge/status-alpha-orange) |
-| [`rustunifimcp`](https://github.com/mechubsec/rustunifimcp) | Ubiquiti UniFi Network | HTTPS REST API | [v0.6.3](https://github.com/mechubsec/rustunifimcp/releases/tag/v0.6.3) | ![status](https://img.shields.io/badge/status-alpha-orange) |
+| [`rustunifimcp`](https://github.com/mechubsec/rustunifimcp) | Ubiquiti UniFi Network | HTTPS REST API | [v0.6.6](https://github.com/mechubsec/rustunifimcp/releases/tag/v0.6.6) | ![status](https://img.shields.io/badge/status-alpha-orange) |
 | [`rustfortimcp`](https://github.com/mechubsec/rustfortimcp) | Fortinet FortiGate | HTTPS REST API | unreleased | ![status](https://img.shields.io/badge/status-planned-lightgrey) |
 | [`rustopnsmcp`](https://github.com/mechubsec/rustopnsmcp) | OPNsense | HTTPS REST API | unreleased | ![status](https://img.shields.io/badge/status-planned-lightgrey) |
 | [`mecfeedmcp`](https://github.com/mechubsec/mecfeedmcp) | Threat-intel feeds (PAN-OS EDL, SRX, FortiGate, OPNsense) | Firewalls pull a versioned HTTPS feed | unreleased | ![status](https://img.shields.io/badge/status-planned-lightgrey) |
