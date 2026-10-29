@@ -37,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `session-init`/`session-close`/`limit-session` keywords, and
   `show security flow session ...` filters with one address or integer
   argument (rustjunosmcp#579).
+- **mecmcp-server**: the built-in `whoami` tool (`mecmcp_server::whoami`,
+  `WHOAMI_DESCRIPTION`). It returns the calling token's own name, auth type
+  and actor type, plus `created_at` and `expires_at` for a static token
+  (`null` means it never expires), so an unattended client sees an expiring
+  token before the 401. A server opts in by registering the tool (#580).
+- **mecmcp-auth**: `WHOAMI_TOOL`; `ScopeSet::allows_tool` permits it under
+  every tool scope, including an empty allowlist, unless the server lists a
+  `whoami` of its own in `write_tools` (#580).
 
 ### Changed
 
