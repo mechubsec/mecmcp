@@ -467,10 +467,11 @@ impl<'a> SetScan<'a> {
                 .is_none_or(|&byte| !is_word_char(byte))
         );
         let base = self.pos;
-        // SOUND: `base` and `key_start` are the caller's loop index `idx` (a
-        // char boundary that only increases), or 0.
-        #[allow(clippy::string_slice)]
-        for (offset, ch) in line[base..key_start].char_indices() {
+        // An out-of-order query fails safe: set context only redacts more.
+        let Some(segment) = line.get(base..key_start) else {
+            return true;
+        };
+        for (offset, ch) in segment.char_indices() {
             let at = base + offset;
             if whole_word_set_ends_at(bytes, at) {
                 self.seen_set = true;
@@ -774,9 +775,13 @@ fn token_inner_for_shape_check(line: &str, start: usize, end: usize) -> &str {
 /// [`looks_like_secret_value`] already rejected. A long token with many
 /// internal boundaries (`a.a.a…`, `x=x=…`, `\"\"\"…`) is therefore walked
 /// and fully shape-checked once, not once per boundary (mecmcp#584).
-/// `&quot;` tokens never start inside each other, so they need no memo.
+/// `&quot;` tokens need no memo: each walk stops at the next entity start,
+/// so walks overlap by at most the 6-byte entity and total walk length is
+/// still O(n).
 #[derive(Default)]
 struct FloorScan {
+    /// `pos` of the previous call, pinning the non-decreasing order.
+    last_pos: usize,
     /// End of the last bare token checked.
     bare_end: usize,
     /// End of the last `"`-quoted token checked.
@@ -793,6 +798,8 @@ impl FloorScan {
     /// [`token_inner_for_shape_check`]) is non-empty and looks like a secret
     /// value; `None` otherwise. `pos` must not precede an earlier call's.
     fn secret_end(&mut self, line: &str, pos: usize) -> Option<usize> {
+        debug_assert!(pos >= self.last_pos, "floor queries must not go backwards");
+        self.last_pos = pos;
         let bytes = line.as_bytes();
         let (memo, quote_len) = match *bytes.get(pos)? {
             b'"' => (Some(&mut self.double_quoted_end), 1),

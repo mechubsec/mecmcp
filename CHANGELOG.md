@@ -50,8 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `junos::redact_log_artefact`) runs in linear time. A long whitespace
   run, a line with many secret keys, or a long token with many internal
   boundaries (`a.a.a…`, `x=x=…`, `\"\"…`, U+00A0 runs) rescanned the line at
-  every position: 200 KB of device text took 9–31 s. Output is byte-for-byte
-  unchanged (mecmcp#584).
+  every position: 200 KB of device text took up to 31 s. Output is
+  byte-for-byte unchanged (mecmcp#584).
 
 ## [0.30.1] - 2026-10-26
 
