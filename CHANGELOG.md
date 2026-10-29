@@ -27,6 +27,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [Unreleased]
+
+### Added
+
+- **mecmcp-redact**: `junos::redact_text`, the complete Junos text redactor
+  (generic scan, then the Junos log vocabulary) that preserves vetted
+  non-secret `session` text: counter rows such as `Valid sessions: 12`,
+  the `session-init`/`session-close`/`limit-session` keywords, and
+  `show security flow session ...` filters with one address or integer
+  argument (rustjunosmcp#579).
+
+### Changed
+
+- **mecmcp-redact**: `junos::redact_json_value` string values now go through
+  the same session-preserving scan. Generic and other-vendor paths are
+  unchanged.
+
 ## [0.30.1] - 2026-10-26
 
 ### Fixed

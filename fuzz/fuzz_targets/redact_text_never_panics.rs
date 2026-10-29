@@ -9,4 +9,5 @@ use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &str| {
     let _ = mecmcp_redact::redact_text(data);
+    let _ = mecmcp_redact::junos::redact_text(data);
 });

@@ -24,9 +24,17 @@ enum Format {
     Json,
     Xml,
     Text,
+    JunosText,
+    JunosJson,
 }
 
-const FORMATS: &[Format] = &[Format::Json, Format::Xml, Format::Text];
+const FORMATS: &[Format] = &[
+    Format::Json,
+    Format::Xml,
+    Format::Text,
+    Format::JunosText,
+    Format::JunosJson,
+];
 
 /// Value-shape fixtures under a field name (`zz_unlisted_field`) that is not,
 /// and normalizes to nothing that is, on [`DENYLISTED_KEYS`].
@@ -38,9 +46,9 @@ const SHAPE_FIXTURES: &[&str] = &[
 
 fn render(field: &str, secret: &str, format: Format) -> String {
     match format {
-        Format::Json => format!(r#"{{"{field}": "{secret}"}}"#),
+        Format::Json | Format::JunosJson => format!(r#"{{"{field}": "{secret}"}}"#),
         Format::Xml => format!("<{field}>{secret}</{field}>"),
-        Format::Text => format!("{field}: {secret}"),
+        Format::Text | Format::JunosText => format!("{field}: {secret}"),
     }
 }
 
@@ -49,6 +57,12 @@ fn redact(input: &str, format: Format) -> String {
         Format::Json => redact_json_str(input).unwrap(),
         Format::Xml => redact_xml_str(input).unwrap(),
         Format::Text => redact_text(input),
+        Format::JunosText => mecmcp_redact::junos::redact_text(input),
+        Format::JunosJson => {
+            let mut value: serde_json::Value = serde_json::from_str(input).unwrap();
+            mecmcp_redact::junos::redact_json_value(&mut value);
+            value.to_string()
+        }
     }
 }
 
@@ -57,6 +71,8 @@ fn format_name(format: Format) -> &'static str {
         Format::Json => "json",
         Format::Xml => "xml",
         Format::Text => "text",
+        Format::JunosText => "junos-text",
+        Format::JunosJson => "junos-json",
     }
 }
 
@@ -145,8 +161,10 @@ fn no_denylisted_key_fixture_secret_survives_any_format_in_its_hyphenated_vendor
                 // actually reaches (the `key=`/`key:` forms tested by
                 // `render` don't go through the same "value or type
                 // keyword?" branch).
-                Format::Text => format!("{hyphenated} {secret} trailing"),
-                Format::Json | Format::Xml => render(hyphenated, &secret, format),
+                Format::Text | Format::JunosText => format!("{hyphenated} {secret} trailing"),
+                Format::Json | Format::Xml | Format::JunosJson => {
+                    render(hyphenated, &secret, format)
+                }
             };
             let got = redact(&input, format);
             assert!(
