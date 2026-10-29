@@ -47,7 +47,7 @@ use crate::RedactError;
 use crate::denylist::is_denylisted_key;
 use crate::junos_session::scan_preserving_sessions;
 use crate::policy::{RedactionPolicy, active};
-use crate::shape::looks_like_secret_value;
+use crate::shape::{is_crypt_hash, is_enc_marker, looks_like_secret_value};
 use crate::xml;
 
 /// Junos element names whose value is always a secret, independent of its
@@ -277,9 +277,11 @@ fn matches_sensitive_key_suffix(word: &str) -> bool {
 fn redact_log_line(line: &str) -> String {
     // `set:` is the Junos audit marker (`UI_CFG_AUDIT_SET`); when present the
     // whole line is config context. Otherwise set-context is decided per-key
-    // by `set_statement_precedes`, which also catches a `set` statement
-    // echoed mid-line (e.g. a `UI_CMDLINE_READ_LINE` syslog entry).
+    // by `SetScan`, which also catches a `set` statement echoed mid-line
+    // (e.g. a `UI_CMDLINE_READ_LINE` syslog entry).
     let audit_context = line.contains("set:");
+    let mut set_scan = SetScan::new(line);
+    let mut floor = FloorScan::default();
 
     let bytes = line.as_bytes();
     let mut out = String::with_capacity(line.len());
@@ -301,7 +303,7 @@ fn redact_log_line(line: &str) -> String {
                     && &bytes[idx..end] == key.as_bytes()
                     && (end == bytes.len() || !is_word_char(bytes[end]))
                 {
-                    let set_context = audit_context || set_statement_precedes(line, idx);
+                    let set_context = audit_context || set_scan.precedes(idx);
                     if let Some((value_start, value_end)) = redactable_value(line, end, set_context)
                     {
                         // SOUND: `idx` is a char boundary, `value_start` comes
@@ -319,7 +321,7 @@ fn redact_log_line(line: &str) -> String {
             }
             if !matched {
                 let end = word_end(line, idx);
-                let set_context = audit_context || set_statement_precedes(line, idx);
+                let set_context = audit_context || set_scan.precedes(idx);
                 // SOUND: `idx`/`end` are char boundaries (`word_end` scans
                 // ASCII `is_word_char` bytes only).
                 #[allow(clippy::string_slice)]
@@ -351,15 +353,10 @@ fn redact_log_line(line: &str) -> String {
             // SOUND: `idx > 0` guard ensures `idx - 1` is valid.
             #[allow(clippy::indexing_slicing)]
             let at_token_boundary = idx == 0 || !bytes[idx - 1].is_ascii_alphanumeric();
-            if at_token_boundary
-                && let Some((value_start, value_end)) = floor_value_token(line, idx)
-            {
-                let inner = token_inner_for_shape_check(line, value_start, value_end);
-                if !inner.is_empty() && looks_like_secret_value(inner) {
-                    out.push_str("[REDACTED]");
-                    idx = value_end;
-                    matched = true;
-                }
+            if at_token_boundary && let Some(value_end) = floor.secret_end(line, idx) {
+                out.push_str("[REDACTED]");
+                idx = value_end;
+                matched = true;
             }
         }
         if !matched {
@@ -385,72 +382,139 @@ const SET_CONTEXT_STOPWORDS: &[&str] = &[
     "their",
 ];
 
-/// True when `token` looks like a Junos config path element: non-empty and
-/// made up solely of identifier characters (alphanumerics plus `-_/.:`).
-/// Tokens with spaces, quotes, or punctuation are not config identifiers.
-fn is_config_identifier(token: &str) -> bool {
-    !token.is_empty()
-        && token.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || byte == b'-'
-                || byte == b'_'
-                || byte == b'/'
-                || byte == b'.'
-                || byte == b':'
-        })
+/// Whether `byte` may appear in a Junos config path element: alphanumerics
+/// plus `-_/.:`. Tokens with spaces, quotes, or other punctuation are not
+/// config identifiers.
+fn is_config_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'/' | b'.' | b':')
 }
 
-/// Byte offset just past the rightmost whole-word `set` token in `prefix`,
-/// using the same word-boundary rule as [`is_word_char`]. Returns `None`
-/// when `set` does not occur as a whole word.
-fn rightmost_set_word_end(prefix: &str) -> Option<usize> {
-    let bytes = prefix.as_bytes();
-    let mut found = None;
-    let mut i = 0;
-    // SOUND: all byte indexing is bounds-checked against bytes.len().
-    #[allow(clippy::indexing_slicing)]
-    while i + 3 <= bytes.len() {
-        if &bytes[i..i + 3] == b"set" {
-            let before_ok = i == 0 || !is_word_char(bytes[i - 1]);
-            let after_ok = i + 3 == bytes.len() || !is_word_char(bytes[i + 3]);
-            if before_ok && after_ok {
-                found = Some(i + 3);
-            }
+/// Whether a whole-word `set` (same word-boundary rule as [`is_word_char`])
+/// ends at byte offset `at`.
+fn whole_word_set_ends_at(bytes: &[u8], at: usize) -> bool {
+    at.checked_sub(3).and_then(|start| bytes.get(start..at)) == Some(b"set".as_slice())
+        && at
+            .checked_sub(4)
+            .and_then(|before| bytes.get(before))
+            .is_none_or(|&byte| !is_word_char(byte))
+        && bytes.get(at).is_none_or(|&byte| !is_word_char(byte))
+}
+
+/// Decides whether a Junos `set` config statement precedes a key on this
+/// line: true when a whole-word `set` (see [`whole_word_set_ends_at`] — this
+/// also matches a `set` with a quote or other punctuation glued directly
+/// against it, as when a shell or syslog line quotes or structurally encodes
+/// the echoed command) appears earlier on the line and every
+/// whitespace-separated token between the rightmost such `set` and the key is
+/// a config identifier (not a stopword) once its own leading/trailing quote
+/// characters are stripped. This catches both a line that starts with
+/// `set ...` and a `set ...` statement echoed mid-line (e.g. a
+/// `UI_CMDLINE_READ_LINE` syslog: `... load-configuration set snmp community
+/// VALUE ...`), while leaving prose like "we set the secret aside" untouched
+/// because the intervening "the" is a stopword.
+///
+/// Keys are queried at increasing offsets, so the line is scanned once,
+/// forward, keeping only the state of the tail since the rightmost `set`:
+/// a line with many keys or a long whitespace run stays linear (mecmcp#584).
+struct SetScan<'a> {
+    line: &'a str,
+    /// Bytes before this offset have been scanned.
+    pos: usize,
+    /// A whole-word `set` ends before `pos`.
+    seen_set: bool,
+    /// A finished token after the rightmost `set` is not a config identifier.
+    tail_bad: bool,
+    /// The token in progress at `pos`.
+    token: TailToken,
+}
+
+/// A tail token so far, against the `['"]* identifier ['"]*` shape that
+/// stripping quotes and requiring a non-empty config identifier accepts.
+#[derive(Clone, Copy)]
+enum TailToken {
+    /// No token in progress: start of the tail, or just after whitespace.
+    None,
+    /// Only quotes so far.
+    Quotes,
+    /// Identifier bytes from this offset onward.
+    Ident(usize),
+    /// Identifier `[start, end)` followed by quotes.
+    Closed(usize, usize),
+    /// Cannot be a config identifier.
+    Bad,
+}
+
+impl<'a> SetScan<'a> {
+    fn new(line: &'a str) -> Self {
+        Self {
+            line,
+            pos: 0,
+            seen_set: false,
+            tail_bad: false,
+            token: TailToken::None,
         }
-        i += 1;
     }
-    found
-}
 
-/// Decide whether a Junos `set` config statement precedes the key at byte
-/// offset `key_start` on this line. Returns true when a whole-word `set`
-/// (see [`rightmost_set_word_end`] — this also matches a `set` with a quote
-/// or other punctuation glued directly against it, as when a shell or
-/// syslog line quotes or structurally encodes the echoed command) appears
-/// earlier on the line and every whitespace-separated token between that
-/// `set` and the key is a config identifier (not a stopword) once its own
-/// leading/trailing quote characters are stripped. This catches both a line
-/// that starts with `set ...` and a `set ...` statement echoed mid-line
-/// (e.g. a `UI_CMDLINE_READ_LINE` syslog: `... load-configuration set snmp
-/// community VALUE ...`), while leaving prose like "we set the secret
-/// aside" untouched because the intervening "the" is a stopword.
-fn set_statement_precedes(line: &str, key_start: usize) -> bool {
-    // SOUND: `key_start` is `idx` from the caller, which is always a char
-    // boundary.
-    #[allow(clippy::string_slice)]
-    let prefix = &line[..key_start];
-    let Some(set_end) = rightmost_set_word_end(prefix) else {
-        return false;
-    };
-    // SOUND: `set_end` comes from `rightmost_set_word_end`, which only
-    // returns offsets at or past a `set` match found within `prefix`'s
-    // bounds, so it is a valid char boundary (ASCII word match).
-    #[allow(clippy::string_slice)]
-    let tail = &prefix[set_end..];
-    tail.split_whitespace().all(|token| {
-        let trimmed = token.trim_matches(['\'', '"']);
-        is_config_identifier(trimmed) && !SET_CONTEXT_STOPWORDS.contains(&trimmed)
-    })
+    /// Whether a `set` statement precedes the key at `key_start`: a word
+    /// boundary, at or after every earlier query's.
+    fn precedes(&mut self, key_start: usize) -> bool {
+        let line = self.line;
+        let bytes = line.as_bytes();
+        // A `set` ending exactly at `key_start` would need a word byte there.
+        debug_assert!(
+            bytes
+                .get(key_start.wrapping_sub(1))
+                .is_none_or(|&byte| !is_word_char(byte))
+        );
+        let base = self.pos;
+        // An out-of-order query fails safe: set context only redacts more.
+        let Some(segment) = line.get(base..key_start) else {
+            return true;
+        };
+        for (offset, ch) in segment.char_indices() {
+            let at = base + offset;
+            if whole_word_set_ends_at(bytes, at) {
+                self.seen_set = true;
+                self.tail_bad = false;
+                self.token = TailToken::None;
+            }
+            self.token = if ch.is_whitespace() {
+                self.tail_bad |= !self.token_ok(at);
+                TailToken::None
+            } else if ch == '\'' || ch == '"' {
+                match self.token {
+                    TailToken::None | TailToken::Quotes => TailToken::Quotes,
+                    TailToken::Ident(start) => TailToken::Closed(start, at),
+                    other => other,
+                }
+            } else if u8::try_from(ch).is_ok_and(is_config_identifier_byte) {
+                match self.token {
+                    TailToken::None | TailToken::Quotes => TailToken::Ident(at),
+                    TailToken::Ident(start) => TailToken::Ident(start),
+                    TailToken::Closed(..) | TailToken::Bad => TailToken::Bad,
+                }
+            } else {
+                TailToken::Bad
+            };
+        }
+        self.pos = key_start;
+        self.seen_set && !self.tail_bad && self.token_ok(key_start)
+    }
+
+    /// Whether the token in progress, cut at `end`, is a config identifier
+    /// that is not a stopword (vacuously true with no token in progress).
+    fn token_ok(&self, end: usize) -> bool {
+        let (start, stop) = match self.token {
+            TailToken::None => return true,
+            TailToken::Quotes | TailToken::Bad => return false,
+            TailToken::Ident(start) => (start, end),
+            TailToken::Closed(start, stop) => (start, stop),
+        };
+        // SOUND: identifier bytes are ASCII, so both ends are char boundaries.
+        #[allow(clippy::string_slice)]
+        let ident = &self.line[start..stop];
+        !SET_CONTEXT_STOPWORDS.contains(&ident)
+    }
 }
 
 /// Format qualifiers that may sit between a sensitive key and its value in
@@ -699,6 +763,93 @@ fn token_inner_for_shape_check(line: &str, start: usize, end: usize) -> &str {
         }
     } else {
         &line[start..end]
+    }
+}
+
+/// Per-line memo for [`redact_log_line`]'s crypt-hash floor pass. The pass
+/// keeps every token it checks unless it is a secret (which is replaced and
+/// skipped), so a later token start inside a kept token of the same kind
+/// ends where that token does — a bare token runs to the same delimiter, and
+/// a quote inside a quoted token was skipped as escaped, so a walk from it
+/// rejoins the earlier walk — and its inner value is a suffix of a value
+/// [`looks_like_secret_value`] already rejected. A long token with many
+/// internal boundaries (`a.a.a…`, `x=x=…`, `\"\"\"…`) is therefore walked
+/// and fully shape-checked once, not once per boundary (mecmcp#584).
+/// `&quot;` tokens need no memo: each walk stops at the next entity start,
+/// so walks overlap by at most the 6-byte entity and total walk length is
+/// still O(n).
+#[derive(Default)]
+struct FloorScan {
+    /// `pos` of the previous call, pinning the non-decreasing order.
+    last_pos: usize,
+    /// End of the last bare token checked.
+    bare_end: usize,
+    /// End of the last `"`-quoted token checked.
+    double_quoted_end: usize,
+    /// End of the last `'`-quoted token checked.
+    single_quoted_end: usize,
+    /// `[ws_start, ws_end)` is whitespace and `ws_end` is not (or is the line end).
+    ws_start: usize,
+    ws_end: usize,
+}
+
+impl FloorScan {
+    /// End of the [`floor_value_token`] at `pos` when its inner value (see
+    /// [`token_inner_for_shape_check`]) is non-empty and looks like a secret
+    /// value; `None` otherwise. `pos` must not precede an earlier call's.
+    fn secret_end(&mut self, line: &str, pos: usize) -> Option<usize> {
+        debug_assert!(pos >= self.last_pos, "floor queries must not go backwards");
+        self.last_pos = pos;
+        let bytes = line.as_bytes();
+        let (memo, quote_len) = match *bytes.get(pos)? {
+            b'"' => (Some(&mut self.double_quoted_end), 1),
+            b'\'' => (Some(&mut self.single_quoted_end), 1),
+            _ if bytes_start_with(bytes, pos, QUOT_ENTITY) => (None, 0),
+            _ => (Some(&mut self.bare_end), 0),
+        };
+        let (end, suffix) = match memo {
+            Some(end) if pos + 1 < *end => (*end, true),
+            memo => {
+                let (_, end) = floor_value_token(line, pos)?;
+                if let Some(slot) = memo {
+                    *slot = end;
+                }
+                (end, false)
+            }
+        };
+        let inner = token_inner_for_shape_check(line, pos, end);
+        if inner.is_empty() {
+            return None;
+        }
+        let secret = if suffix {
+            // The suffix cannot hold the `-AQ==` or PEM marker the whole
+            // value lacked; only the shapes anchored at its start remain.
+            let inner_start = pos + quote_len;
+            let inner_end = inner_start + inner.len();
+            let value_start = self.trim_start_offset(line, inner_start).min(inner_end);
+            // SOUND: `value_start` is `inner_end` or where `trim_start`
+            // landed, both char boundaries.
+            #[allow(clippy::string_slice)]
+            let trimmed = &line[value_start..inner_end];
+            is_crypt_hash(inner) || is_enc_marker(trimmed)
+        } else {
+            looks_like_secret_value(inner)
+        };
+        secret.then_some(end)
+    }
+
+    /// The offset `trim_start` lands on from `start` (the line end when only
+    /// whitespace follows), memoised so a whitespace run is walked once.
+    fn trim_start_offset(&mut self, line: &str, start: usize) -> usize {
+        if !(self.ws_start..self.ws_end).contains(&start) {
+            // SOUND: `start` is a token start or one past an ASCII quote, so
+            // a char boundary.
+            #[allow(clippy::string_slice)]
+            let rest = &line[start..];
+            self.ws_start = start;
+            self.ws_end = line.len() - rest.trim_start().len();
+        }
+        self.ws_end
     }
 }
 
