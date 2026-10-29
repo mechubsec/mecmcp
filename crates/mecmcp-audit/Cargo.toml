@@ -12,8 +12,8 @@ authors.workspace      = true
 workspace = true
 
 [dependencies]
-mecmcp-auth = { version = "0.30.1", path = "../mecmcp-auth" }
-mecmcp-secret = { version = "0.30.1", path = "../mecmcp-secret" }
+mecmcp-auth = { version = "0.31.0", path = "../mecmcp-auth" }
+mecmcp-secret = { version = "0.31.0", path = "../mecmcp-secret" }
 base64      = { workspace = true }
 chrono      = { workspace = true }
 ed25519-dalek = { workspace = true }
@@ -69,7 +69,7 @@ otel = [
 ]
 
 [dev-dependencies]
-mecmcp-auth = { version = "0.30.1", path = "../mecmcp-auth", features = ["test-util"] }
+mecmcp-auth = { version = "0.31.0", path = "../mecmcp-auth", features = ["test-util"] }
 # Test-only: the exporter is used solely to render metrics in unit tests.
 # It must NOT be a normal dependency — its default features pull an HTTP
 # listener and hyper-rustls, which enables rustls's aws-lc-rs backend and
