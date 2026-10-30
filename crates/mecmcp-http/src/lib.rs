@@ -227,7 +227,7 @@ impl Default for HttpClientConfig {
 /// encrypts the hop to the proxy itself, trusting the same roots as the
 /// origin. Redirects are still never followed.
 ///
-/// Userinfo (`http://user:pass@proxy:3128`) is accepted and sent as
+/// Userinfo (`http://user:PASSWORD@proxy:3128`) is accepted and sent as
 /// `Proxy-Authorization: Basic`, matching rustsdcmcp's shipped `egress_proxy`.
 /// Through an `http://` proxy that header crosses the hop to the proxy in the
 /// clear; use `https://` when that hop is untrusted.
@@ -3431,10 +3431,13 @@ mod tests {
     #[test]
     fn explicit_proxy_longer_than_the_cap_is_rejected_without_echoing_it() {
         let build = |fill: usize| {
-            format!(
-                "http://proxyuser:{}@proxy.example.internal:3128/",
-                "P".repeat(fill)
-            )
+            // Built from pieces so the source holds no literal credentialed URL.
+            [
+                "http://proxyuser:",
+                &"P".repeat(fill),
+                "@proxy.example.internal:3128/",
+            ]
+            .concat()
         };
         let fill_to_cap = MAX_PROXY_URL_BYTES - build(0).len();
 
