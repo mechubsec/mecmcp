@@ -26,6 +26,7 @@ pub fn redact(value: &mut Value) {
         &[],
         Opts::NONE,
         &|_| false,
+        &|_| false,
         &crate::text::redact,
     );
 }
@@ -47,6 +48,7 @@ pub(crate) fn redact_with_exemptions(value: &mut Value, exempt: &[&str], opts: O
         exempt,
         opts,
         &|_| false,
+        &|_| false,
         &crate::text::redact,
     );
 }
@@ -65,9 +67,19 @@ pub(crate) fn redact_with_exemptions(value: &mut Value, exempt: &[&str], opts: O
 pub(crate) fn redact_with_waiver(
     value: &mut Value,
     waive: &dyn Fn(&str) -> bool,
+    extra_secret: &dyn Fn(&str) -> bool,
     scan: &dyn Fn(&str) -> String,
 ) {
-    redact_inner(value, None, false, &[], Opts::NONE, waive, scan);
+    redact_inner(
+        value,
+        None,
+        false,
+        &[],
+        Opts::NONE,
+        waive,
+        extra_secret,
+        scan,
+    );
 }
 
 /// Scalar with no secret-bearing content of its own: a counter or limit.
@@ -153,6 +165,7 @@ fn looks_like_bgp_community_value(value: &Value) -> bool {
 /// wholesale (fail closed), and a waived key otherwise keeps benign scalars
 /// while masking the rest. `scan` is the text scan applied to string values
 /// (the generic one, or a vendor-aware wrapper around it).
+#[allow(clippy::too_many_arguments)]
 fn redact_inner(
     value: &mut Value,
     parent_key: Option<&str>,
@@ -160,6 +173,7 @@ fn redact_inner(
     exempt: &[&str],
     opts: Opts,
     waive: &dyn Fn(&str) -> bool,
+    extra_secret: &dyn Fn(&str) -> bool,
     scan: &dyn Fn(&str) -> String,
 ) {
     match value {
@@ -168,7 +182,16 @@ fn redact_inner(
             for (key, v) in map.iter_mut() {
                 let child_under_bgp = under_bgp || is_bgp_scope_key(key);
                 if exempt.contains(&normalize(key).as_str()) {
-                    redact_inner(v, Some(key), child_under_bgp, exempt, opts, waive, scan);
+                    redact_inner(
+                        v,
+                        Some(key),
+                        child_under_bgp,
+                        exempt,
+                        opts,
+                        waive,
+                        extra_secret,
+                        scan,
+                    );
                 } else {
                     let is_bgp_field = opts.bgp_route_communities
                         && is_bgp_community_field(key, under_bgp)
@@ -176,6 +199,7 @@ fn redact_inner(
                     let session_named = opts.session_config_values && is_session_config_name(key);
                     let session_inert = session_named && is_inert_session_json_value(v);
                     let is_secret = (is_denylisted_key(key)
+                        || extra_secret(key)
                         || is_wep_keys_field(key, parent_key, sibling_type.as_deref()))
                         && !is_bgp_field
                         && !session_inert;
@@ -189,19 +213,46 @@ fn redact_inner(
                         && waive(key)
                         && !is_wep_keys_field(key, parent_key, sibling_type.as_deref())
                     {
-                        redact_inner(v, Some(key), child_under_bgp, exempt, opts, waive, scan);
+                        redact_inner(
+                            v,
+                            Some(key),
+                            child_under_bgp,
+                            exempt,
+                            opts,
+                            waive,
+                            extra_secret,
+                            scan,
+                        );
                         mask_non_benign(v);
                     } else if is_secret {
                         *v = redact_leaf(v);
                     } else {
-                        redact_inner(v, Some(key), child_under_bgp, exempt, opts, waive, scan);
+                        redact_inner(
+                            v,
+                            Some(key),
+                            child_under_bgp,
+                            exempt,
+                            opts,
+                            waive,
+                            extra_secret,
+                            scan,
+                        );
                     }
                 }
             }
         }
         Value::Array(items) => {
             for item in items.iter_mut() {
-                redact_inner(item, parent_key, under_bgp, exempt, opts, waive, scan);
+                redact_inner(
+                    item,
+                    parent_key,
+                    under_bgp,
+                    exempt,
+                    opts,
+                    waive,
+                    extra_secret,
+                    scan,
+                );
             }
         }
         Value::String(s) => {
