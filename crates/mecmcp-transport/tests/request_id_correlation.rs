@@ -57,6 +57,8 @@ fn caller(client_name: Option<&'static str>) -> CallerCtx<NoGrant> {
         session_id: None,
         request_id: uuid::Uuid::new_v4(),
         oauth: None,
+        token_created_at: None,
+        token_expires_at: None,
     }
 }
 
@@ -174,6 +176,8 @@ fn authenticated_caller() -> CallerCtx<TestGrant> {
         session_id: None,
         request_id: uuid::Uuid::new_v4(),
         oauth: None,
+        token_created_at: None,
+        token_expires_at: None,
     }
 }
 

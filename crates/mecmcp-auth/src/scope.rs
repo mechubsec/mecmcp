@@ -23,6 +23,11 @@ pub enum ScopeSet {
     Allowlist(Vec<String>),
 }
 
+/// The built-in tool every authenticated caller may call regardless of its tool scope
+/// (mecmcp#580). It returns only the caller's own token metadata, so no scope can make it
+/// disclose more than the holder already learns from a denial message (which names the token).
+pub const WHOAMI_TOOL: &str = "whoami";
+
 impl ScopeSet {
     /// Whether an exact name is allowed.
     #[must_use]
@@ -39,9 +44,14 @@ impl ScopeSet {
     /// write authority must always be an explicit, named decision. The caller
     /// supplies its own write-tool registry so this crate stays vendor-neutral.
     /// An empty allowlist permits nothing — the set is simply empty, so no name
-    /// can match.
+    /// can match. [`WHOAMI_TOOL`] is the exception: every scope permits it, even an
+    /// empty allowlist — unless the server lists it in `write_tools`, which means its
+    /// `whoami` is its own mutating tool, not the built-in.
     #[must_use]
     pub fn allows_tool(&self, name: &str, write_tools: &[&str]) -> bool {
+        if name == WHOAMI_TOOL && !write_tools.contains(&name) {
+            return true;
+        }
         match self {
             Self::Wildcard => !write_tools.contains(&name),
             Self::Allowlist(names) => names.iter().any(|allowed| allowed == name),
@@ -204,6 +214,24 @@ mod tests {
         let scope = ScopeSet::Allowlist(vec![]);
         assert!(!scope.allows_tool("get_junos_config", WRITE_TOOLS));
         assert!(!scope.allows_tool("load_and_commit_config", WRITE_TOOLS));
+    }
+
+    #[test]
+    fn a_server_write_tool_named_whoami_gets_no_exemption() {
+        let write_tools = &["apply_change_set", WHOAMI_TOOL];
+        assert!(!ScopeSet::Wildcard.allows_tool(WHOAMI_TOOL, write_tools));
+        assert!(!ScopeSet::Allowlist(vec![]).allows_tool(WHOAMI_TOOL, write_tools));
+        let named = ScopeSet::Allowlist(vec![WHOAMI_TOOL.to_owned()]);
+        assert!(named.allows_tool(WHOAMI_TOOL, write_tools));
+    }
+
+    #[test]
+    fn whoami_is_allowed_by_every_tool_scope() {
+        let other = ScopeSet::Allowlist(vec!["get_junos_config".to_owned()]);
+        for scope in [ScopeSet::Allowlist(vec![]), other] {
+            assert!(scope.allows_tool(WHOAMI_TOOL, WRITE_TOOLS));
+            assert!(!scope.allows_tool("commit_panos_candidate", WRITE_TOOLS));
+        }
     }
 
     #[test]

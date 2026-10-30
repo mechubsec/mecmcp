@@ -198,6 +198,12 @@ pub struct CallerCtx<G: Grant = NoGrant> {
     /// Set when this caller was authenticated by an OAuth access token rather than a
     /// static token. Holds the issuer, subject and client id only; **never the token**.
     pub oauth: Option<crate::oauth::OAuthIdentity>,
+    /// When the static token was minted, copied from [`TokenEntry::created_at`] for the
+    /// `whoami` tool (mecmcp#580). `None` for an OAuth caller, which has no token entry.
+    pub token_created_at: Option<DateTime<Utc>>,
+    /// When the static token expires, copied from [`TokenEntry::expires_at`]. `None` both
+    /// for a token that never expires and for an OAuth caller; [`Self::oauth`] tells them apart.
+    pub token_expires_at: Option<DateTime<Utc>>,
 }
 
 impl<G: Grant> From<&TokenEntry<G>> for CallerCtx<G> {
@@ -243,6 +249,8 @@ impl<G: Grant> CallerCtx<G> {
             // is a fact rather than an assumption (mecmcp#269).
             request_id: Uuid::new_v4(),
             oauth: None,
+            token_created_at: Some(entry.created_at),
+            token_expires_at: entry.expires_at,
         }
     }
 
@@ -275,6 +283,8 @@ impl<G: Grant> CallerCtx<G> {
             session_id: None,
             request_id: Uuid::new_v4(),
             oauth: Some(identity),
+            token_created_at: None,
+            token_expires_at: None,
         }
     }
 
@@ -420,6 +430,28 @@ mod tests {
         assert!(CallerCtx::from(&entry).oauth.is_none());
     }
 
+    #[test]
+    fn caller_context_carries_token_instants_but_oauth_does_not() {
+        let (_, mut entry) = entry_named("ci");
+        let expiry = DateTime::from_timestamp(1_783_936_800, 0).expect("timestamp");
+        entry.expires_at = Some(expiry);
+        let ctx = CallerCtx::from(&entry);
+        assert_eq!(ctx.token_expires_at, Some(expiry));
+        assert_eq!(ctx.token_created_at, Some(entry.created_at));
+
+        let oauth: CallerCtx = CallerCtx::oauth(
+            OAuthIdentity {
+                issuer: "i".into(),
+                subject: "s".into(),
+                client_id: None,
+            },
+            ScopeSet::Wildcard,
+            ScopeSet::Wildcard,
+            crate::ActorType::Unknown,
+        );
+        assert!(oauth.token_created_at.is_none() && oauth.token_expires_at.is_none());
+    }
+
     /// Exhaustive destructuring: a future `token`/`bearer`/`jwt` field makes this
     /// stop compiling, which is the point. The caller context must never hold the credential.
     #[test]
@@ -451,6 +483,8 @@ mod tests {
             session_id: _,
             request_id: _,
             oauth: _,
+            token_created_at: _,
+            token_expires_at: _,
         } = ctx;
     }
 
@@ -532,6 +566,8 @@ mod tests {
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
             oauth: None,
+            token_created_at: None,
+            token_expires_at: None,
         };
         let visible =
             filter_device_names(Some(&ctx), vec!["edge-fw".to_owned(), "core-fw".to_owned()]);
@@ -557,6 +593,8 @@ mod tests {
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
             oauth: None,
+            token_created_at: None,
+            token_expires_at: None,
         };
         let names = vec!["tenant-a".to_owned(), "tenant-b".to_owned()];
 
@@ -596,6 +634,8 @@ mod tests {
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
             oauth: None,
+            token_created_at: None,
+            token_expires_at: None,
         };
         let visible = filter_device_names(Some(&ctx), vec!["edge-fw".to_owned()]);
         assert!(visible.is_empty());
@@ -622,6 +662,8 @@ mod tests {
             session_id: None,
             request_id: uuid::Uuid::new_v4(),
             oauth: None,
+            token_created_at: None,
+            token_expires_at: None,
         };
         let names = vec!["edge-fw".to_owned(), "core-fw".to_owned()];
         let visible = filter_device_names(Some(&ctx), names.clone());

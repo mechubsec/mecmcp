@@ -28,7 +28,7 @@ pub use file::{
 };
 pub use grant::{Grant, GrantError, NoAction, NoGrant, StoredGrant};
 pub use oauth::{OAUTH_TOKEN_NAME_PREFIX, OAuthIdentity};
-pub use scope::{MAX_SCOPE_NAMES, ScopeError, ScopeSet};
+pub use scope::{MAX_SCOPE_NAMES, ScopeError, ScopeSet, WHOAMI_TOOL};
 pub use selector::{
     AttrValue, DeviceAttributeSource, DeviceAttrs, Selector, SelectorError, SelectorSet,
 };
