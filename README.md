@@ -21,7 +21,7 @@ Every mechub MCP server is built on it:
 
 | Server | Vendor | Device transport | Latest release | Status |
 |---|---|---|---|---|
-| [`rustjunosmcp`](https://github.com/mechubsec/rustjunosmcp) | Juniper Junos / SRX | NETCONF over SSH (`rustnetconf`) | [v2.4.0](https://github.com/mechubsec/rustjunosmcp/releases/tag/v2.4.0) | ![status](https://img.shields.io/badge/status-stable-brightgreen) |
+| [`rustjunosmcp`](https://github.com/mechubsec/rustjunosmcp) | Juniper Junos / SRX | NETCONF over SSH (`rustnetconf`) | [v2.5.0](https://github.com/mechubsec/rustjunosmcp/releases/tag/v2.5.0) | ![status](https://img.shields.io/badge/status-stable-brightgreen) |
 | [`rustpanosmcp`](https://github.com/mechubsec/rustpanosmcp) | Palo Alto PAN-OS | HTTPS XML-API | [v0.17.0](https://github.com/mechubsec/rustpanosmcp/releases/tag/v0.17.0) | ![status](https://img.shields.io/badge/status-beta-yellow) |
 | [`rustproxmoxmcp`](https://github.com/mechubsec/rustproxmoxmcp) | Proxmox VE | HTTPS REST API | [v0.12.0](https://github.com/mechubsec/rustproxmoxmcp/releases/tag/v0.12.0) | ![status](https://img.shields.io/badge/status-beta-yellow) |
 | [`rustsdcmcp`](https://github.com/mechubsec/rustsdcmcp) | Juniper Security Director Cloud | HTTPS REST API | [v0.6.0](https://github.com/mechubsec/rustsdcmcp/releases/tag/v0.6.0) | ![status](https://img.shields.io/badge/status-alpha-orange) |
