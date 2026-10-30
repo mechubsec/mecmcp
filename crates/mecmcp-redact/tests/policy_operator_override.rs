@@ -90,6 +90,10 @@ fn disabling_redaction_only_happens_through_install_and_is_logged_and_audited() 
     );
     let xml = "<password>FAKEhunter2</password>";
     assert_eq!(redact_xml_str(xml).unwrap(), xml);
+    // An XML string inside Junos JSON is not redacted structurally either.
+    let mut json = serde_json::json!({ "value": xml });
+    mecmcp_redact::junos::redact_json_value(&mut json);
+    assert_eq!(json, serde_json::json!({ "value": xml }));
 
     // N7: the disabled-policy passthrough must still validate well-formedness
     // — it must not become a way to skip the "this is valid XML" check every
