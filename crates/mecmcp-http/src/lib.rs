@@ -237,13 +237,21 @@ impl Default for HttpClientConfig {
 #[derive(Clone)]
 pub struct ProxyUrl(reqwest::Url);
 
+/// Longest serialized proxy URL accepted, in bytes.
+///
+/// hyper-util re-parses the proxy as an `http::Uri`, which caps near 64 KiB,
+/// and on failure drops the proxy without an error — the client would then go
+/// direct. A real proxy URL is far shorter, so this cap fails loudly first.
+const MAX_PROXY_URL_BYTES: usize = 2048;
+
 impl ProxyUrl {
     /// Parse and validate a proxy URL.
     ///
     /// # Errors
     /// Returns [`HttpError::ConfigValidation`] for field `explicit_proxy` if
     /// `raw` is not a URL, its scheme is not `http` or `https`, it has no
-    /// host, or it carries a path, query, or fragment. The error never echoes
+    /// host, it carries a path, query, or fragment, or it serializes to more
+    /// than 2048 bytes. The error never echoes
     /// `raw`: a mistyped URL can still hold a readable password.
     ///
     /// # Examples
@@ -275,6 +283,11 @@ impl ProxyUrl {
             return Err(invalid(
                 "must not carry a path, query, or fragment".to_owned(),
             ));
+        }
+        if parsed.as_str().len() > MAX_PROXY_URL_BYTES {
+            return Err(invalid(format!(
+                "must not exceed {MAX_PROXY_URL_BYTES} bytes"
+            )));
         }
         Ok(Self(parsed))
     }
@@ -3390,13 +3403,55 @@ mod tests {
             "http://proxyuser:PASSWORD@proxy.example.internal:3128",
             "http://[::1]:3128",
         ] {
-            let proxy = ProxyUrl::parse(raw).unwrap_or_else(|error| panic!("{raw}: {error}"));
-            let client = build_client(HttpClientConfig {
-                explicit_proxy: Some(proxy),
-                ..Default::default()
-            })
-            .unwrap();
-            assert!(format!("{client:?}").contains("proxies"), "{raw} not wired");
+            assert_proxy_wired(
+                ProxyUrl::parse(raw).unwrap_or_else(|error| panic!("{raw}: {error}")),
+            );
+        }
+    }
+
+    /// The built client must carry the proxy as its `https` intercept target.
+    ///
+    /// hyper-util drops a proxy URL it cannot parse as an `http::Uri` without
+    /// an error, leaving the client going direct, so `proxies` being present
+    /// is not enough: the target itself has to be there.
+    fn assert_proxy_wired(proxy: ProxyUrl) {
+        let target = format!(
+            "https: Intercept {{ uri: {} }}",
+            SafeUrl::from_parsed(&proxy.0)
+        );
+        let client = build_client(HttpClientConfig {
+            explicit_proxy: Some(proxy),
+            ..Default::default()
+        })
+        .unwrap();
+        let rendered = format!("{client:?}");
+        assert!(rendered.contains(&target), "{target} not in {rendered}");
+    }
+
+    #[test]
+    fn explicit_proxy_longer_than_the_cap_is_rejected_without_echoing_it() {
+        let build = |fill: usize| {
+            format!(
+                "http://proxyuser:{}@proxy.example.internal:3128/",
+                "P".repeat(fill)
+            )
+        };
+        let fill_to_cap = MAX_PROXY_URL_BYTES - build(0).len();
+
+        let at_cap = ProxyUrl::parse(&build(fill_to_cap)).unwrap();
+        assert_eq!(at_cap.0.as_str().len(), MAX_PROXY_URL_BYTES);
+        assert_proxy_wired(at_cap);
+
+        // One byte over, and the 70,000-byte case hyper-util would have
+        // silently dropped (its `http::Uri` parse caps near 64 KiB).
+        for fill in [fill_to_cap + 1, 70_000] {
+            let error = ProxyUrl::parse(&build(fill)).unwrap_err();
+            assert!(
+                matches!(&error, HttpError::ConfigValidation { field, .. } if field == "explicit_proxy"),
+                "{fill}: {error:?}"
+            );
+            let rendered = format!("{error} {error:?}");
+            assert!(!rendered.contains("PPPPPPPP"), "input echoed: {rendered}");
         }
     }
 

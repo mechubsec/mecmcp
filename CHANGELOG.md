@@ -41,13 +41,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **mecmcp-http**: opt-in explicit egress proxy, `HttpClientConfig::explicit_proxy:
   Option<ProxyUrl>` (#589). `None`, the default, is unchanged: no proxy. `ProxyUrl::parse`
-  accepts only an `http://` or `https://` URL with a host and no path, query, or
-  fragment; HTTPS origins are tunnelled with `CONNECT`, so TLS stays end-to-end.
-  Userinfo is accepted and sent as `Proxy-Authorization: Basic`, matching rustsdcmcp's
-  `egress_proxy`. It never appears in `Debug` or errors, and `ProxyUrl` has no
-  `Display`. Environment proxy variables (`HTTP(S)_PROXY`, `ALL_PROXY`, `NO_PROXY`)
-  stay ignored with or without it. A struct literal of `HttpClientConfig` that does
-  not use `..Default::default()` must now set the new field.
+  accepts only an `http://` or `https://` URL with a host, no path, query, or
+  fragment, and at most 2048 bytes serialized (hyper-util would otherwise drop an
+  over-long proxy without an error and go direct); HTTPS origins are tunnelled with
+  `CONNECT`, so TLS stays end-to-end. Userinfo is accepted and sent as
+  `Proxy-Authorization: Basic`, matching rustsdcmcp's `egress_proxy`. It never appears
+  in `Debug` or errors, and `ProxyUrl` has no `Display`. Environment proxy variables
+  (`HTTP(S)_PROXY`, `ALL_PROXY`, `NO_PROXY`) stay ignored with or without it.
+
+### Changed
+
+- **Breaking for source (#589):** `mecmcp_http::HttpClientConfig` has a new public
+  field, `explicit_proxy: Option<ProxyUrl>`. Code that builds an `HttpClientConfig` by
+  full struct literal must add `explicit_proxy: None`. rustmistmcp does
+  (`crates/rustmistmcp-core/src/client.rs:187` and `:290`) and will not compile until
+  it does. Consumers that fill the rest with `..Default::default()` — mecfeedmcp,
+  rustopnsmcp, rustunifimcp, rustproxmoxmcp and mecviz — are unaffected. When
+  rustsdcmcp moves its `egress_proxy` onto `ProxyUrl`, a deployed value with a path or
+  query (which it accepts today and reqwest ignores) will be refused at startup.
 
 ## [0.31.1] - 2026-10-29
 
