@@ -27,6 +27,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [Unreleased]
+
+### Fixed
+
+- **mecmcp-redact**: `junos::redact_json_value` now masks `privacy-key`, the one
+  Junos-only `REDACT_LOG_KEYS` name the generic denylist missed, so
+  `get_junos_config format=json` no longer returns it in plaintext (#591). Bare generic
+  words in `REDACT_LOG_KEYS` (e.g. `value`) are deliberately not treated as secret JSON
+  keys: they are ordinary field names in consumers' structured output.
+- **mecmcp-redact**: `junos::redact_json_value` string values now also get the Junos log
+  vocabulary (`redact_log_text`), so raw CLI/config text in a field such as `value` is masked
+  like `junos::redact_text` (#591).
+- **mecmcp-redact**: a `junos::redact_json_value` string value that starts with `<` and parses
+  as XML (e.g. `| display xml` output in a batch `commands[].value`) gets the structural
+  `junos::redact_xml`, so it stays well-formed. Other strings, including `<`-led text that
+  does not parse, keep the text scan (#591).
+- **mecmcp-redact**: `junos::redact_xml` attribute values (not otherwise masked) and comment
+  bodies get the same scan as its character data: the generic scan with the session shield,
+  then `redact_log_text` (#591). Before, they got `redact_log_text` alone, so
+  `note="password: ..."`, `<!-- token=... -->` and `ftp://u:...@h/` userinfo passed through.
+  `redact_xml_str` and its profile variant are unchanged: attribute values and comments get
+  shape checks only.
+- **mecmcp-redact**: `junos::redact_xml` text and CDATA nodes now also get the Junos log
+  vocabulary (`redact_log_text`), so CLI text such as `privacy-key "..."` inside an
+  `<output>` element is masked while the document stays well-formed (#591). A redacted CDATA
+  body that would contain `]]>` is split into adjacent CDATA sections, so a mask can no
+  longer end the section early. Attributes named by a Junos extra key (`privacy-key`,
+  `value`) are masked, and other attribute values and comment bodies get `redact_log_text`.
+- **mecmcp-redact**: `junos::redact_log_artefact` returns the structural `junos::redact_xml`
+  result for XML-shaped input instead of rerunning `redact_log_text` over the serialized
+  document, which read markup as values and truncated it (e.g. `privacy-key "..."` lost
+  `</output></rpc-reply>`) (#591).
+- **mecmcp-redact**: XML redaction (`redact_xml_str`, its profile variant and `junos::redact_xml`) scans each
+  run of adjacent text, entity references and CDATA as one string, so a key in text and its
+  value in a CDATA section (`password=<![CDATA[...]]>`) are masked together (#591). Such
+  a run is written back as one escaped text node; a lone CDATA section keeps its form.
+- **mecmcp-redact**: XML redaction (`redact_xml_str`, its profile variant and `junos::redact_xml`,
+  hence `junos::redact_log_artefact`) no longer writes processing instructions and DOCTYPE
+  declarations out unscanned (#591). A PI the character-data scan would change is dropped.
+  **Behaviour change:** every DOCTYPE loses its internal subset (`<!DOCTYPE x [...]>` becomes
+  `<!DOCTYPE x>`, keeping the root name and any external ID verbatim), because entity values
+  can hide a key behind a character reference. A DOCTYPE whose remaining text the scan would
+  change is dropped. Other PIs and DOCTYPEs without a subset pass through unchanged.
+
 ## [0.31.0] - 2026-10-29
 
 ### Added
