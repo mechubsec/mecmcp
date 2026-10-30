@@ -32,7 +32,14 @@ const PLACEHOLDER: &[u8] = b"[REDACTED]";
 /// this crate never falls back to returning the input unredacted just
 /// because it could not be understood.
 pub fn redact(input: &str) -> Result<String, RedactError> {
-    redact_impl(input, &|_| false, &|_| false, Opts::NONE)
+    redact_impl(
+        input,
+        &|_| false,
+        &|_| false,
+        Opts::NONE,
+        &crate::text::redact,
+        None,
+    )
 }
 
 /// Same as [`redact`], but `extra_exact_elem` names additional element local
@@ -40,19 +47,34 @@ pub fn redact(input: &str) -> Result<String, RedactError> {
 /// own — used by [`crate::junos`] for element names (`value`) that are too
 /// generic to add to the shared [`crate::denylist`] without over-redacting
 /// every other vendor's XML, but that a vendor-specific profile's own closed
-/// element vocabulary can still treat as unconditionally sensitive.
+/// element vocabulary can still treat as unconditionally sensitive. An
+/// attribute whose local name matches is masked too.
 ///
 /// `exempt_elem` names element local names whose denylist match on the
 /// *name* alone is waived when the value under decision is benign (empty or
 /// digits only); see [`any_ancestor_secret`]. This is independent of
 /// [`crate::Profile::with_session_config_values`], which is opt-in and uses
 /// a stricter integer bound.
+///
+/// `scan` runs over character data, processing instructions and DOCTYPE
+/// declarations, and here also over attribute values not otherwise masked
+/// and comment bodies. The generic pass leaves those two to its shape
+/// checks, because its substring denylist would reach ordinary names such
+/// as `session-timeout-profile`.
 pub(crate) fn redact_with(
     input: &str,
     extra_exact_elem: &dyn Fn(&str) -> bool,
     exempt_elem: &dyn Fn(&str) -> bool,
+    scan: &dyn Fn(&str) -> String,
 ) -> Result<String, RedactError> {
-    redact_impl(input, extra_exact_elem, exempt_elem, Opts::NONE)
+    redact_impl(
+        input,
+        extra_exact_elem,
+        exempt_elem,
+        Opts::NONE,
+        scan,
+        Some(scan),
+    )
 }
 
 /// The XML counterpart of [`crate::redact_json_value_with_profile`]: redact
@@ -70,7 +92,14 @@ pub(crate) fn redact_with_profile(
     input: &str,
     profile: &crate::Profile,
 ) -> Result<String, RedactError> {
-    redact_impl(input, &|_| false, &|_| false, crate::profile::opts(profile))
+    redact_impl(
+        input,
+        &|_| false,
+        &|_| false,
+        crate::profile::opts(profile),
+        &crate::text::redact,
+        None,
+    )
 }
 
 fn redact_impl(
@@ -78,6 +107,8 @@ fn redact_impl(
     extra_exact_elem: &dyn Fn(&str) -> bool,
     exempt_elem: &dyn Fn(&str) -> bool,
     opts: Opts,
+    scan: &dyn Fn(&str) -> String,
+    markup_scan: Option<&dyn Fn(&str) -> String>,
 ) -> Result<String, RedactError> {
     let mut reader = Reader::from_str(input);
     reader.config_mut().trim_text(false);
@@ -91,17 +122,21 @@ fn redact_impl(
     // reference carry secret bytes past the check on either side of it —
     // `pre-shared-key ascii-text "FAKE"` becomes `&quot;FAKE&quot;` from a
     // spec-compliant serializer and the literal secret text on either side
-    // of the quotes was never joined with it for the shape/key scan. So
-    // every contiguous run of `Text`/`GeneralRef` events is buffered into
-    // one `String` here and handed to the redaction decision exactly once,
-    // when the run ends.
-    let mut text_run: Option<String> = None;
+    // of the quotes was never joined with it for the shape/key scan. A CDATA
+    // section is the same character data (`privacy-key <![CDATA[x]]>`), so
+    // every contiguous run of `Text`/`GeneralRef`/`CData` events is buffered
+    // here and handed to the redaction decision exactly once, when the run
+    // ends.
+    let mut text_run = CharRun::default();
 
     loop {
         let event = reader
             .read_event()
             .map_err(|e| RedactError::InvalidXml(e.to_string()))?;
-        if !matches!(event, Event::Text(_) | Event::GeneralRef(_)) {
+        if !matches!(
+            event,
+            Event::Text(_) | Event::GeneralRef(_) | Event::CData(_)
+        ) {
             flush_text_run(
                 &mut writer,
                 &mut text_run,
@@ -109,6 +144,7 @@ fn redact_impl(
                 extra_exact_elem,
                 exempt_elem,
                 opts,
+                scan,
             )?;
         }
         match event {
@@ -123,8 +159,14 @@ fn redact_impl(
             }
             Event::Start(e) => {
                 tag_stack.push(local_name(e.name()).to_vec());
-                let rewritten =
-                    redact_attributes(&e, &tag_stack, extra_exact_elem, exempt_elem, opts)?;
+                let rewritten = redact_attributes(
+                    &e,
+                    &tag_stack,
+                    extra_exact_elem,
+                    exempt_elem,
+                    opts,
+                    markup_scan,
+                )?;
                 writer
                     .write_event(Event::Start(rewritten))
                     .map_err(|e| RedactError::InvalidXml(e.to_string()))?;
@@ -138,8 +180,14 @@ fn redact_impl(
                 // attributes even though the non-empty `<community
                 // name="..."></community>` form does (N4).
                 tag_stack.push(local_name(e.name()));
-                let rewritten =
-                    redact_attributes(&e, &tag_stack, extra_exact_elem, exempt_elem, opts)?;
+                let rewritten = redact_attributes(
+                    &e,
+                    &tag_stack,
+                    extra_exact_elem,
+                    exempt_elem,
+                    opts,
+                    markup_scan,
+                )?;
                 tag_stack.pop();
                 writer
                     .write_event(Event::Empty(rewritten))
@@ -158,7 +206,7 @@ fn redact_impl(
                 let raw: &str = &e;
                 let decoded = quick_xml::escape::unescape(raw)
                     .map_err(|e| RedactError::InvalidXml(e.to_string()))?;
-                text_run.get_or_insert_with(String::new).push_str(&decoded);
+                text_run.push_text(&decoded);
             }
             // quick-xml emits `&amp;`, `&#x73;`, etc. as their own event
             // rather than folding them into the surrounding `Text` — see the
@@ -166,35 +214,13 @@ fn redact_impl(
             // character(s) it represents and fold it into the same buffer as
             // the text around it, so the redaction decision below sees one
             // joined string instead of pieces split at the reference.
-            Event::GeneralRef(e) => {
-                text_run
-                    .get_or_insert_with(String::new)
-                    .push_str(&resolve_general_ref(&e)?);
-            }
-            Event::CData(e) => {
-                let decoded = e.into_inner().into_owned();
-                let ancestor_is_secret =
-                    any_ancestor_secret(&tag_stack, &decoded, extra_exact_elem, exempt_elem, opts);
-                let out = if ancestor_is_secret || looks_like_secret_value(&decoded) {
-                    quick_xml::events::BytesCData::new(
-                        String::from_utf8_lossy(PLACEHOLDER).into_owned(),
-                    )
-                } else {
-                    // Run the text-path scan over every CDATA body, not just
-                    // ones that already look like a multi-line blob or PEM —
-                    // a single-line `user login password=X ok` payload (a
-                    // Mist event, syslog-as-JSON) needs the same `k=v` scan
-                    // (N5). `text::redact`'s non-forced path only touches
-                    // known value shapes, so this is a no-op on ordinary
-                    // CDATA.
-                    quick_xml::events::BytesCData::new(crate::text::redact(&decoded))
-                };
-                writer
-                    .write_event(Event::CData(out))
-                    .map_err(|e| RedactError::InvalidXml(e.to_string()))?;
-            }
+            Event::GeneralRef(e) => text_run.push_text(&resolve_general_ref(&e)?),
+            Event::CData(e) => text_run.push_cdata(&e.into_inner()),
             Event::Comment(e) => {
-                let redacted = redact_comment(&e);
+                let redacted = match markup_scan {
+                    Some(markup_scan) => markup_scan(&redact_comment(&e)),
+                    None => redact_comment(&e),
+                };
                 writer
                     .write_event(Event::Comment(BytesText::from_escaped(escape_text(
                         &redacted,
@@ -202,15 +228,55 @@ fn redact_impl(
                     .map_err(|e| RedactError::InvalidXml(e.to_string()))?;
             }
             other => {
-                writer
-                    .write_event(other)
-                    .map_err(|e| RedactError::InvalidXml(e.to_string()))?;
+                if let Some(event) = redact_pi_or_doctype(other, scan) {
+                    writer
+                        .write_event(event)
+                        .map_err(|e| RedactError::InvalidXml(e.to_string()))?;
+                }
             }
         }
     }
 
     String::from_utf8(writer.into_inner().into_inner())
         .map_err(|e| RedactError::InvalidXml(e.to_string()))
+}
+
+/// Fail-closed pass over a processing instruction or DOCTYPE, which would
+/// otherwise reach the output unscanned. A PI whose text (target included)
+/// `scan` would change is dropped. A DOCTYPE always loses its internal
+/// subset, whose entity values can hide a key behind a character reference
+/// (`pass&#x77;ord`); the rest (root name and external ID) is kept verbatim,
+/// unless `scan` would change it, in which case the DOCTYPE is dropped.
+/// Dropping either is always well-formed. Every other event (the XML
+/// declaration included) passes through.
+fn redact_pi_or_doctype<'a>(event: Event<'a>, scan: &dyn Fn(&str) -> String) -> Option<Event<'a>> {
+    let (body, subset): (&str, Option<usize>) = match &event {
+        Event::PI(e) => (e, None),
+        Event::DocType(e) => (e, internal_subset_start(e)),
+        _ => return Some(event),
+    };
+    let Some(subset) = subset else {
+        return (scan(body) == body).then_some(event);
+    };
+    let kept = body.get(..subset)?.trim().to_owned();
+    (scan(&kept) == kept).then(|| Event::DocType(BytesText::from_escaped(kept)))
+}
+
+/// Byte offset of the `[` that opens a DOCTYPE's internal subset: the first
+/// one outside a quoted literal, as quick-xml's DTD parser finds it
+/// (`SYSTEM "a[b.dtd"` has no subset).
+fn internal_subset_start(doctype: &str) -> Option<usize> {
+    let mut quote = None;
+    doctype.char_indices().find_map(|(i, c)| {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == '[' => return Some(i),
+            None => {}
+        }
+        None
+    })
 }
 
 fn local_name(name: QName<'_>) -> Vec<u8> {
@@ -357,6 +423,7 @@ fn redact_attributes<'a>(
     extra_exact_elem: &dyn Fn(&str) -> bool,
     exempt_elem: &dyn Fn(&str) -> bool,
     opts: Opts,
+    markup_scan: Option<&dyn Fn(&str) -> String>,
 ) -> Result<BytesStart<'a>, RedactError> {
     let mut out = BytesStart::new(start.name().as_ref().to_owned());
     for attr in start.attributes() {
@@ -368,12 +435,17 @@ fn redact_attributes<'a>(
             .into_owned();
         let ancestor_is_secret =
             any_ancestor_secret(tag_stack, &value, extra_exact_elem, exempt_elem, opts);
-        let redacted_value =
-            if ancestor_is_secret || is_denylisted_key(&key) || looks_like_secret_value(&value) {
-                String::from_utf8_lossy(PLACEHOLDER).into_owned()
-            } else {
-                value
-            };
+        let redacted_value = if ancestor_is_secret
+            || is_denylisted_key(&key)
+            || extra_exact_elem(&key)
+            || looks_like_secret_value(&value)
+        {
+            String::from_utf8_lossy(PLACEHOLDER).into_owned()
+        } else if let Some(markup_scan) = markup_scan {
+            markup_scan(&value)
+        } else {
+            value
+        };
         // Built directly rather than via `(&str, &str).into()`, which since
         // quick-xml 0.42 also escapes `\r`/`\n`/`\t` — see [`escape_text`].
         out.push_attribute(Attribute {
@@ -384,35 +456,94 @@ fn redact_attributes<'a>(
     Ok(out)
 }
 
-/// Flush a buffered run of `Text`/`GeneralRef` events as a single redaction
-/// decision, writing nothing if the run is empty.
+/// A maximal run of adjacent character data (`Text`, `GeneralRef` and
+/// `CData` events), resolved and joined in document order.
+#[derive(Default)]
+struct CharRun {
+    /// Every finished piece, joined.
+    joined: String,
+    /// The `Text`/`GeneralRef` piece still being read.
+    text: Option<String>,
+    /// Finished pieces: each CDATA section and each text/reference run.
+    pieces: usize,
+    /// The last finished piece was a CDATA section.
+    last_is_cdata: bool,
+    /// Some piece has a secret shape on its own (the per-node check), so
+    /// joining it to a neighbour (`x` + `$9$...`) cannot hide it.
+    piece_is_secret: bool,
+}
+
+impl CharRun {
+    fn push_text(&mut self, text: &str) {
+        self.text.get_or_insert_with(String::new).push_str(text);
+    }
+
+    fn push_cdata(&mut self, body: &str) {
+        self.end_text();
+        self.add_piece(body, true);
+    }
+
+    fn end_text(&mut self) {
+        if let Some(text) = self.text.take() {
+            self.add_piece(&text, false);
+        }
+    }
+
+    fn add_piece(&mut self, piece: &str, is_cdata: bool) {
+        self.pieces += 1;
+        self.last_is_cdata = is_cdata;
+        self.piece_is_secret |= looks_like_secret_value(piece);
+        self.joined.push_str(piece);
+    }
+}
+
+/// Flush a buffered character-data run as a single redaction decision,
+/// writing nothing if the run is empty. A lone CDATA section keeps its CDATA
+/// form; any other run is written as one escaped text node.
 ///
 /// `tag_stack` must reflect its state as it was *during* the run — callers
 /// flush before mutating `tag_stack` for the event that ended the run, so
 /// the stack passed to [`any_ancestor_secret`] still matches.
 fn flush_text_run(
     writer: &mut Writer<Cursor<Vec<u8>>>,
-    text_run: &mut Option<String>,
+    text_run: &mut CharRun,
     tag_stack: &[Vec<u8>],
     extra_exact_elem: &dyn Fn(&str) -> bool,
     exempt_elem: &dyn Fn(&str) -> bool,
     opts: Opts,
+    scan: &dyn Fn(&str) -> String,
 ) -> Result<(), RedactError> {
-    let Some(joined) = text_run.take() else {
+    let mut run = std::mem::take(text_run);
+    run.end_text();
+    if run.pieces == 0 {
         return Ok(());
-    };
-    let ancestor_is_secret =
-        any_ancestor_secret(tag_stack, &joined, extra_exact_elem, exempt_elem, opts);
-    let out = if ancestor_is_secret || looks_like_secret_value(&joined) {
-        BytesText::from_escaped(escape_text(&String::from_utf8_lossy(PLACEHOLDER))).into_owned()
+    }
+    let joined = &run.joined;
+    let body = if run.piece_is_secret
+        || looks_like_secret_value(joined)
+        || any_ancestor_secret(tag_stack, joined, extra_exact_elem, exempt_elem, opts)
+    {
+        String::from_utf8_lossy(PLACEHOLDER).into_owned()
     } else {
-        // Same reasoning as the CDATA branch above (N5): scan every text
-        // run's body, not only ones that already look like an embedded
-        // blob.
-        BytesText::from_escaped(escape_text(&crate::text::redact(&joined))).into_owned()
+        // Scan every run, not just ones that already look like a multi-line
+        // blob or PEM — a single-line `user login password=X ok` payload (a
+        // Mist event, syslog-as-JSON) needs the same `k=v` scan (N5).
+        // `text::redact`'s non-forced path only touches known value shapes,
+        // so this is a no-op on ordinary text.
+        scan(joined)
     };
+    if run.pieces == 1 && run.last_is_cdata {
+        // A scan can turn `"x"]>` into `[REDACTED]]>`, which would end the
+        // section early; split at every `]]>` (`]]]]><![CDATA[>`).
+        for section in quick_xml::events::BytesCData::escaped(&body) {
+            writer
+                .write_event(Event::CData(section))
+                .map_err(|e| RedactError::InvalidXml(e.to_string()))?;
+        }
+        return Ok(());
+    }
     writer
-        .write_event(Event::Text(out))
+        .write_event(Event::Text(BytesText::from_escaped(escape_text(&body))))
         .map_err(|e| RedactError::InvalidXml(e.to_string()))
 }
 
@@ -704,5 +835,86 @@ another line</output>"#;
         let got = redact(xml).unwrap();
         assert!(!got.contains("FAKE"), "got: {got}");
         assert!(!got.contains("tail"), "got: {got}");
+    }
+
+    // --- #591: adjacent text, references and CDATA are one character-data
+    // string, so a key in one piece and its value in the next are scanned
+    // together. ---
+
+    #[test]
+    fn key_in_text_and_value_in_cdata_are_scanned_as_one_run() {
+        let got = redact("<o>user login password=<![CDATA[FAKEsplit]]></o>").unwrap();
+        assert_eq!(got, "<o>user login password=[REDACTED]</o>");
+    }
+
+    #[test]
+    fn secret_shaped_cdata_glued_to_text_is_still_masked() {
+        let got = redact("<o>x<![CDATA[$9$FAKEglued]]></o>").unwrap(); // gitleaks:allow -- fabricated Junos $9$ fixture, not a real secret
+        assert!(!got.contains("FAKEglued"), "got: {got}");
+    }
+
+    #[test]
+    fn lone_cdata_keeps_its_form_and_a_comment_ends_a_run() {
+        for xml in ["<o><![CDATA[a < b]]></o>", "<o>a<!--c--><![CDATA[b]]></o>"] {
+            assert_eq!(redact(xml).unwrap(), xml);
+        }
+    }
+
+    #[test]
+    fn generic_attribute_values_and_comments_keep_shape_checks_only() {
+        // The generic denylist matches substrings, so a text scan here would
+        // reach ordinary other-vendor names; attributes and comments get shape
+        // checks only.
+        for xml in [
+            r#"<entry name="session-timeout-profile"/>"#,
+            r#"<entry name="token-policy"/>"#,
+            r#"<x msg="set snmp community c1"><!-- token=t1 --></x>"#,
+        ] {
+            assert_eq!(crate::redact_xml_str(xml).unwrap(), xml);
+            let profile = crate::Profile::new(&[], &[]);
+            assert_eq!(
+                crate::redact_xml_str_with_profile(xml, &profile).unwrap(),
+                xml
+            );
+        }
+    }
+
+    #[test]
+    fn secret_pi_is_dropped_and_doctype_keeps_only_its_external_part() {
+        for (input, want) in [
+            ("<?app password=FAKEpi?><o/>", "<o/>"), // gitleaks:allow -- fabricated fixture, not a real password
+            // The secret is in the target itself.
+            ("<?password:FAKEdt?><o/>", "<o/>"), // gitleaks:allow -- fabricated fixture, not a real password
+            // The subset always goes, even when a character reference hides the key.
+            (
+                r#"<!DOCTYPE o [<!ENTITY e "password=FAKEdt">]><o/>"#,
+                "<!DOCTYPE o><o/>",
+            ), // gitleaks:allow -- fabricated fixture, not a real password
+            (
+                r#"<!DOCTYPE o [<!ENTITY e "pass&#x77;ord=FAKEdt">]><o/>"#,
+                "<!DOCTYPE o><o/>",
+            ), // gitleaks:allow -- fabricated fixture, not a real password
+            (
+                "<!DOCTYPE a·b [<!ELEMENT a·b EMPTY>]><a·b/>",
+                "<!DOCTYPE a·b><a·b/>",
+            ),
+            (
+                r#"<!DOCTYPE o SYSTEM "o.dtd" [<!ELEMENT o EMPTY>]><o/>"#,
+                r#"<!DOCTYPE o SYSTEM "o.dtd"><o/>"#,
+            ),
+            // The kept part is scanned too.
+            (r#"<!DOCTYPE o SYSTEM "password=FAKEsy"><o/>"#, "<o/>"), // gitleaks:allow -- fabricated fixture, not a real password
+        ] {
+            let out = redact(input).unwrap();
+            assert_eq!(out, want);
+            let mut reader = Reader::from_str(&out);
+            while !matches!(reader.read_event().unwrap(), Event::Eof) {}
+        }
+        for xml in [
+            r#"<?xml version="1.0"?><?xml-stylesheet href="a.xsl"?><!DOCTYPE o SYSTEM "o[1].dtd"><o/>"#,
+            "<!DOCTYPE a·b><a·b/>",
+        ] {
+            assert_eq!(redact(xml).unwrap(), xml);
+        }
     }
 }

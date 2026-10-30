@@ -66,6 +66,15 @@ fn is_extra_secret_element(local_name: &str) -> bool {
     REDACT_LOG_KEYS.contains(&local_name) && !is_denylisted_key(local_name)
 }
 
+/// JSON-key counterpart of [`is_extra_secret_element`]: only hyphenated
+/// (multi-word) entries. Bare words such as `value`/`key`/`community` are
+/// ordinary JSON field names (batch `commands[].value`, `{"value": orig}`
+/// exempt wrappers) and would destroy non-secret output; the XML path keeps
+/// them because there they are element names, not response-envelope fields.
+fn is_extra_secret_json_key(key: &str) -> bool {
+    key.contains('-') && is_extra_secret_element(key)
+}
+
 /// Junos configuration keywords that contain `session` but are not secrets
 /// (`then log session-init`, `limit-session`, ...). Exact local-name match
 /// against a closed vocabulary; the shared denylist's `session` substring
@@ -80,11 +89,43 @@ fn is_session_keyword_element(local_name: &str) -> bool {
     )
 }
 
+/// String-leaf / text-node scan shared by [`redact_json_value`] and
+/// [`redact_xml`]: generic scan with the session shield, then
+/// [`redact_log_text`] (the composition [`redact_text`] uses).
+fn scan_junos_text(text: &str) -> String {
+    scan_preserving_sessions(text, |chunk| redact_log_text(&crate::text::redact(chunk)))
+}
+
+/// String-value scan for [`redact_json_value`]. A value that is an XML
+/// document, such as a captured `| display xml` reply, gets the structural
+/// [`redact_xml`], because a whole-string text scan reads markup as values
+/// and truncates it. Any other value, including `<`-led text that does not
+/// parse, gets [`scan_junos_text`].
+fn scan_junos_json_string(text: &str) -> String {
+    if text.trim_start().starts_with('<')
+        && let Ok(redacted) = redact_xml(text)
+    {
+        return redacted;
+    }
+    scan_junos_text(text)
+}
+
 /// Redact a Junos NETCONF/XML support-bundle artefact.
 ///
-/// Identical to [`crate::redact_xml_str`] except that the Junos-specific
-/// extra element set is always treated as secret-bearing (see the module
-/// docs).
+/// Like [`crate::redact_xml_str`], with four Junos additions: the
+/// Junos-specific extra element set is always treated as secret-bearing, as
+/// element and as attribute names (see the module docs); the closed
+/// `session` keyword elements are waived when their value is benign;
+/// character data, processing instructions and DOCTYPE declarations are
+/// scanned like [`redact_text`] (generic scan with the session shield, then
+/// [`redact_log_text`]) instead of the generic scan alone; and attribute
+/// values not otherwise masked and comment bodies get that same scan, where
+/// the generic pass runs shape checks only. Adjacent text, references
+/// and CDATA are scanned as one string and written back as one text node; a
+/// lone CDATA section keeps its CDATA form. A processing instruction whose
+/// text the character-data scan would change is dropped; a DOCTYPE always
+/// loses its internal subset and is dropped when the scan would change the
+/// rest.
 ///
 /// # Errors
 /// Returns [`RedactError::InvalidXml`] when `input` does not parse as
@@ -96,22 +137,36 @@ pub fn redact_xml(input: &str) -> Result<String, RedactError> {
         xml::validate(input)?;
         return Ok(input.to_string());
     }
-    xml::redact_with(input, &is_extra_secret_element, &is_session_keyword_element)
+    xml::redact_with(
+        input,
+        &is_extra_secret_element,
+        &is_session_keyword_element,
+        &scan_junos_text,
+    )
 }
 
-/// Redact a JSON value in place with the Junos-specific keyword waiver: the
-/// closed `session` vocabulary of [`redact_xml`] is kept when its value is
-/// benign (null, bool, number, empty or digits-only string); every other
-/// value, nested secret and real `session*` key is still redacted. String
-/// values go through the session-preserving generic text scan (not
-/// [`redact_log_text`]), so vetted `session` counters and keywords survive.
+/// Redact a JSON value in place with the Junos-specific key vocabulary.
+///
+/// Object keys go through the generic denylist plus the hyphenated Junos
+/// extra keys (`privacy-key`; bare words such as `value` are ordinary field
+/// names and are not secret), with the session waiver: the closed `session`
+/// vocabulary of [`redact_xml`] is kept when its value is benign (null, bool,
+/// number, empty or digits-only string); every other value, nested secret and
+/// real `session*` key is still redacted. String values go through the
+/// generic text scan with the session shield (so vetted `session` counters
+/// and keywords survive), then [`redact_log_text`], the same composition as
+/// [`redact_text`]. A string value that parses as XML (it starts with `<`)
+/// gets [`redact_xml`] instead, so it stays well-formed.
 pub fn redact_json_value(value: &mut serde_json::Value) {
     if matches!(active(), RedactionPolicy::DisabledByOperator { .. }) {
         return;
     }
-    crate::json::redact_with_waiver(value, &is_session_keyword_element, &|text| {
-        scan_preserving_sessions(text, crate::text::redact)
-    });
+    crate::json::redact_with_waiver(
+        value,
+        &is_session_keyword_element,
+        &is_extra_secret_json_key,
+        &scan_junos_json_string,
+    );
 }
 
 /// Redact unstructured Junos CLI/config text: the generic
@@ -175,12 +230,19 @@ fn looks_like_xml_shaped(input: &str) -> bool {
 /// elsewhere in the file, and an artefact's secret coverage must not be
 /// allowed to depend on that.
 ///
-/// XML-shaped input is run through [`redact_xml`] and then *always* through
-/// [`redact_log_text`] as well — a CLI-syntax secret can end up sitting in
-/// plain text under an element name not on the XML pass's locked list (e.g.
-/// directly under `<rpc-reply>` when the expected wrapper element is
-/// absent), so the line-oriented pass is the floor every XML artefact goes
-/// through regardless of its inner shape.
+/// XML-shaped input returns [`redact_xml`]'s structural result as is. That
+/// pass already runs the generic scan and [`redact_log_text`] over every
+/// character-data run (adjacent text, references and CDATA joined),
+/// whatever element holds it (e.g. directly under `<rpc-reply>` when the
+/// expected wrapper element is absent), masks attributes named by the
+/// generic denylist or the Junos extra element set, runs the same scan over
+/// the remaining attribute values and comment bodies, drops processing instructions and
+/// DOCTYPE declarations that the character-data scan would change, and
+/// strips every DOCTYPE's internal subset (see [`redact_xml`]). The XML
+/// declaration is not scanned. A second line-oriented pass over
+/// the serialized document would read markup as values: `privacy-key
+/// [REDACTED]</output>` is a bare token to that pass, and masking it
+/// truncates the document.
 ///
 /// Non-XML-shaped input never goes through the XML pass (so it is never
 /// XML-escaped or whitespace-normalised — see [`redact_xml`]'s doc comment).
@@ -204,8 +266,7 @@ fn looks_like_xml_shaped(input: &str) -> bool {
 /// bundle and record that it did.
 pub fn redact_log_artefact(input: &str) -> Result<String, RedactError> {
     if looks_like_xml_shaped(input) {
-        let redacted = redact_xml(input)?;
-        Ok(redact_log_text(&redacted))
+        redact_xml(input)
     } else {
         Ok(redact_log_text(&crate::text::redact(input)))
     }
@@ -522,9 +583,9 @@ impl<'a> SetScan<'a> {
 /// present they are preserved and the *following* token is redacted.
 const VALUE_QUALIFIERS: &[&str] = &["ascii-text", "hexadecimal", "plain-text", "encrypted"];
 
-/// XML entity form of a double quote (`&quot;`). CLI text redacted after
-/// [`redact_xml`]'s element pass (see [`redact_log_artefact`]) may still have
-/// its literal `"` characters XML-escaped; [`value_token`] and
+/// XML entity form of a double quote (`&quot;`). CLI text a caller hands to
+/// [`redact_log_text`] straight out of serialized XML may still have its
+/// literal `"` characters XML-escaped; [`value_token`] and
 /// [`redactable_value`] must recognise this form too, or a quoted value with
 /// an internal space is only partially matched up to the first space —
 /// leaking the remainder.
@@ -1376,5 +1437,278 @@ mod tests {
         let mut v = serde_json::json!({"limit-session": {"session-id": 4242}});
         redact_json_value(&mut v);
         assert_eq!(v["limit-session"]["session-id"], "[REDACTED]");
+    }
+
+    #[test]
+    #[allow(clippy::indexing_slicing)]
+    fn json_junos_only_secret_keys_are_redacted() {
+        // Verbatim fixture from mecmcp#591.
+        let mut v = serde_json::json!({"configuration":{"snmp":{"v3":{"usm":{"local-engine":{"user":[{"name":"u","authentication-sha":{"authentication-key":"x"},"privacy-aes128":{"privacy-key":"Zq9wXv7LmP"}}]}}}}}}); // gitleaks:allow -- fabricated fixture, not a real key
+        redact_json_value(&mut v);
+        let user = &v["configuration"]["snmp"]["v3"]["usm"]["local-engine"]["user"][0];
+        assert_eq!(user["name"], "u");
+        assert_eq!(
+            user["authentication-sha"]["authentication-key"],
+            "[REDACTED]"
+        );
+        assert_eq!(user["privacy-aes128"]["privacy-key"], "[REDACTED]");
+        for key in ["privacy-password", "authentication-password"] {
+            let mut v = serde_json::json!({ key: "FAKEpw" }); // gitleaks:allow -- fabricated fixture, not a real password
+            redact_json_value(&mut v);
+            assert_eq!(v[key], "[REDACTED]", "{key}");
+        }
+    }
+
+    #[test]
+    fn json_junos_only_key_with_data_shape_and_crypt_is_redacted() {
+        let mut v = serde_json::json!({"privacy-key": [{"data": "FAKEplain"}]}); // gitleaks:allow -- fabricated fixture, not a real key
+        redact_json_value(&mut v);
+        assert!(!v.to_string().contains("FAKEplain"));
+        let mut v = serde_json::json!({"privacy-key": "$9$FAKEcrypt"}); // gitleaks:allow -- fabricated Junos $9$ fixture, not a real key
+        redact_json_value(&mut v);
+        assert!(!v.to_string().contains("FAKEcrypt"));
+    }
+
+    #[test]
+    #[allow(clippy::indexing_slicing)]
+    fn generic_json_does_not_redact_junos_only_key() {
+        let mut v = serde_json::json!({"privacy-key": "FAKEplainpriv"}); // gitleaks:allow -- fabricated fixture, not a real key
+        crate::redact_json_value(&mut v);
+        assert_eq!(v["privacy-key"], "FAKEplainpriv");
+    }
+
+    #[test]
+    #[allow(clippy::indexing_slicing)]
+    fn json_bare_generic_field_names_are_not_extra_secret_keys() {
+        let mut v = serde_json::json!({"value": "plain device output"});
+        let want = v.clone();
+        redact_json_value(&mut v);
+        assert_eq!(v, want);
+        // Parity: generic and Junos paths agree on `value`.
+        let mut generic = serde_json::json!({"value": "x"});
+        crate::redact_json_value(&mut generic);
+        let mut junos = serde_json::json!({"value": "x"});
+        redact_json_value(&mut junos);
+        assert_eq!(generic, junos);
+        assert_eq!(junos["value"], "x");
+        // `key` is generic-denylisted already, so it stays masked as before.
+        let mut v = serde_json::json!({"key": "x"});
+        redact_json_value(&mut v);
+        assert_eq!(v["key"], "[REDACTED]");
+        let mut v = serde_json::json!({"value": {"privacy-key": "Zq9wXv7LmP"}}); // gitleaks:allow -- fabricated fixture, not a real key
+        redact_json_value(&mut v);
+        assert_eq!(v["value"]["privacy-key"], "[REDACTED]");
+        let mut v = serde_json::json!([{"router":"r1","commands":[{"command":"show security flow session summary","ok":true,"value":"Valid sessions: 12"}]}]);
+        let want = v.clone();
+        redact_json_value(&mut v);
+        assert_eq!(v, want);
+    }
+
+    #[test]
+    fn json_string_values_get_junos_log_vocabulary() {
+        let mut v = serde_json::json!({"value": "set snmp v3 usm local-engine user u privacy-aes128 privacy-key Zq9wXv7LmP"}); // gitleaks:allow -- fabricated fixture, not a real key
+        redact_json_value(&mut v);
+        assert!(!v.to_string().contains("Zq9wXv7LmP"), "{v}"); // gitleaks:allow -- fabricated fixture, not a real key
+        for text in [
+            "Valid sessions: 12\nthen log session-init",
+            "plain device output",
+        ] {
+            let mut v = serde_json::json!({ "value": text });
+            let want = v.clone();
+            redact_json_value(&mut v);
+            assert_eq!(v, want, "{text}");
+        }
+    }
+
+    #[test]
+    fn xml_attribute_values_and_comments_get_the_generic_text_floor() {
+        let input = r#"<root note="password: FAKEpw" src="ftp://u:FAKEup@h/" name="ge-0/0/0"><!-- token=FAKEtok --></root>"#; // gitleaks:allow -- fabricated fixture, not a real credential
+        let mut json = serde_json::json!({ "value": input });
+        redact_json_value(&mut json);
+        let via_json = json
+            .pointer("/value")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        let want = r#"<root note="password: [REDACTED]" src="ftp://u:[REDACTED]@h/" name="ge-0/0/0"><!-- token=[REDACTED]--></root>"#;
+        for out in [redact_xml(input).unwrap().as_str(), via_json] {
+            assert_eq!(out, want);
+            let mut reader = quick_xml::Reader::from_str(out);
+            while !matches!(reader.read_event().unwrap(), quick_xml::events::Event::Eof) {}
+        }
+        let benign = r#"<x name="ge-0/0/0" desc="uplink to core" href="a.xsl"><!-- managed by ansible --></x>"#;
+        assert_eq!(redact_xml(benign).unwrap(), benign);
+    }
+
+    #[test]
+    fn json_xml_string_values_are_redacted_structurally() {
+        let xml = r#"<rpc-reply><output>set snmp v3 usm local-engine user u privacy-aes128 privacy-key "Zq9wXv7LmP"</output><user password="x"/></rpc-reply>"#; // gitleaks:allow -- fabricated fixture, not a real key
+        let not_xml = r#"<not xml privacy-key "Zq9wXv7LmP""#; // gitleaks:allow -- fabricated fixture, not a real key
+        let mut v = serde_json::json!({"commands": [
+            {"command": "show configuration | display xml", "value": xml},
+            {"command": "show snmp", "value": not_xml},
+            {"command": "show security flow session summary", "value": "Valid sessions: 12"},
+            {"command": "show interfaces terse", "value": "ge-0/0/0 up up"},
+        ]});
+        redact_json_value(&mut v);
+        let value = |i: usize| {
+            v.pointer(&format!("/commands/{i}/value"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap()
+                .to_owned()
+        };
+        let out = value(0);
+        assert_eq!(
+            out,
+            r#"<rpc-reply><output>set snmp v3 usm local-engine user u privacy-aes128 privacy-key [REDACTED]</output><user password="[REDACTED]"/></rpc-reply>"#
+        );
+        let mut reader = quick_xml::Reader::from_str(&out);
+        while !matches!(reader.read_event().unwrap(), quick_xml::events::Event::Eof) {}
+        assert_eq!(value(1), scan_junos_text(not_xml));
+        assert!(!value(1).contains("Zq9wXv7LmP"), "{v}"); // gitleaks:allow -- fabricated fixture, not a real key
+        assert_eq!(value(2), "Valid sessions: 12");
+        assert_eq!(value(3), "ge-0/0/0 up up");
+    }
+
+    #[test]
+    fn xml_text_nodes_get_junos_log_vocabulary_and_stay_well_formed() {
+        let input = r#"<rpc-reply><output>set snmp v3 usm local-engine user u privacy-aes128 privacy-key "Zq9wXv7LmP"</output><user password="x"/></rpc-reply>"#; // gitleaks:allow -- fabricated fixture, not a real key
+        let out = redact_xml(input).unwrap();
+        assert!(!out.contains("Zq9wXv7LmP"), "{out}"); // gitleaks:allow -- fabricated fixture, not a real key
+        assert!(redact_xml(&out).is_ok(), "re-parse failed: {out}");
+        assert!(
+            out.contains("</output>") && out.contains("</rpc-reply>"),
+            "{out}"
+        );
+        let cdata = redact_xml(
+            r#"<o><![CDATA[set snmp v3 usm local-engine user u privacy-aes128 privacy-key "Zq9wXv7LmP"]]></o>"#, // gitleaks:allow -- fabricated fixture, not a real key
+        )
+        .unwrap();
+        assert!(!cdata.contains("Zq9wXv7LmP"), "{cdata}"); // gitleaks:allow -- fabricated fixture, not a real key
+        let kept = "<output>Valid sessions: 12</output>";
+        assert_eq!(redact_xml(kept).unwrap(), kept);
+    }
+
+    #[test]
+    fn xml_cdata_scan_output_cannot_close_the_section_early() {
+        // The scan masks only the quoted token, so `"…"]>` becomes `[REDACTED]]>`;
+        // written as one CDATA body that would end the section and expose `<inj/>`.
+        let input = r#"<o><![CDATA[privacy-key "Zq9wXv7LmP"]><inj a="1"/>]]></o>"#; // gitleaks:allow -- fabricated fixture, not a real key
+        let out = redact_xml(input).unwrap();
+        assert!(!out.contains("Zq9wXv7LmP"), "{out}"); // gitleaks:allow -- fabricated fixture, not a real key
+        let mut reader = quick_xml::Reader::from_str(&out);
+        let (mut elements, mut cdata) = (0, String::new());
+        loop {
+            match reader.read_event().unwrap() {
+                quick_xml::events::Event::Start(_) | quick_xml::events::Event::Empty(_) => {
+                    elements += 1;
+                }
+                quick_xml::events::Event::CData(c) => cdata.push_str(&c.into_inner()),
+                quick_xml::events::Event::Eof => break,
+                _ => {}
+            }
+        }
+        assert_eq!(elements, 1, "injected element parsed as markup: {out}");
+        assert_eq!(cdata, r#"privacy-key [REDACTED]]><inj a="1"/>"#, "{out}");
+    }
+
+    #[test]
+    fn generic_xml_does_not_apply_junos_log_vocabulary() {
+        let input =
+            r#"<o>set snmp v3 usm local-engine user u privacy-aes128 privacy-key "Zq9wXv7LmP"</o>"#; // gitleaks:allow -- fabricated fixture, not a real key
+        let out = crate::redact_xml_str(input).unwrap();
+        assert!(out.contains("Zq9wXv7LmP"), "{out}"); // gitleaks:allow -- fabricated fixture, not a real key
+    }
+
+    #[test]
+    fn xml_artefact_is_the_structural_result_without_a_text_rescan() {
+        let input = r#"<rpc-reply><output>set snmp v3 usm local-engine user u privacy-aes128 privacy-key "Zq9wXv7LmP"</output><user password="x"/></rpc-reply>"#; // gitleaks:allow -- fabricated fixture, not a real key
+        let out = redact_log_artefact(input).unwrap();
+        assert_eq!(out, redact_xml(input).unwrap());
+        assert_eq!(
+            out,
+            r#"<rpc-reply><output>set snmp v3 usm local-engine user u privacy-aes128 privacy-key [REDACTED]</output><user password="[REDACTED]"/></rpc-reply>"#
+        );
+        assert!(redact_xml(&out).is_ok(), "re-parse failed: {out}");
+    }
+
+    #[test]
+    fn xml_attributes_named_by_a_secret_key_are_masked_structurally() {
+        let input = r#"<user privacy-key="Zq9wXv7LmP" password="FAKEpw" name="u"/>"#; // gitleaks:allow -- fabricated fixture, not a real key
+        let want = r#"<user privacy-key="[REDACTED]" password="[REDACTED]" name="u"/>"#;
+        let out = redact_xml(input).unwrap();
+        assert_eq!(out, want);
+        assert!(redact_xml(&out).is_ok(), "re-parse failed: {out}");
+        assert_eq!(redact_log_artefact(input).unwrap(), want);
+        // Vendor gating: the generic pass does not know `privacy-key`.
+        let generic = crate::redact_xml_str(input).unwrap();
+        assert!(generic.contains("Zq9wXv7LmP"), "{generic}"); // gitleaks:allow -- fabricated fixture, not a real key
+    }
+
+    #[test]
+    fn xml_cli_text_in_attribute_values_and_comments_is_masked() {
+        let input =
+            r#"<x msg="set snmp community FAKEattr"><!-- set snmp community FAKEnote --></x>"#; // gitleaks:allow -- fabricated fixture, not a real community string
+        let out = redact_log_artefact(input).unwrap();
+        // The generic scan masks a value to the end of its line, trailing space included.
+        assert_eq!(
+            out,
+            r#"<x msg="set snmp community [REDACTED]"><!-- set snmp community [REDACTED]--></x>"#
+        );
+        assert!(redact_xml(&out).is_ok(), "re-parse failed: {out}");
+        // The generic pass leaves attribute values and comments to its shape checks.
+        assert_eq!(crate::redact_xml_str(input).unwrap(), input);
+    }
+
+    #[test]
+    fn xml_key_in_text_and_value_in_cdata_are_masked() {
+        for input in [
+            "<o>set snmp privacy-key <![CDATA[Zq9wXv7LmP]]></o>", // gitleaks:allow -- fabricated fixture, not a real key
+            "<o>set snmp privacy-key &quot;<![CDATA[Zq9wXv7LmP]]>&quot;</o>", // gitleaks:allow -- fabricated fixture, not a real key
+        ] {
+            let out = redact_xml(input).unwrap();
+            assert!(!out.contains("Zq9wXv7LmP"), "{out}"); // gitleaks:allow -- fabricated fixture, not a real key
+            assert!(out.ends_with("</o>"), "{out}");
+            assert!(redact_xml(&out).is_ok(), "re-parse failed: {out}");
+        }
+    }
+
+    #[test]
+    fn xml_text_cdata_text_run_keeps_a_session_line() {
+        let out = redact_xml("<o>Valid sessions: <![CDATA[12]]>\nend</o>").unwrap();
+        assert_eq!(out, "<o>Valid sessions: 12\nend</o>");
+        assert!(redact_xml(&out).is_ok(), "re-parse failed: {out}");
+    }
+
+    #[test]
+    fn xml_secret_pi_is_dropped_and_doctype_loses_its_subset() {
+        for (input, want) in [
+            ("<?junos password=FAKEpi?><o/>", "<o/>"), // gitleaks:allow -- fabricated fixture, not a real password
+            ("<?junos=password=FAKEtg?><o/>", "<o/>"), // gitleaks:allow -- fabricated fixture, not a real password
+            ("<?password:FAKEdt?><x/>", "<x/>"), // gitleaks:allow -- fabricated fixture, not a real password
+            (
+                r#"<!DOCTYPE x [<!ENTITY e "set snmp community FAKEdt">]><x/>"#, // gitleaks:allow -- fabricated fixture, not a real community string
+                "<!DOCTYPE x><x/>",
+            ),
+            (
+                r#"<!DOCTYPE x [<!ENTITY e "pass&#x77;ord=FAKEdt">]><x/>"#,
+                "<!DOCTYPE x><x/>",
+            ), // gitleaks:allow -- fabricated fixture, not a real password
+            (
+                r#"<!DOCTYPE a·b [<!ENTITY e "password=FAKEdt">]><a·b/>"#, // gitleaks:allow -- fabricated fixture, not a real password
+                "<!DOCTYPE a·b><a·b/>",
+            ),
+        ] {
+            let out = redact_log_artefact(input).unwrap();
+            assert_eq!(out, want);
+            assert_eq!(redact_xml(input).unwrap(), want);
+            let mut reader = quick_xml::Reader::from_str(&out);
+            while !matches!(reader.read_event().unwrap(), quick_xml::events::Event::Eof) {}
+        }
+        for benign in [
+            r#"<?xml version="1.0"?><?xml-stylesheet href="a.xsl"?><!DOCTYPE x SYSTEM "x.dtd"><x/>"#,
+            "<!DOCTYPE a·b><a·b/>",
+        ] {
+            assert_eq!(redact_log_artefact(benign).unwrap(), benign);
+        }
     }
 }
