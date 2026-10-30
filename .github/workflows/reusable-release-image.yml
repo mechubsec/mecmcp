@@ -249,12 +249,27 @@ jobs:
           if [ "${DH_PUSH}" = "true" ]; then
             refs="${refs} ${DH_IMAGE}@${DIGEST}"
           fi
+          # Docker Hub's referrers index is eventually consistent: a signature
+          # pushed <1 s ago can read as "no signatures found" (#595). Retry
+          # each ref, 6 attempts over ~59 s; the gate stays hard.
           for ref in ${refs}; do
             echo "Verifying ${ref}"
-            cosign verify \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              --certificate-identity-regexp '^https://github\.com/mechubsec/mecmcp/\.github/workflows/reusable-release-image\.yml@' \
-              "${ref}" > /dev/null
+            attempt=1
+            for delay in 2 4 8 15 30 0; do
+              if cosign verify \
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+                --certificate-identity-regexp '^https://github\.com/mechubsec/mecmcp/\.github/workflows/reusable-release-image\.yml@' \
+                "${ref}" > /dev/null; then
+                break
+              fi
+              if [ "${delay}" -eq 0 ]; then
+                echo "::error::cosign verify failed for ${ref} after ${attempt} attempts"
+                exit 1
+              fi
+              echo "cosign verify attempt ${attempt}/6 failed for ${ref}; retrying in ${delay}s"
+              sleep "${delay}"
+              attempt=$((attempt + 1))
+            done
           done
         env:
           GHCR_IMAGE: ${{ inputs.image }}
