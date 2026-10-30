@@ -27,6 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [Unreleased]
+
+### Fixed
+
+- **ci**: `reusable-release-image.yml` `Verify signatures (hard gate)` now retries each
+  ref's `cosign verify` (6 attempts, backoff 2/4/8/15/30 s, about 59 s) before failing.
+  Docker Hub's referrers index is eventually consistent, so verify right after signing could
+  report `no signatures found` and fail the release (seen on rustsdcmcp v0.6.0). The gate
+  stays hard: a signature that never appears still fails the job with cosign's last error.
+  Consumers pin this workflow by SHA, so they only get the fix after bumping that pin (#595).
+
 ## [0.31.1] - 2026-10-29
 
 ### Fixed
