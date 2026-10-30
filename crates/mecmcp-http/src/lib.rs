@@ -41,8 +41,12 @@
 //! - **No redirects**: 3xx responses are returned as ordinary responses; the
 //!   client never follows them automatically (a redirect could send credentials
 //!   to an unintended host).
-//! - **No proxy**: default features are disabled and `.no_proxy()` is set
-//!   explicitly, so proxy environment variables cannot redirect traffic.
+//! - **No proxy autodiscovery**: default features are disabled and
+//!   `.no_proxy()` is set explicitly, so proxy environment variables
+//!   (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`) cannot redirect
+//!   traffic. The only proxy a client ever uses is the one an operator names in
+//!   [`HttpClientConfig::explicit_proxy`]; its credentials never reach `Debug`
+//!   or an error.
 //! - **Bounded concurrency**: `max_concurrent_requests` enforced via a
 //!   semaphore, and `max_queued_requests` bounds how many callers wait behind it.
 //! - **Whole-request deadline**: covers both permit acquisition and send, so a
@@ -190,6 +194,12 @@ pub struct HttpClientConfig {
     /// silently accepted alongside the intended pin. Leave this empty to trust
     /// the ordinary public root store.
     pub extra_root_certificates: Vec<String>,
+    /// An operator-named forward proxy for every request; `None` (the
+    /// default) connects directly.
+    ///
+    /// Opt-in only: environment proxy variables are ignored whether or not
+    /// this is set. See [`ProxyUrl`] for what is accepted.
+    pub explicit_proxy: Option<ProxyUrl>,
 }
 
 impl Default for HttpClientConfig {
@@ -204,7 +214,77 @@ impl Default for HttpClientConfig {
             max_response_bytes: 8 * 1024 * 1024,
             user_agent: format!("mecmcp-http/{}", env!("CARGO_PKG_VERSION")),
             extra_root_certificates: Vec::new(),
+            explicit_proxy: None,
         }
+    }
+}
+
+/// A validated forward-proxy URL for [`HttpClientConfig::explicit_proxy`].
+///
+/// Requests to the HTTPS origin are tunnelled with `CONNECT`, so TLS stays
+/// end-to-end between client and origin and an `http://` proxy is accepted:
+/// the proxy sees only the origin's `host:port`. An `https://` proxy also
+/// encrypts the hop to the proxy itself, trusting the same roots as the
+/// origin. Redirects are still never followed.
+///
+/// Userinfo (`http://user:pass@proxy:3128`) is accepted and sent as
+/// `Proxy-Authorization: Basic`, matching rustsdcmcp's shipped `egress_proxy`.
+/// Through an `http://` proxy that header crosses the hop to the proxy in the
+/// clear; use `https://` when that hop is untrusted.
+///
+/// `Debug` renders through [`SafeUrl`], so the credentials never appear there,
+/// and there is deliberately no `Display`.
+#[derive(Clone)]
+pub struct ProxyUrl(reqwest::Url);
+
+impl ProxyUrl {
+    /// Parse and validate a proxy URL.
+    ///
+    /// # Errors
+    /// Returns [`HttpError::ConfigValidation`] for field `explicit_proxy` if
+    /// `raw` is not a URL, its scheme is not `http` or `https`, it has no
+    /// host, or it carries a path, query, or fragment. The error never echoes
+    /// `raw`: a mistyped URL can still hold a readable password.
+    ///
+    /// # Examples
+    /// ```
+    /// use mecmcp_http::{HttpClientConfig, ProxyUrl};
+    ///
+    /// let config = HttpClientConfig {
+    ///     explicit_proxy: Some(ProxyUrl::parse("http://proxy.example.internal:3128")?),
+    ///     ..Default::default()
+    /// };
+    /// # Ok::<(), mecmcp_http::HttpError>(())
+    /// ```
+    pub fn parse(raw: &str) -> Result<Self, HttpError> {
+        let invalid = |detail: String| HttpError::ConfigValidation {
+            field: "explicit_proxy".to_owned(),
+            detail,
+        };
+        // `url::ParseError` renders a fixed description, never the input.
+        let parsed = reqwest::Url::parse(raw)
+            .map_err(|error| invalid(format!("not a valid URL: {error}")))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(invalid("must be an http:// or https:// URL".to_owned()));
+        }
+        if parsed.host_str().is_none_or(str::is_empty) {
+            return Err(invalid("must name a host".to_owned()));
+        }
+        // reqwest would silently drop these; refuse them like a base URL does.
+        if parsed.path() != "/" || parsed.query().is_some() || parsed.fragment().is_some() {
+            return Err(invalid(
+                "must not carry a path, query, or fragment".to_owned(),
+            ));
+        }
+        Ok(Self(parsed))
+    }
+}
+
+impl std::fmt::Debug for ProxyUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ProxyUrl")
+            .field(&SafeUrl::from_parsed(&self.0))
+            .finish()
     }
 }
 
@@ -1122,6 +1202,17 @@ impl HttpClient {
         // anchor, which is the ordinary public-endpoint case.
         if !extra_certs.is_empty() {
             builder = builder.tls_certs_only(extra_certs);
+        }
+
+        // Added after `.no_proxy()`, which stays: `.proxy()` keeps environment
+        // autodiscovery off, and this is the only proxy the client will use.
+        if let Some(proxy) = &config.explicit_proxy {
+            let proxy =
+                reqwest::Proxy::all(proxy.0.clone()).map_err(|_| HttpError::ConfigValidation {
+                    field: "explicit_proxy".to_owned(),
+                    detail: "rejected by the HTTP stack".to_owned(),
+                })?;
+            builder = builder.proxy(proxy);
         }
 
         let inner = builder.build().map_err(|e| HttpError::ClientConstruction {
@@ -3271,6 +3362,106 @@ mod tests {
     #[test]
     fn default_config_is_accepted() {
         assert!(build_client(HttpClientConfig::default()).is_ok());
+    }
+
+    /// Base64 of the `proxyuser:PASSWORD` placeholder userinfo — what a
+    /// `Proxy-Authorization: Basic` header built from it would carry.
+    const ENCODED_PROXY_USERINFO: &str = "cHJveHl1c2VyOlBBU1NXT1JE"; // gitleaks:allow -- base64 of the test placeholder proxyuser:PASSWORD
+
+    /// reqwest's `Client` Debug lists `proxies` only when it has any, so this
+    /// also catches a lost `.no_proxy()`: the environment matcher would show up.
+    #[test]
+    fn default_config_has_no_proxy() {
+        let config = HttpClientConfig::default();
+        assert!(config.explicit_proxy.is_none());
+        let client = build_client(config).unwrap();
+        let rendered = format!("{client:?}");
+        assert!(
+            !rendered.contains("proxies"),
+            "default client has a proxy: {rendered}"
+        );
+    }
+
+    #[test]
+    fn explicit_proxy_accepts_http_and_https_with_or_without_userinfo() {
+        for raw in [
+            "http://proxy.example.internal:3128",
+            "https://proxy.example.internal:3128/",
+            "http://proxyuser:PASSWORD@proxy.example.internal:3128",
+            "http://[::1]:3128",
+        ] {
+            let proxy = ProxyUrl::parse(raw).unwrap_or_else(|error| panic!("{raw}: {error}"));
+            let client = build_client(HttpClientConfig {
+                explicit_proxy: Some(proxy),
+                ..Default::default()
+            })
+            .unwrap();
+            assert!(format!("{client:?}").contains("proxies"), "{raw} not wired");
+        }
+    }
+
+    #[test]
+    fn explicit_proxy_rejects_a_bad_scheme_host_or_path() {
+        for raw in [
+            "socks5://proxyuser:PASSWORD@proxy.example.internal:1080",
+            "ftp://proxy.example.internal",
+            "file:///etc/hosts",
+            "not a url",
+            // Scheme-less: parses with `proxyuser` as the scheme and the
+            // password in the path, so it must not be echoed either.
+            "proxyuser:PASSWORD@proxy.example.internal:3128",
+            "http://proxy.example.internal:3128/path",
+            "http://proxy.example.internal:3128/?q=1",
+            "http://proxy.example.internal:3128/#frag",
+        ] {
+            let error = ProxyUrl::parse(raw).unwrap_err();
+            assert!(
+                matches!(&error, HttpError::ConfigValidation { field, .. } if field == "explicit_proxy"),
+                "{raw}: {error:?}"
+            );
+            let rendered = format!("{error} {error:?}");
+            assert!(
+                !rendered.contains("PASSWORD"),
+                "credential echoed: {rendered}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_proxy_credentials_never_reach_debug_or_errors() {
+        // Bound then dropped, so the proxy connection is refused.
+        let (listener, port) = bind_local().await;
+        drop(listener);
+        let proxy =
+            ProxyUrl::parse(&format!("http://proxyuser:PASSWORD@127.0.0.1:{port}")).unwrap();
+        let config = HttpClientConfig {
+            explicit_proxy: Some(proxy.clone()),
+            ..Default::default()
+        };
+        let client = build_client(config.clone()).unwrap();
+        let request = HttpRequest::from_absolute_url(Method::Get, "https://localhost:1/").unwrap();
+        let error = client.send(request).await.unwrap_err();
+
+        for rendered in [
+            format!("{proxy:?}"),
+            format!("{config:?}"),
+            format!("{client:?}"),
+            format!("{error} {error:?}"),
+        ] {
+            assert!(
+                !rendered.contains("PASSWORD"),
+                "password leaked: {rendered}"
+            );
+            assert!(
+                !rendered.contains("proxyuser"),
+                "username leaked: {rendered}"
+            );
+            assert!(
+                !rendered.contains(ENCODED_PROXY_USERINFO),
+                "encoded userinfo leaked: {rendered}"
+            );
+        }
+        assert!(format!("{proxy:?}").contains(&format!("127.0.0.1:{port}")));
     }
 
     /// Bad PEM must fail at construction, not at the first request.

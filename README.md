@@ -666,7 +666,7 @@ refused at startup by 0.3.8.
 | `mecmcp-changeset` | Plan → digest → approve → apply → verify, two-principal enforcement, indeterminate recovery | rustpanosmcp `mutation.rs` |
 | `mecmcp-secret` | Outbound credential type (zeroizing, unprintable) and hardened env/file loader | new — see #90 |
 | `mecmcp-job` | Cancellable job polling: immediate first probe, capped backoff, whole-operation deadline | new — see #90 |
-| `mecmcp-http` | Outbound HTTP client: HTTPS-only, no redirects, no proxy, bounded concurrency, whole-request deadline, sensitive headers | new — see #90 |
+| `mecmcp-http` | Outbound HTTP client: HTTPS-only, no redirects, no proxy autodiscovery (opt-in explicit proxy only), bounded concurrency, whole-request deadline, sensitive headers | new — see #90 |
 | `mecmcp-openapi` | Whole-segment path expansion and bounded pagination — rejects, never clamps | new — see #90 |
 | `mecmcp-intent` | Vendor-neutral policy/object model with per-vendor rendering | new — see ROADMAP |
 

@@ -37,6 +37,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   report `no signatures found` and fail the release (seen on rustsdcmcp v0.6.0). The gate
   stays hard: a signature that never appears still fails the job with cosign's last error.
   Consumers pin this workflow by SHA, so they only get the fix after bumping that pin (#595).
+### Added
+
+- **mecmcp-http**: opt-in explicit egress proxy, `HttpClientConfig::explicit_proxy:
+  Option<ProxyUrl>` (#589). `None`, the default, is unchanged: no proxy. `ProxyUrl::parse`
+  accepts only an `http://` or `https://` URL with a host and no path, query, or
+  fragment; HTTPS origins are tunnelled with `CONNECT`, so TLS stays end-to-end.
+  Userinfo is accepted and sent as `Proxy-Authorization: Basic`, matching rustsdcmcp's
+  `egress_proxy`. It never appears in `Debug` or errors, and `ProxyUrl` has no
+  `Display`. Environment proxy variables (`HTTP(S)_PROXY`, `ALL_PROXY`, `NO_PROXY`)
+  stay ignored with or without it. A struct literal of `HttpClientConfig` that does
+  not use `..Default::default()` must now set the new field.
 
 ## [0.31.1] - 2026-10-29
 
