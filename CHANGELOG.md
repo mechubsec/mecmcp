@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   report `no signatures found` and fail the release (seen on rustsdcmcp v0.6.0). The gate
   stays hard: a signature that never appears still fails the job with cosign's last error.
   Consumers pin this workflow by SHA, so they only get the fix after bumping that pin (#595).
+
 ### Added
 
 - **mecmcp-http**: opt-in explicit egress proxy, `HttpClientConfig::explicit_proxy:
