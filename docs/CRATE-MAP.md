@@ -127,7 +127,7 @@ Reaching the far side, and running as a service.
 | `mecmcp-runtime` | 2,958 | audit, auth, secret | CLI parsing with provenance — which flags the operator actually typed, not merely the resolved values — plus TLS bootstrap, SIGHUP reload, graceful shutdown and the token subcommands. |
 
 ```
-mecmcp-http      HttpClient · HttpClientConfig · HttpRequest::with_base_and_path · SafeUrl
+mecmcp-http      HttpClient · HttpClientConfig · ProxyUrl · HttpRequest::with_base_and_path · SafeUrl
 mecmcp-scp       ScpClient · SshConfig · HostKeyVerification · ScpOutcome
 mecmcp-job       poll_until_ready · Probe<T> · PollConfig · PollError<E>
 mecmcp-openapi   expand_path · ExpandedPath · page · PageLimits · PathError

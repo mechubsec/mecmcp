@@ -33,7 +33,7 @@ pub trait KeySource: Send + Sync {
 /// Production [`KeySource`], built on `mecmcp-http`'s hardened outbound client.
 ///
 /// Inherits that client's guarantees for free: HTTPS-only, no redirects, no
-/// proxy, bounded response size, and a whole-request deadline. An OIDC
+/// proxy autodiscovery, bounded response size, and a whole-request deadline. An OIDC
 /// discovery/JWKS endpoint is exactly the kind of outbound API call that
 /// crate was built for.
 pub struct HttpKeySource {
