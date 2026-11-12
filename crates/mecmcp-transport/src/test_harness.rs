@@ -24,6 +24,7 @@
 
 use crate::server::{HttpServeError, ServePlan, serve_router_on_listener};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
@@ -69,6 +70,23 @@ pub async fn serve_on_loopback_with_timeout(
     plan: ServePlan,
     shutdown_timeout: Duration,
 ) -> ServedPlan {
+    serve_on_loopback_inner(plan, None, shutdown_timeout)
+}
+
+/// [`serve_on_loopback`] over TLS, for tests of the `Some(config)` listener path.
+///
+/// # Panics
+///
+/// Panics if no loopback port can be bound.
+pub async fn serve_on_loopback_tls(plan: ServePlan, tls: Arc<rustls::ServerConfig>) -> ServedPlan {
+    serve_on_loopback_inner(plan, Some(tls), Duration::from_millis(50))
+}
+
+fn serve_on_loopback_inner(
+    plan: ServePlan,
+    tls: Option<Arc<rustls::ServerConfig>>,
+    shutdown_timeout: Duration,
+) -> ServedPlan {
     // Bind once and keep it. The port is discovered and used by the same
     // listener, so there is no window in which anything else can take it.
     //
@@ -87,7 +105,7 @@ pub async fn serve_on_loopback_with_timeout(
     let serving = tokio::spawn(serve_router_on_listener(
         plan,
         listener,
-        None,
+        tls,
         shutdown_timeout,
     ));
 
