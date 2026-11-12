@@ -781,14 +781,21 @@ pub fn require_operation_fingerprint(
     if expected_candidate_fingerprint != actual_candidate_fingerprint {
         return Err(RecordError::new(
             "expected_candidate_fingerprint",
-            "candidate changed since the caller observed it".to_string(),
+            format!(
+                "candidate changed since the caller observed it \
+                 (expected {expected_candidate_fingerprint}, found {actual_candidate_fingerprint})"
+            ),
         ));
     }
 
     if record.current != actual_candidate_fingerprint {
         return Err(RecordError::new(
             "operation_id",
-            "candidate changed after this operation staged".to_string(),
+            format!(
+                "candidate changed after this operation staged \
+                 (recorded {}, found {actual_candidate_fingerprint})",
+                record.current
+            ),
         ));
     }
 
