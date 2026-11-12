@@ -37,6 +37,7 @@ pub enum ToolMode {
 /// and junos and mist build `Cli` with a struct literal, so a new `Cli` field
 /// would break them without reaching the servers that need it.
 #[derive(Debug, Clone, Copy, Default, clap::Args, PartialEq, Eq)]
+#[command(about = None, long_about = None)]
 pub struct ToolModeArgs {
     /// Tools to list: `full`, or `compact` for the server's dispatchers only.
     #[arg(long, value_enum, env = "MCP_TOOL_MODE", default_value = "full")]
@@ -308,6 +309,7 @@ impl<C> ParsedCli<C> {
 /// Server-common approver-tooling switches. Flatten into a server's CLI with
 /// `#[command(flatten)]` so every mecmcp-based server exposes the same flag.
 #[derive(Debug, Clone, Copy, Default, clap::Args)]
+#[command(about = None, long_about = None)]
 pub struct WebApproverArgs {
     /// Include staged actions in change-set status responses (approver
     /// tooling, e.g. the mechub approval webapp). Off by default: exposes
@@ -344,6 +346,7 @@ pub struct WebApproverArgs {
 /// via [`VerifiedApproverArgs::approver_policy`]; the raw issuer/audience
 /// strings are exposed for a server to build the rest.
 #[derive(Debug, Clone, Default, clap::Args)]
+#[command(about = None, long_about = None)]
 pub struct VerifiedApproverArgs {
     /// IdP issuer URL to verify approver assertions against. Required for any
     /// of the other approver flags to take effect.
@@ -535,6 +538,7 @@ pub enum VerifiedApproverArgsError {
 /// refuses a non-canonical `--oauth-resource`. The verify timeout and permit count are not
 /// flags: the transport defaults apply.
 #[derive(Debug, Clone, clap::Args)]
+#[command(about = None, long_about = None)]
 pub struct OAuthResourceArgs {
     /// Issuer URL of the external authorization server (must be https). Tokens must carry
     /// exactly this `iss`. Required with `--oauth-resource` and `--oauth-scope-map`.
@@ -734,6 +738,7 @@ pub enum OAuthResourceArgsError {
 /// of the symlink / regular-file / mode / owner checks, so a 0644 credential is
 /// refused here exactly as it is for a token store.
 #[derive(Debug, Clone, Default, clap::Args)]
+#[command(about = None, long_about = None)]
 pub struct EvidenceArgs {
     /// ClickHouse endpoint for the SSDF evidence sink. Enables the pipeline.
     #[arg(long)]
@@ -1177,7 +1182,7 @@ fn positive_seconds(raw: &str) -> Result<u64, String> {
 /// This struct holds only the flags every vendor needs. Vendor servers
 /// should wrap this in their own struct and add vendor-specific fields.
 #[derive(Debug, Parser)]
-#[command(name = "mecmcp-server")]
+#[command(name = "mecmcp-server", about = None, long_about = None)]
 pub struct Cli {
     /// Optional management command.
     #[command(subcommand)]
@@ -2263,5 +2268,94 @@ mod composition_tests {
             parsed.cli.verified_approver.oidc_issuer.as_deref(),
             Some("https://approver-idp.example")
         );
+    }
+}
+
+/// Rustdoc on an `Args` struct is documentation, not the consumer's help: clap
+/// derive applies it as the command's `about`/`long_about` when flattened, and
+/// a consumer that sets only `about` then prints it as the long description
+/// (`--help`). Each `Args` struct above, and the flattenable [`Cli`], opts out with
+/// `#[command(about = None, long_about = None)]`, which the consumer's own
+/// `about` or doc comment still overrides because clap applies it last.
+#[cfg(test)]
+mod flatten_help_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    // A real consumer's shape: `about` by attribute, no doc comment (a doc comment
+    // on the consumer would itself reset `long_about` and hide the leak), one flatten.
+    #[derive(clap::Parser)]
+    #[command(name = "x", about = "X server")]
+    struct AttributeAbout {
+        #[command(flatten)]
+        tool_mode: ToolModeArgs,
+    }
+
+    // The shape most servers use: the shared `Cli` flattened, nothing else.
+    #[derive(clap::Parser)]
+    #[command(name = "x", about = "X server")]
+    struct SharedCliOnly {
+        #[command(flatten)]
+        shared: Cli,
+    }
+
+    // A consumer flattening every `Args` struct here, no doc comment.
+    #[derive(clap::Parser)]
+    #[command(name = "x", about = "X server")]
+    struct AllArgs {
+        #[command(flatten)]
+        web_approver: WebApproverArgs,
+        #[command(flatten)]
+        verified_approver: VerifiedApproverArgs,
+        #[command(flatten)]
+        oauth: OAuthResourceArgs,
+        #[command(flatten)]
+        evidence: EvidenceArgs,
+        #[command(flatten)]
+        tool_mode: ToolModeArgs,
+    }
+
+    /// Consumer about from its own doc comment.
+    ///
+    /// Consumer long about.
+    #[derive(clap::Parser)]
+    #[command(name = "y")]
+    struct DocAbout {
+        #[command(flatten)]
+        tool_mode: ToolModeArgs,
+    }
+
+    fn assert_no_leak(rendered: &str) {
+        for leaked in [
+            "flatten",
+            "Kept off",
+            "Server-common",
+            "resource-server",
+            "Passwords come",
+            "Common CLI arguments",
+        ] {
+            assert!(!rendered.contains(leaked), "leaked {leaked:?}:\n{rendered}");
+        }
+    }
+
+    #[test]
+    fn flattened_args_docs_do_not_replace_attribute_about() {
+        for mut command in [
+            AttributeAbout::command(),
+            SharedCliOnly::command(),
+            AllArgs::command(),
+        ] {
+            let rendered = command.render_long_help().to_string();
+            assert!(rendered.contains("X server"), "{rendered}");
+            assert_no_leak(&rendered);
+        }
+    }
+
+    #[test]
+    fn flattened_args_docs_do_not_replace_doc_comment_about() {
+        let rendered = DocAbout::command().render_long_help().to_string();
+        assert!(rendered.contains("Consumer about from"), "{rendered}");
+        assert!(rendered.contains("Consumer long about."), "{rendered}");
+        assert_no_leak(&rendered);
     }
 }
