@@ -27,6 +27,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [0.33.0] - 2026-11-12
+
+### Security
+
+- **deps**: rmcp 3.9.0 for RUSTSEC-2026-0462, unbounded response-body buffering in
+  rmcp's Streamable HTTP clients (#606). Lockfile only.
+- **deps**: pageant 0.2.5 for GHSA-662x-8wvj-2276 (#607). pageant reaches the graph
+  through russh on Windows targets only, so no shipped Linux binary contained it.
+
+### Fixed
+
+- **mecmcp-changeset**: a transaction whose `validate()` writes into the candidate
+  can now say so with `DeviceTransaction::validate_rewrites_candidate()` (#612).
+  Junos `<commit-check/>` gives a new `system login user` a `uid`, so every change
+  set adding one was refused at commit with `candidate changed since the caller
+  observed it` (rustjunosmcp#626). When it returns `true`, `validate_operation`
+  re-reads the fingerprint after every validation attempt, passed or failed, and
+  stores it in `record.current`; the caller passes that to the commit. Only an
+  implementation that holds an exclusive device lock from stage through commit may
+  return `true`, because a refresh without one would absorb another session's
+  edit. The default is `false`, so every other vendor is unchanged. A re-read that
+  fails leaves the operation `Indeterminate` with the lock held.
+- **mecmcp-runtime**: a consumer that sets only `about` and flattens a shared
+  `Args` struct no longer prints that struct's rustdoc as its `--help` description
+  (#610). `ToolModeArgs`, `WebApproverArgs`, `VerifiedApproverArgs`,
+  `OAuthResourceArgs`, `EvidenceArgs` and `Cli` opt out; the consumer's own
+  `about` or doc comment still wins.
+
+### Changed
+
+- **mecmcp-changeset**: fingerprint refusals now append both fingerprints,
+  `(expected X, found Y)` or `(recorded X, found Y)`, and the step that checked,
+  `; checked before commit` (#612). The leading phrases are unchanged, so code
+  matching them with `contains` keeps working; an exact-equality match will not.
+- **mecmcp-runtime**: a binary that parses `Cli` itself (`parse_for`) no longer
+  shows `Common CLI arguments for MCP servers.` as its description (#610).
+
+### Added
+
+- **mecmcp-transport**: `test_harness::serve_on_loopback_tls` (behind
+  `test-util`), and the first test that completes a TLS handshake through
+  `serve_router`'s listener (#611).
+
+### Dependencies
+
+- **mecmcp-transport**: axum-server 0.8.0 -> 0.9.2 (#611). No source change.
+  Upstream, a connection still mid-handshake is now cancelled at shutdown.
+- aws-lc-rs 1.18.2 -> 1.19.0, globset 0.4.20 -> 0.4.21, log 0.4.34 -> 0.4.35,
+  ureq 3.5.0 -> 3.5.1 (#604).
+
 ## [0.32.0] - 2026-10-29
 
 ### Fixed
