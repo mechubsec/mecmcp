@@ -221,7 +221,10 @@ impl ChangesetCoordinator {
             if expected_fingerprint != before_fp {
                 return Err(CoordinatorError::new(
                     "expected_candidate_fingerprint",
-                    "candidate changed since the caller observed it",
+                    format!(
+                        "candidate changed since the caller observed it \
+                         (expected {expected_fingerprint}, found {before_fp}); checked before stage"
+                    ),
                 ));
             }
 
@@ -408,8 +411,9 @@ impl ChangesetCoordinator {
             .await
             .map_err(|e| CoordinatorError::new("transaction", e.to_string()))?;
 
-        require_operation_fingerprint(&record, expected_fingerprint, &actual_fp)
-            .map_err(|e| CoordinatorError::new(e.field(), e.message().to_owned()))?;
+        require_operation_fingerprint(&record, expected_fingerprint, &actual_fp).map_err(|e| {
+            CoordinatorError::new(e.field(), format!("{}; checked before diff", e.message()))
+        })?;
 
         // Compute the diff
         let diff = transaction
@@ -424,6 +428,12 @@ impl ChangesetCoordinator {
     ///
     /// Validates the operation fingerprint matches, calls `transaction.validate(staged)`,
     /// and transitions `Staged` → `Validating` → `Validated` or `Failed`.
+    ///
+    /// If the transaction opts in via
+    /// [`DeviceTransaction::validate_rewrites_candidate`], every validation attempt,
+    /// passed or failed, re-reads the fingerprint (still under the device guard)
+    /// and stores it in `record.current`. The caller must then pass [`ChangesetCoordinator::record`]`(..).current`
+    /// as the commit's expected fingerprint, not the post-stage one.
     ///
     /// # Errors
     ///
@@ -484,8 +494,12 @@ impl ChangesetCoordinator {
             .await
             .map_err(|e| CoordinatorError::new("transaction", e.to_string()))?;
 
-        require_operation_fingerprint(&record, expected_fingerprint, &actual_fp)
-            .map_err(|e| CoordinatorError::new(e.field(), e.message().to_owned()))?;
+        require_operation_fingerprint(&record, expected_fingerprint, &actual_fp).map_err(|e| {
+            CoordinatorError::new(
+                e.field(),
+                format!("{}; checked before validate", e.message()),
+            )
+        })?;
 
         // Transition to Validating
         record.state = LifecycleState::Validating;
@@ -493,6 +507,40 @@ impl ChangesetCoordinator {
 
         // Perform validation
         let validation_result = transaction.validate(staged).await;
+
+        // An opted-in validation may have written into the candidate whatever it
+        // reports: a lost or unparseable reply still ran the check. The device
+        // guard serialises this process, and a transaction that opts in holds the
+        // device lock from stage through commit, so the fingerprint can only have
+        // moved through validate itself. Re-bind the operation to it either way,
+        // so commit after a pass and discard after a failure can still pass the
+        // guard (rustjunosmcp#626).
+        if transaction.validate_rewrites_candidate() {
+            match transaction.fingerprint().await {
+                Ok(refreshed_fp) => record.current = refreshed_fp,
+                Err(error) => {
+                    // Keeping the pre-validate fingerprint would leave a record no
+                    // commit or discard could ever match again. Hand it to manual
+                    // reconciliation, as staging does for a candidate it touched.
+                    let outcome = match &validation_result {
+                        Ok(_) => "validation passed".to_string(),
+                        Err(validation_error) => format!("validation failed ({validation_error})"),
+                    };
+                    record.state = LifecycleState::Indeterminate;
+                    record.details = Some(format!(
+                        "{outcome} but the candidate fingerprint could not be re-read: {error}"
+                    ));
+                    record.config_lock_held = true;
+                    self.update(record).await?;
+                    return Err(CoordinatorError::new(
+                        "transaction",
+                        format!(
+                            "{error} (operation {operation_id} requires manual reconciliation)"
+                        ),
+                    ));
+                }
+            }
+        }
 
         match validation_result {
             Ok(validation) => {
@@ -516,6 +564,9 @@ impl ChangesetCoordinator {
     ///
     /// Spawns the commit and polls for completion. If the commit outcome cannot be
     /// determined (timeout, lock release failure), the operation is marked `Indeterminate`.
+    ///
+    /// `expected_fingerprint` is the post-validate `record.current` when the
+    /// transaction opted into [`DeviceTransaction::validate_rewrites_candidate`].
     ///
     /// # Errors
     ///
@@ -571,8 +622,9 @@ impl ChangesetCoordinator {
             .await
             .map_err(|e| CoordinatorError::new("transaction", e.to_string()))?;
 
-        require_operation_fingerprint(&record, expected_fingerprint, &actual_fp)
-            .map_err(|e| CoordinatorError::new(e.field(), e.message().to_owned()))?;
+        require_operation_fingerprint(&record, expected_fingerprint, &actual_fp).map_err(|e| {
+            CoordinatorError::new(e.field(), format!("{}; checked before commit", e.message()))
+        })?;
 
         // Persist who asked for this commit before the device is told to do it.
         // Without it, a restart mid-commit leaves an operation nobody can be
@@ -871,8 +923,12 @@ impl ChangesetCoordinator {
             .await
             .map_err(|e| CoordinatorError::new("transaction", e.to_string()))?;
 
-        require_operation_fingerprint(&record, expected_fingerprint, &actual_fp)
-            .map_err(|e| CoordinatorError::new(e.field(), e.message().to_owned()))?;
+        require_operation_fingerprint(&record, expected_fingerprint, &actual_fp).map_err(|e| {
+            CoordinatorError::new(
+                e.field(),
+                format!("{}; checked before discard", e.message()),
+            )
+        })?;
 
         // Persist an in-flight state before issuing the rollback RPC. If the process
         // exits after the rollback request reaches the device but before the await

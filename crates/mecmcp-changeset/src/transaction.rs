@@ -206,6 +206,25 @@ pub trait DeviceTransaction: Send + Sync {
     /// See `candidate_transaction.rs:classify_check_error` for the pattern.
     async fn validate(&self, staged: &Self::Staged) -> Result<Self::Validation, Self::Error>;
 
+    /// Whether a successful [`validate`](Self::validate) may itself change the
+    /// fingerprinted candidate.
+    ///
+    /// Junos `<commit-check/>` assigns a `uid` to a new login user and writes it
+    /// into the candidate, so the fingerprint observed after staging no longer
+    /// matches by commit time (rustjunosmcp#626). When this returns `true` the
+    /// coordinator re-reads the fingerprint after a successful validation and
+    /// binds the operation to it; the caller must then pass
+    /// [`ChangesetCoordinator::record`](crate::ChangesetCoordinator::record)`(..).current` as the commit's expected fingerprint.
+    ///
+    /// Return `true` only if the implementation also holds an exclusive
+    /// configuration lock from stage through commit, so that no other writer
+    /// can change the candidate during validation. Without that lock a refresh
+    /// would absorb another session's concurrent edit, which the fingerprint
+    /// guard exists to catch; that is why the default is `false`.
+    fn validate_rewrites_candidate(&self) -> bool {
+        false
+    }
+
     /// Commit the validated transaction.
     ///
     /// Must wait for the operation to complete and return a known outcome, or

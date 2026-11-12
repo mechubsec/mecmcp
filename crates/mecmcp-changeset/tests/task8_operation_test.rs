@@ -53,6 +53,8 @@ struct MockValidation {
 struct MockDeviceState {
     data: HashMap<String, String>,
     locked: bool,
+    /// Fingerprint reads fail, as they would once the device stops answering.
+    unreachable: bool,
 }
 
 impl Default for MockDeviceState {
@@ -62,6 +64,7 @@ impl Default for MockDeviceState {
         Self {
             data,
             locked: false,
+            unreachable: false,
         }
     }
 }
@@ -71,6 +74,15 @@ struct MockTransaction {
     commit_behavior: Arc<Mutex<CommitBehavior>>,
     /// Whether this transaction reports an explicit unlock capability.
     can_unlock: bool,
+    /// Key that `validate` writes into the candidate, as Junos `<commit-check/>`
+    /// writes a `uid` (rustjunosmcp#626).
+    validate_adds_key: Option<String>,
+    /// Whether `validate` is rejected by the device.
+    validate_fails: bool,
+    /// Value of `validate_rewrites_candidate`.
+    opts_in: bool,
+    /// Whether the device stops answering once `validate` has run.
+    unreachable_after_validate: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +100,10 @@ impl MockTransaction {
             state: Arc::new(Mutex::new(MockDeviceState::default())),
             commit_behavior: Arc::new(Mutex::new(CommitBehavior::Success)),
             can_unlock: false,
+            validate_adds_key: None,
+            validate_fails: false,
+            opts_in: false,
+            unreachable_after_validate: false,
         }
     }
 
@@ -105,6 +121,10 @@ impl MockTransaction {
             state,
             commit_behavior: Arc::new(Mutex::new(CommitBehavior::Success)),
             can_unlock: false,
+            validate_adds_key: None,
+            validate_fails: false,
+            opts_in: false,
+            unreachable_after_validate: false,
         }
     }
 
@@ -122,6 +142,8 @@ enum MockError {
     ValidationFailed(String),
     #[error("commit failed: {0}")]
     CommitFailed(String),
+    #[error("device unreachable")]
+    Unreachable,
 }
 
 #[async_trait]
@@ -134,6 +156,9 @@ impl DeviceTransaction for MockTransaction {
 
     async fn fingerprint(&self) -> Result<String, Self::Error> {
         let state = self.state.lock().unwrap();
+        if state.unreachable {
+            return Err(MockError::Unreachable);
+        }
         let mut keys: Vec<_> = state.data.keys().cloned().collect();
         keys.sort();
         let concatenated = keys.join(":");
@@ -185,7 +210,25 @@ impl DeviceTransaction for MockTransaction {
         Ok(MockDiff { changes })
     }
 
+    fn validate_rewrites_candidate(&self) -> bool {
+        self.opts_in
+    }
+
     async fn validate(&self, _staged: &Self::Staged) -> Result<Self::Validation, Self::Error> {
+        // The check runs, and writes, before its verdict comes back.
+        if let Some(key) = &self.validate_adds_key {
+            self.state
+                .lock()
+                .unwrap()
+                .data
+                .insert(key.clone(), "assigned".to_string());
+        }
+        if self.unreachable_after_validate {
+            self.state.lock().unwrap().unreachable = true;
+        }
+        if self.validate_fails {
+            return Err(MockError::ValidationFailed("rejected".to_string()));
+        }
         Ok(MockValidation {
             succeeded: true,
             details: "validation passed".to_string(),
@@ -943,4 +986,291 @@ async fn commit_rejects_non_validated_operation() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.message().contains("must validate successfully"));
+}
+
+// ============================================================================
+// Fingerprint refresh after validate (rustjunosmcp#626)
+// ============================================================================
+
+/// Stages one action on a transaction and returns the coordinator, the staged
+/// output and the identifiers the later steps need.
+async fn staged_operation(
+    transaction: &MockTransaction,
+) -> (
+    ChangesetCoordinator,
+    mecmcp_changeset::StageOutput<MockStaged>,
+) {
+    let coordinator = ChangesetCoordinator::load(
+        None,
+        OperationLimits::default(),
+        Duration::from_secs(900),
+        false,
+    )
+    .unwrap();
+    let initial_fp = transaction.fingerprint().await.unwrap();
+    let actions = vec![MockAction {
+        name: "user".to_string(),
+        value: "new".to_string(),
+    }];
+    let stage_output = coordinator
+        .stage_operation(
+            "test-device",
+            "alice",
+            &initial_fp,
+            TEST_ENDPOINT,
+            transaction,
+            &actions,
+            "set",
+            None,
+            "sha256:abcd1234",
+            None,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    (coordinator, stage_output)
+}
+
+async fn validate_staged(
+    coordinator: &ChangesetCoordinator,
+    transaction: &MockTransaction,
+    stage_output: &mecmcp_changeset::StageOutput<MockStaged>,
+) -> Result<MockValidation, mecmcp_changeset::CoordinatorError> {
+    coordinator
+        .validate_operation(
+            &stage_output.operation_id,
+            "test-device",
+            "alice",
+            &stage_output.after_fingerprint,
+            transaction,
+            &stage_output.staged,
+            &CancellationToken::new(),
+        )
+        .await
+}
+
+async fn commit_staged(
+    coordinator: &ChangesetCoordinator,
+    transaction: &MockTransaction,
+    stage_output: &mecmcp_changeset::StageOutput<MockStaged>,
+    expected_fingerprint: &str,
+) -> Result<CommitOutcome, mecmcp_changeset::CoordinatorError> {
+    coordinator
+        .commit_operation(
+            &stage_output.operation_id,
+            "test-device",
+            "alice",
+            expected_fingerprint,
+            "sha256:abcd1234",
+            transaction,
+            &stage_output.staged,
+            &test_attribution(),
+            &CommitOptions::default(),
+            &CancellationToken::new(),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn validate_that_rewrites_candidate_refuses_commit_by_default() {
+    let mut transaction = MockTransaction::new();
+    transaction.validate_adds_key = Some("uid".to_string());
+    let (coordinator, stage_output) = staged_operation(&transaction).await;
+    validate_staged(&coordinator, &transaction, &stage_output)
+        .await
+        .unwrap();
+
+    // Not opted in: the guard still catches a fingerprint that moved.
+    let err = commit_staged(
+        &coordinator,
+        &transaction,
+        &stage_output,
+        &stage_output.after_fingerprint,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.field(), "expected_candidate_fingerprint");
+}
+
+#[tokio::test]
+async fn opted_in_validate_refreshes_record_and_commit_succeeds() {
+    let mut transaction = MockTransaction::new();
+    transaction.validate_adds_key = Some("uid".to_string());
+    transaction.opts_in = true;
+    let (coordinator, stage_output) = staged_operation(&transaction).await;
+    validate_staged(&coordinator, &transaction, &stage_output)
+        .await
+        .unwrap();
+
+    let record = coordinator
+        .record(&stage_output.operation_id, "alice", "test-device")
+        .await
+        .unwrap();
+    let refreshed = transaction.fingerprint().await.unwrap();
+    assert_ne!(refreshed, stage_output.after_fingerprint);
+    assert_eq!(record.current, refreshed);
+
+    let outcome = commit_staged(&coordinator, &transaction, &stage_output, &record.current)
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        CommitOutcome::Reconciled {
+            succeeded: true,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn opted_in_change_after_validate_is_still_refused() {
+    let mut transaction = MockTransaction::new();
+    transaction.validate_adds_key = Some("uid".to_string());
+    transaction.opts_in = true;
+    let (coordinator, stage_output) = staged_operation(&transaction).await;
+    validate_staged(&coordinator, &transaction, &stage_output)
+        .await
+        .unwrap();
+    let record = coordinator
+        .record(&stage_output.operation_id, "alice", "test-device")
+        .await
+        .unwrap();
+
+    // Another writer touches the candidate between validate and commit.
+    transaction
+        .state
+        .lock()
+        .unwrap()
+        .data
+        .insert("intruder".to_string(), "x".to_string());
+
+    let err = commit_staged(&coordinator, &transaction, &stage_output, &record.current)
+        .await
+        .unwrap_err();
+    assert_eq!(err.field(), "expected_candidate_fingerprint");
+    assert!(err.message().contains("checked before commit"));
+}
+
+#[tokio::test]
+async fn opted_in_failed_validate_still_refreshes_record() {
+    let mut transaction = MockTransaction::new();
+    transaction.validate_adds_key = Some("uid".to_string());
+    transaction.validate_fails = true;
+    transaction.opts_in = true;
+    let (coordinator, stage_output) = staged_operation(&transaction).await;
+    validate_staged(&coordinator, &transaction, &stage_output)
+        .await
+        .unwrap_err();
+
+    // The check wrote before it failed. Keeping the post-stage fingerprint would
+    // leave a record no discard could ever match.
+    let record = coordinator
+        .record(&stage_output.operation_id, "alice", "test-device")
+        .await
+        .unwrap();
+    assert_eq!(record.state, LifecycleState::Failed);
+    let refreshed = transaction.fingerprint().await.unwrap();
+    assert_ne!(refreshed, stage_output.after_fingerprint);
+    assert_eq!(record.current, refreshed);
+}
+
+#[tokio::test]
+async fn not_opted_in_failed_validate_keeps_record() {
+    let mut transaction = MockTransaction::new();
+    transaction.validate_adds_key = Some("uid".to_string());
+    transaction.validate_fails = true;
+    let (coordinator, stage_output) = staged_operation(&transaction).await;
+    validate_staged(&coordinator, &transaction, &stage_output)
+        .await
+        .unwrap_err();
+
+    let record = coordinator
+        .record(&stage_output.operation_id, "alice", "test-device")
+        .await
+        .unwrap();
+    assert_eq!(record.state, LifecycleState::Failed);
+    assert_eq!(record.current, stage_output.after_fingerprint);
+}
+
+#[tokio::test]
+async fn opted_in_failed_refresh_leaves_operation_indeterminate() {
+    let mut transaction = MockTransaction::new();
+    transaction.validate_adds_key = Some("uid".to_string());
+    transaction.opts_in = true;
+    transaction.unreachable_after_validate = true;
+    let (coordinator, stage_output) = staged_operation(&transaction).await;
+    let err = validate_staged(&coordinator, &transaction, &stage_output)
+        .await
+        .unwrap_err();
+    assert!(err.message().contains("manual reconciliation"), "{err}");
+
+    // `Failed` with the pre-validate fingerprint could never pass the guard
+    // again; the record must go to manual reconciliation instead.
+    let record = coordinator
+        .record(&stage_output.operation_id, "alice", "test-device")
+        .await
+        .unwrap();
+    assert_eq!(record.state, LifecycleState::Indeterminate);
+    assert!(record.config_lock_held);
+}
+
+#[tokio::test]
+async fn fingerprint_refusals_report_both_fingerprints_and_the_step() {
+    let transaction = MockTransaction::new();
+    let (coordinator, stage_output) = staged_operation(&transaction).await;
+    let stale = format!("sha256:{}", "0".repeat(64));
+
+    // Caller's expected fingerprint is stale.
+    let err = coordinator
+        .diff_operation(
+            &stage_output.operation_id,
+            "test-device",
+            "alice",
+            &stale,
+            &transaction,
+            &stage_output.staged,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+    let message = err.message();
+    assert!(message.contains("candidate changed since the caller observed it"));
+    assert!(message.contains(&format!("expected {stale}")));
+    assert!(message.contains(&format!("found {}", stage_output.after_fingerprint)));
+    assert!(message.contains("checked before diff"));
+
+    // The record's own fingerprint is stale: the candidate moved after staging.
+    transaction
+        .state
+        .lock()
+        .unwrap()
+        .data
+        .insert("intruder".to_string(), "x".to_string());
+    let moved = transaction.fingerprint().await.unwrap();
+    let err = validate_staged_with(&coordinator, &transaction, &stage_output, &moved).await;
+    let message = err.message();
+    assert!(message.contains("candidate changed after this operation staged"));
+    assert!(message.contains(&format!("recorded {}", stage_output.after_fingerprint)));
+    assert!(message.contains(&format!("found {moved}")));
+    assert!(message.contains("checked before validate"));
+}
+
+async fn validate_staged_with(
+    coordinator: &ChangesetCoordinator,
+    transaction: &MockTransaction,
+    stage_output: &mecmcp_changeset::StageOutput<MockStaged>,
+    expected_fingerprint: &str,
+) -> mecmcp_changeset::CoordinatorError {
+    coordinator
+        .validate_operation(
+            &stage_output.operation_id,
+            "test-device",
+            "alice",
+            expected_fingerprint,
+            transaction,
+            &stage_output.staged,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err()
 }
