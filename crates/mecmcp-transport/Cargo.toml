@@ -13,7 +13,7 @@ workspace = true
 
 [dependencies]
 axum        = { version = "0.8", default-features = false, features = ["tokio", "json"] }
-axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+axum-server = { version = "0.9", default-features = false, features = ["tls-rustls-no-provider"] }
 dashmap     = "6.1"
 futures     = "0.3"
 http        = "1"
@@ -95,6 +95,11 @@ oauth-resource = ["dep:mecmcp-oidc"]
 # which only exists behind `test-util`.
 [[test]]
 name = "router_integration"
+required-features = ["test-util"]
+
+# `tls_listener.rs` serves over TLS through `test_harness`, behind `test-util`.
+[[test]]
+name = "tls_listener"
 required-features = ["test-util"]
 
 # `approver_assertion.rs` exercises `ApproverAssertionVerifier`, which only
