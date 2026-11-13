@@ -27,6 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [Unreleased]
+
+### Changed
+
+- **ci**: `reusable-release-image.yml` publishes `linux/amd64` and `linux/arm64` by
+  default (rustjunosmcp#648). Apple Silicon `docker pull` failed with `no matching
+  manifest for linux/arm64/v8`. Each platform builds on a native runner
+  (`ubuntu-24.04`, `ubuntu-24.04-arm`) and is pushed untagged by digest. A merge job
+  then tags one manifest list per registry and signs and verifies that list's own
+  digest. The QEMU step is gone and any other platform is refused, because emulated
+  builds took most of an hour per release. The smoke test runs on every platform.
+  The `digest` output is now the GHCR manifest-list digest. A private caller must
+  pass `platforms: linux/amd64`, since the arm64 runner is free only for public repos.
+
 ## [0.33.0] - 2026-11-12
 
 ### Security
