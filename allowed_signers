@@ -10,3 +10,4 @@
 # local keyring instead (`gpg --import <maintainer-key>.asc`).
 #
 fastrevmd@gmail.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAxq5ovthH0YYsLnlNMHalnU2yALvXpYftOAheOePPMM mechub release signing (added 2026-09-30)
+fastrevmd@gmail.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJmT6zUKIbHiOWvjbGhxoUkReOMxd9dlvrPtmeasrjyE ArmyGreen release signing (added 2026-11-13)
