@@ -40,7 +40,7 @@ production.
 
 ## Status
 
-The current release is v0.33.0, and [CHANGELOG.md](CHANGELOG.md) covers every
+The current release is v0.33.1, and [CHANGELOG.md](CHANGELOG.md) covers every
 release. The notes below stop at 0.10.0 and stay for their upgrade guidance.
 
 **0.10.0 — operator waivers are a kind, bounded, and expire (#275).**
