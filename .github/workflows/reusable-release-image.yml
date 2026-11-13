@@ -133,8 +133,9 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       dockerhub-push: ${{ steps.dockerhub.outputs.push }}
-      labels: ${{ steps.meta.outputs.labels }}
-      metadata: ${{ steps.meta.outputs.json }}
+    # No image names or labels here: GitHub drops a job output containing any
+    # secret's value, and the Docker Hub username `mechub` is a substring of
+    # every mechubsec path, so build and merge each run the metadata step.
     steps:
       - name: Map platforms to native runners
         id: matrix
@@ -157,10 +158,10 @@ jobs:
         env:
           PLATFORMS: ${{ inputs.platforms }}
 
-      # Decided before the metadata step so the images list below can
-      # include (or omit) the Docker Hub reference in one place. Absent
-      # secrets are a fork/pre-P0 condition, not a workflow bug, so this
-      # warns and continues GHCR-only rather than failing the job.
+      # Decided once so every later job includes (or omits) the Docker Hub
+      # reference the same way. Absent secrets are a fork/pre-P0 condition,
+      # not a workflow bug, so this warns and continues GHCR-only rather than
+      # failing the job.
       - name: Check Docker Hub credentials
         id: dockerhub
         run: |
@@ -178,20 +179,6 @@ jobs:
           DH_USERNAME: ${{ secrets.dockerhub-username }}
           DH_TOKEN: ${{ secrets.dockerhub-token }}
 
-      # Computed once so every platform carries identical labels; it reads
-      # the workflow context, not the checkout, so no checkout is needed.
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: |
-            ${{ inputs.image }}
-            ${{ steps.dockerhub.outputs.push == 'true' && inputs.dockerhub-image || '' }}
-          tags: |
-            type=semver,pattern={{version}},value=${{ inputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }}
-            type=raw,value=latest
-
   build:
     name: Build (${{ matrix.platform }})
     needs: plan
@@ -207,6 +194,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref || github.ref }}
+
+      # Labels only; keep `tags` identical to the merge job's copy, since the
+      # version label derives from them.
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ inputs.image }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }}
+            type=raw,value=latest
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -240,7 +239,7 @@ jobs:
         with:
           context: ${{ inputs.context }}
           platforms: ${{ matrix.platform }}
-          labels: ${{ needs.plan.outputs.labels }}
+          labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,"name=${{ inputs.image }}${{ needs.plan.outputs.dockerhub-push == 'true' && format(',{0}', inputs.dockerhub-image) || '' }}",push-by-digest=true,name-canonical=true,push=true
           provenance: mode=max
           sbom: true
@@ -287,6 +286,18 @@ jobs:
           path: ${{ runner.temp }}/digests
           pattern: digests-*
           merge-multiple: true
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: |
+            ${{ inputs.image }}
+            ${{ needs.plan.outputs.dockerhub-push == 'true' && inputs.dockerhub-image || '' }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }}
+            type=raw,value=latest
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -346,7 +357,7 @@ jobs:
           fi
         env:
           MATRIX: ${{ needs.plan.outputs.matrix }}
-          METADATA: ${{ needs.plan.outputs.metadata }}
+          METADATA: ${{ steps.meta.outputs.json }}
           GHCR_IMAGE: ${{ inputs.image }}
           DH_IMAGE: ${{ inputs.dockerhub-image }}
           DH_PUSH: ${{ needs.plan.outputs.dockerhub-push }}
