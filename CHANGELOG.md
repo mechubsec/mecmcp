@@ -27,6 +27,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [Unreleased]
+
+### Fixed
+
+- **ci**: `reusable-release-image.yml` from 0.33.1 published no image whenever
+  Docker Hub was configured. GitHub drops any job output that contains a secret's
+  value (`Skip output 'metadata' since it may contain secret`), and the Docker Hub
+  username `mechub` is a substring of every `mechubsec` image path. So the plan
+  job's tags and labels never reached the build and merge jobs: both platforms
+  built and pushed untagged with no labels, then the merge job refused with
+  `docker metadata produced no tags`. No tag moved. The build and merge jobs now
+  each run the metadata step, and the only job outputs left are the platform
+  matrix, a boolean and the digest. The first real run (rustproxmoxmcp v0.12.2)
+  caught it.
+
 ## [0.33.1] - 2026-11-13
 
 ### Changed
