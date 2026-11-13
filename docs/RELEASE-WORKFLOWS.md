@@ -91,7 +91,7 @@ jobs:
     uses: mechubsec/mecmcp/.github/workflows/reusable-release-image.yml@v0.8.1
     with:
       image: ghcr.io/mechubsec/rustjunosmcp
-      dockerhub-image: docker.io/mechub/rustjunosmcp  # linux/amd64 only
+      dockerhub-image: docker.io/mechub/rustjunosmcp
       description: 'Junos/SRX MCP server'
       version: ${{ github.event.inputs.version }}
       ref: ${{ github.event.inputs.ref }}
@@ -111,8 +111,7 @@ the caller must grant `packages: write` and `id-token: write` itself.
 alone changes nothing. A repo that wants the Docker Hub push too must also:
 
 - Add `dockerhub-image: docker.io/mechub/<repo>` (same tags as GHCR:
-  `vX.Y.Z`, `X.Y`, `latest`). Docker Hub images are linux/amd64 only, so
-  keep `platforms: linux/amd64` for any caller that sets `dockerhub-image`.
+  `vX.Y.Z`, `X.Y`, `latest`, and the same platforms).
 - Map `dockerhub-username`/`dockerhub-token` explicitly to the org-level
   `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` secrets, as in the example above.
   This workflow declares exactly those two secrets, so don't use
@@ -281,12 +280,15 @@ tracked follow-up once this one merges.
 2. Replace the repo's own SBOM/build-push/sign or sign-blob steps with a
    `uses:` call to the matching reusable workflow above, pinned to a mecmcp
    release tag.
-3. If the repo needs multi-arch (`docker/setup-qemu-action`), pass a
-   `platforms` input containing a non-`amd64` platform — the reusable
-   workflow only runs the QEMU setup step when needed, so single-arch
-   callers do not pay for it.
+3. Images are `linux/amd64,linux/arm64` by default. Each platform builds on
+   its own native runner (`ubuntu-24.04`, `ubuntu-24.04-arm`) and the
+   per-platform digests are merged into one signed manifest list. There is
+   no QEMU path: emulated Rust builds took most of an hour per release. The
+   arm64 runner is free only for public repos, so a private caller passes
+   `platforms: linux/amd64`.
 4. If the repo runs a smoke test between Buildx setup and the GHCR push
-   (as rustjunosmcp does), pass it via `smoke-test-command`.
+   (as rustjunosmcp does), pass it via `smoke-test-command`. It runs on every
+   platform's runner, so it must not assume amd64.
 5. Run the workflow once via `workflow_dispatch` (image) or against a real
    published release (tarball) before relying on it for a tagged release,
    and confirm the produced image/tarball is signed and the SBOM artifact is
