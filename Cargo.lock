@@ -121,9 +121,9 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "arc-swap"
-version = "1.9.3"
+version = "1.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "380962b3d93b99642e50b9febf72c071e97e8b32d86eae9cf4ef582bb960ae6e"
+checksum = "84a22b5d51209f6de83d37a0b33d320acb8da88823e42a94c075140708f032a5"
 dependencies = [
  "rustversion",
 ]
@@ -1210,7 +1210,6 @@ version = "1.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "337d46834ee672ab3e48caca2cb0c78cc174fb12b3a68d0d88f99a0519a5e36e"
 dependencies = [
- "generic-array 0.14.7",
  "rustversion",
  "typenum",
 ]
@@ -1880,7 +1879,7 @@ checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 
 [[package]]
 name = "mecmcp-approve"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1905,7 +1904,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-audit"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1939,7 +1938,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-auth"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "arc-swap",
  "chrono",
@@ -1957,7 +1956,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-changeset"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1986,7 +1985,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-device"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "async-trait",
  "rustix",
@@ -2002,7 +2001,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-http"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "mecmcp-openapi",
  "mecmcp-secret",
@@ -2020,7 +2019,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-inventory"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "mecmcp-auth",
  "mecmcp-secret",
@@ -2034,7 +2033,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-job"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "mecmcp-device",
  "thiserror 2.0.21",
@@ -2044,7 +2043,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-oidc"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -2062,14 +2061,14 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-openapi"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "mecmcp-policy"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "globset",
  "quick-xml",
@@ -2079,7 +2078,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-redact"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "clap",
  "hmac",
@@ -2094,7 +2093,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-runtime"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -2114,7 +2113,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-scp"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -2133,7 +2132,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-secret"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "rustix",
  "tempfile",
@@ -2143,7 +2142,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-server"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "chrono",
  "http",
@@ -2162,7 +2161,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-transport"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -3131,9 +3130,9 @@ dependencies = [
 
 [[package]]
 name = "russh"
-version = "0.65.0"
+version = "0.65.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bb77a4b259312b2abbc541bca1c13cb4e9b61c560a7fd894068c3b92e0c9dc3"
+checksum = "94be3d86c71b9ed220a675c405e35c7a02565a009bf8da2e9cc13a700320a5c5"
 dependencies = [
  "aes",
  "aws-lc-rs",
@@ -3283,9 +3282,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-pki-types"
-version = "1.15.1"
+version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
+checksum = "102f35f7de7b06d8c61f1cff6592f5253e0dea431c74867aad5dfd70f44663fb"
 dependencies = [
  "zeroize",
 ]
@@ -4364,9 +4363,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.29.0"
+version = "1.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
+checksum = "bed99139f7dac9b5cfe5f17be4d66dc7079a34dee1d74bcc77217119240e267c"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",

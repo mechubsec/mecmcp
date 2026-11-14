@@ -478,7 +478,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1200,7 +1200,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "mecmcp-audit"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1229,7 +1229,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-auth"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "arc-swap",
  "chrono",
@@ -1265,7 +1265,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-http"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "mecmcp-openapi",
  "mecmcp-secret",
@@ -1280,7 +1280,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-oidc"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "async-trait",
  "jsonwebtoken",
@@ -1296,14 +1296,14 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-openapi"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "mecmcp-redact"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "hmac",
  "quick-xml",
@@ -1315,7 +1315,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-secret"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "rustix",
  "thiserror",
@@ -1324,7 +1324,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-transport"
-version = "0.33.1"
+version = "0.33.2"
 dependencies = [
  "axum",
  "axum-server",
@@ -1848,15 +1848,15 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.5"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags",
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1911,7 +1911,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2267,7 +2267,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2750,7 +2750,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
