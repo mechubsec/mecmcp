@@ -123,7 +123,7 @@ required-features = ["oauth-resource", "test-util"]
 # dependency of this crate — only mecmcp-oidc links a JWT/JWKS verifier in
 # production; this crate forwards an already-verified `VerifiedClaims`.
 aws-lc-rs    = "1"
-jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+jsonwebtoken = { version = "12", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 pem          = "4"
 # Test-only: `test-util` exposes audit capture helpers. It must NOT be enabled
 # on the normal dependency above — that ships test scaffolding in production

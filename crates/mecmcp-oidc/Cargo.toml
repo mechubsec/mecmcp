@@ -31,7 +31,7 @@ subtle      = { workspace = true }
 # acceptable choice here even though it would avoid a native build dependency.
 # aws-lc-rs is already in this workspace's dependency graph (mecmcp-transport
 # pulls it in via russh), so this does not add new build tooling either.
-jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+jsonwebtoken = { version = "12", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 thiserror    = { workspace = true }
