@@ -366,7 +366,7 @@ async fn a_symmetric_algorithm_confusion_attempt_is_refused() {
     let forged = jsonwebtoken::encode(
         &header,
         &claims(json!(JUNOS), "junos:read"),
-        &EncodingKey::from_secret(b"anything-an-attacker-can-compute"),
+        &EncodingKey::from_secret(b"anything-an-attacker-can-compute").expect("HMAC key"),
     )
     .expect("sign");
     assert_eq!(

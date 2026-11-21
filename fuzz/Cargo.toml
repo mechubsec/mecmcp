@@ -31,7 +31,7 @@ ipnet = "2"
 # Same backend choice as mecmcp-oidc itself (see that crate's Cargo.toml):
 # aws_lc_rs, never the rust_crypto feature, because that pulls in the
 # RustCrypto `rsa` crate and RUSTSEC-2023-0071.
-jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+jsonwebtoken = { version = "12", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 
 [dependencies.mecmcp-oidc]
 path = "../crates/mecmcp-oidc"
