@@ -670,7 +670,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_a_symmetric_oct_jwk_used_to_forge_hs256() {
         let secret = b"jwks-are-public-do-not-trust-these-bytes-as-a-hmac-secret";
-        let encoding_key = EncodingKey::from_secret(secret);
+        let encoding_key = EncodingKey::from_secret(secret).expect("HMAC key");
         let mut jwk = Jwk::from_encoding_key(&encoding_key, jsonwebtoken::Algorithm::HS256)
             .expect("oct JWK derivation");
         jwk.common.key_id = Some(KID.to_owned());
