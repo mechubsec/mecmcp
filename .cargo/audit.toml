@@ -1,0 +1,7 @@
+[advisories]
+ignore = [
+    # chrono is unmaintained (no fix exists); required non-optionally by rmcp and oauth2.
+    # Mirrors the deny.toml ignore: rustsec/audit-check fails on push when any warning
+    # remains, because security.yml grants no checks: write.
+    "RUSTSEC-2026-0543",
+]
