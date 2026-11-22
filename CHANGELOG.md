@@ -27,6 +27,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [0.34.0] - 2026-11-21
+
+### Security
+
+- **deps**: russh 0.65.1 for GHSA-9264-jvgf-6w2f and GHSA-736f-c93q-9fwx (#627).
+  `kex_done` ran the shared-secret callback before server host-key verification
+  (>=0.55, <0.65.1), and `try_sign` could sign after an agent lock (0.65.0). The
+  workspace floor rises to `>=0.65.1`, because the bound, not the lockfile, is
+  what protects a consumer that runs `cargo update`. Now 0.65.2 (#630).
+- **deps**: rustix 1.1.6 for RUSTSEC-2026-0486 (#625). Lockfile only, in
+  `fuzz/Cargo.lock`.
+
+### Changed
+
+- **mecmcp-oidc**: jsonwebtoken 11.1.0 -> 12.0.0 (#631). **Breaking** for code
+  that implements `KeySource` or calls `JwksCache::keys`: both use
+  `jsonwebtoken::jwk::JwkSet`, so a consumer must move its own `jsonwebtoken`
+  to 12 together with this release. A consumer still on 11 resolves two
+  versions and fails with E0053 on `fetch_jwks` (rustjunosmcp#661). Verification
+  behaviour is unchanged. jsonwebtoken 12 rejects an empty HMAC key, so
+  `EncodingKey::from_secret` is now fallible; only test code called it here.
+
+### Dependencies
+
+- rmcp 3.9.0 -> 3.10.0, ureq 3.5.1 -> 3.5.2, clap 4.6.7 -> 4.6.8,
+  rustls-webpki 0.103.16 -> 0.103.17, rand 0.10.3 -> 0.10.4, trybuild
+  1.0.122 -> 1.0.125 (#630); arc-swap 1.9.3 -> 1.9.5, uuid 1.29.0 -> 1.29.2,
+  rustls-pki-types 1.15.1 -> 1.16.0 (#628).
+
+### CI
+
+- RUSTSEC-2026-0543 (chrono unmaintained) is ignored in `deny.toml` (#632) and
+  `.cargo/audit.toml` (#633). chrono cannot be dropped: rmcp and oauth2 require
+  it. Without the second file, `rustsec/audit-check` failed every push to
+  `main` while pull requests stayed green.
+- `allowed_signers` now lists the ArmyGreen release-signing key, so
+  `git verify-tag` verifies v0.33.0 onward offline (#626).
+
 ## [0.33.2] - 2026-11-13
 
 ### Fixed
