@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use mecmcp_client::{ClientError, McpClient};
+use mecmcp_client::{ClientError, McpClient, ProtocolMode};
 use mecmcp_secret::OutboundSecret;
 use serde_json::{Map, Value, json};
 use support::{
@@ -450,4 +450,71 @@ async fn concurrent_calls_use_distinct_jsonrpc_ids() {
     ids.sort();
     ids.dedup();
     assert_eq!(ids.len(), 8, "JSON-RPC ids collided");
+}
+
+#[tokio::test]
+async fn stateless_mode_never_falls_back_to_initialize() {
+    let handler: support::Handler = Arc::new(|request: &Seen| {
+        if let Some(reply) = non_rpc(request) {
+            return reply;
+        }
+        match request.rpc_method() {
+            "server/discover" => Reply::Json(
+                json!({"jsonrpc":"2.0","id":request.body["id"],"error":{"code":-32601,"message":"Method not found"}}),
+            ),
+            "initialize" => Reply::JsonWith(
+                "mcp-session-id: sess-legacy-1".to_owned(),
+                result_for(
+                    request,
+                    json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"stub","version":"0"}}),
+                ),
+            ),
+            _ => Reply::Json(result_for(request, echo_result("hi"))),
+        }
+    });
+    let stub = spawn(handler).await;
+    let mut config = config_for(&stub.url(), &stub.cert_pem);
+    config.protocol = ProtocolMode::Stateless2026;
+    assert!(
+        McpClient::connect(config).await.is_err(),
+        "a legacy-only server must be refused"
+    );
+    assert!(
+        stub.requests()
+            .iter()
+            .all(|r| r.rpc_method() != "initialize"),
+        "Stateless2026 fell back to initialize"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_oversize_and_rpc_error_keep_their_own_errors() {
+    let handler: support::Handler = Arc::new(|request: &Seen| match request.body["params"]["name"]
+        .as_str()
+    {
+        Some("big") => Reply::Flood { chunks: 1024 },
+        Some("boom") => Reply::Delayed(
+            Duration::from_millis(100),
+            Box::new(Reply::Json(
+                json!({"jsonrpc":"2.0","id":request.body["id"],"error":{"code":-32000,"message":"boom"}}),
+            )),
+        ),
+        _ => modern_handler(false)(request),
+    });
+    let stub = spawn(handler).await;
+    let mut config = config_for(&stub.url(), &stub.cert_pem);
+    config.max_response_bytes = 1024 * 1024;
+    let client = McpClient::connect(config).await.unwrap();
+    let (big, boom) = tokio::join!(
+        client.call_tool("big", Map::new()),
+        client.call_tool("boom", Map::new())
+    );
+    assert!(
+        matches!(big, Err(ClientError::ResponseTooLarge { .. })),
+        "{big:?}"
+    );
+    assert!(
+        matches!(boom, Err(ClientError::Rpc { code: -32000, .. })),
+        "{boom:?}"
+    );
 }

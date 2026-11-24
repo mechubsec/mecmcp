@@ -15,7 +15,7 @@ use rmcp::transport::streamable_http_client::{
 use rmcp::{ClientHandler, RoleClient, ServiceError};
 use serde_json::{Map, Value};
 
-use crate::http::{ASSERTION_SLOT_KEY, AssertionClient, build_reqwest_client};
+use crate::http::{AssertionClient, CALL_SLOT_KEY, build_reqwest_client};
 use crate::{ClientConfig, ClientError, ProtocolMode, UntrustedText};
 
 /// The result of a tool call.
@@ -71,15 +71,6 @@ pub struct McpClient {
     service: RunningService<RoleClient, Identity>,
     http: AssertionClient,
     config: ClientConfig,
-}
-
-/// Removes an assertion slot when the call ends, however it ends.
-struct SlotGuard<'a>(&'a AssertionClient, String);
-
-impl Drop for SlotGuard<'_> {
-    fn drop(&mut self) {
-        self.0.release(&self.1);
-    }
 }
 
 impl McpClient {
@@ -189,20 +180,15 @@ impl McpClient {
         assertion: Option<&OutboundSecret>,
     ) -> Result<ToolOutput, ClientError> {
         let operation = format!("tools/call {name}");
+        let slot = self.http.register(assertion)?;
+        let mut meta = MetaObject::new();
+        meta.0.insert(
+            CALL_SLOT_KEY.to_owned(),
+            Value::String(slot.id().to_owned()),
+        );
         let mut params = CallToolRequestParams::new(name.to_owned());
         params.arguments = Some(args);
-        let _guard = match assertion {
-            None => None,
-            Some(secret) => {
-                let slot = self.http.register(secret)?;
-                let mut meta = MetaObject::new();
-                meta.0
-                    .insert(ASSERTION_SLOT_KEY.to_owned(), Value::String(slot.clone()));
-                params.meta = Some(RequestMetaObject(meta));
-                Some(SlotGuard(&self.http, slot))
-            }
-        };
-        let oversize_before = self.http.oversize_events();
+        params.meta = Some(RequestMetaObject(meta));
         let pending = self.service.call_tool_once(params);
         let outcome = match tokio::time::timeout(self.config.request_timeout, pending).await {
             Err(_) => return Err(ClientError::Timeout { operation }),
@@ -213,15 +199,12 @@ impl McpClient {
             Ok(_) => Err(ClientError::Protocol(
                 "unsupported tools/call result type".to_owned(),
             )),
-            Err(error) => {
-                let oversize = self.http.oversize_events() > oversize_before;
-                Err(map_service(
-                    &error,
-                    &operation,
-                    self.config.max_response_bytes,
-                    oversize,
-                ))
-            }
+            Err(error) => Err(map_service(
+                &error,
+                &operation,
+                self.config.max_response_bytes,
+                slot.saw_oversize(),
+            )),
         }
     }
 }

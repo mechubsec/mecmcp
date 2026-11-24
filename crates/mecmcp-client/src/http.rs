@@ -1,7 +1,7 @@
 //! The reqwest client and the per-call assertion wrapper around it.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::stream::{BoxStream, StreamExt};
@@ -21,9 +21,9 @@ use crate::{ClientConfig, ClientError};
 /// pins the two together.
 pub const APPROVER_ASSERTION_HEADER: &str = "Mecmcp-Approver-Assertion";
 
-/// Private `_meta` key marking which `tools/call` owns an assertion. It selects
+/// Private `_meta` key naming the per-call slot a `tools/call` owns. It selects
 /// a slot in [`AssertionClient`] and is stripped before the request is sent.
-pub(crate) const ASSERTION_SLOT_KEY: &str = "mecmcp-client/assertion-slot";
+pub(crate) const CALL_SLOT_KEY: &str = "mecmcp-client/assertion-slot";
 
 /// Build the HTTP client: https only, no redirects, no proxy, HTTP/1.1; a
 /// non-empty `ca_pem` replaces the root store (mirrors `mecmcp-http`).
@@ -62,20 +62,64 @@ pub(crate) fn build_reqwest_client(config: &ClientConfig) -> Result<reqwest::Cli
         .map_err(|_| ClientError::Tls("client build failed".to_owned()))
 }
 
-/// `reqwest::Client` plus a table of per-call assertions.
+/// One in-flight `tools/call`: its optional assertion and its oversize flag.
+struct Slot {
+    header: Option<HeaderValue>,
+    oversize: Arc<AtomicBool>,
+}
+
+/// Handle to a registered slot. Dropping it frees the slot, however the call ends.
+pub(crate) struct SlotGuard {
+    client: AssertionClient,
+    id: String,
+    oversize: Arc<AtomicBool>,
+}
+
+impl SlotGuard {
+    /// The id to place in the request's `params._meta`.
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Whether rmcp refused an oversize SSE event for *this* call's request.
+    pub(crate) fn saw_oversize(&self) -> bool {
+        self.oversize.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        self.client.lock().remove(&self.id);
+    }
+}
+
+/// Whether `error` is rmcp's "SSE event exceeded the maximum size" refusal.
+/// rmcp keeps the error type private, so this matches its message; a unit test
+/// pins the wording.
+pub(crate) fn is_oversize_error(error: &SseError) -> bool {
+    error.to_string().contains("exceeded the maximum size of")
+}
+
+fn slot_error() -> StreamableHttpError<reqwest::Error> {
+    StreamableHttpError::Io(std::io::Error::other(
+        "cannot attach per-call state to request",
+    ))
+}
+
+/// `reqwest::Client` plus a table of per-call slots.
 ///
-/// Concurrency: a call that carries an assertion puts a unique slot id in its
-/// own `params._meta`; only a POST whose body holds a registered id gets the
-/// header, and the id is removed from the body. Plain calls carry no id, so no
-/// ordering between concurrent calls can move the header to the wrong request,
-/// and `initialize`/`discover`/`tools/list` never carry one.
+/// Every `tools/call` registers a slot and puts its unique id in its own
+/// `params._meta`. The wrapper finds the id in the POST body, strips it, attaches
+/// the slot's assertion header (if any) to that request only, and watches that
+/// request's SSE stream so an oversize event is recorded on that slot alone.
+/// Because the id travels with the request body, no ordering between concurrent
+/// calls can move the header or the oversize verdict to another call, and
+/// `initialize`/`discover`/`tools/list` never carry an id.
 #[derive(Clone)]
 pub(crate) struct AssertionClient {
     inner: reqwest::Client,
-    slots: Arc<Mutex<HashMap<String, HeaderValue>>>,
+    slots: Arc<Mutex<HashMap<String, Slot>>>,
     next_slot: Arc<AtomicU64>,
-    /// Count of SSE events refused for exceeding the size cap.
-    oversize_events: Arc<AtomicU64>,
 }
 
 impl AssertionClient {
@@ -84,76 +128,99 @@ impl AssertionClient {
             inner,
             slots: Arc::default(),
             next_slot: Arc::default(),
-            oversize_events: Arc::default(),
         }
     }
 
-    /// Register `assertion`; returns the slot id to put in the request `_meta`.
-    pub(crate) fn register(&self, assertion: &OutboundSecret) -> Result<String, ClientError> {
-        let mut value = HeaderValue::from_str(assertion.expose())
-            .map_err(|_| ClientError::Config { field: "assertion" })?;
-        value.set_sensitive(true);
-        let slot = self.next_slot.fetch_add(1, Ordering::Relaxed).to_string();
-        self.lock().insert(slot.clone(), value);
-        Ok(slot)
+    /// Register a call, optionally with an approver assertion.
+    pub(crate) fn register(
+        &self,
+        assertion: Option<&OutboundSecret>,
+    ) -> Result<SlotGuard, ClientError> {
+        let header = assertion
+            .map(|secret| {
+                let mut value = HeaderValue::from_str(secret.expose())
+                    .map_err(|_| ClientError::Config { field: "assertion" })?;
+                value.set_sensitive(true);
+                Ok(value)
+            })
+            .transpose()?;
+        let id = self.next_slot.fetch_add(1, Ordering::Relaxed).to_string();
+        let oversize = Arc::new(AtomicBool::new(false));
+        self.lock().insert(
+            id.clone(),
+            Slot {
+                header,
+                oversize: oversize.clone(),
+            },
+        );
+        Ok(SlotGuard {
+            client: self.clone(),
+            id,
+            oversize,
+        })
     }
 
-    /// Drop a slot once its call has finished (success, error or timeout).
-    pub(crate) fn release(&self, slot: &str) {
-        self.lock().remove(slot);
-    }
-
-    /// How many oversize SSE events have been refused so far.
-    pub(crate) fn oversize_events(&self) -> u64 {
-        self.oversize_events.load(Ordering::Relaxed)
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, HeaderValue>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Slot>> {
         self.slots
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Strip the slot marker from `message` and add the header it selects.
+    /// Strip the slot marker from `message`, add that slot's header, and return
+    /// the slot's oversize flag. A message without a marker passes untouched.
+    #[allow(clippy::type_complexity)] // (message, flag) pair, used twice
     fn apply_slot(
         &self,
         message: ClientJsonRpcMessage,
         headers: &mut HashMap<HeaderName, HeaderValue>,
-    ) -> ClientJsonRpcMessage {
-        let Ok(mut json) = serde_json::to_value(&message) else {
-            return message;
-        };
+    ) -> Result<(ClientJsonRpcMessage, Option<Arc<AtomicBool>>), StreamableHttpError<reqwest::Error>>
+    {
+        let mut json = serde_json::to_value(&message).map_err(|_| slot_error())?;
         let Some(meta) = json
             .pointer_mut("/params/_meta")
             .and_then(Value::as_object_mut)
         else {
-            return message;
+            return Ok((message, None));
         };
-        let Some(Value::String(slot)) = meta.remove(ASSERTION_SLOT_KEY) else {
-            return message;
+        let Some(Value::String(id)) = meta.remove(CALL_SLOT_KEY) else {
+            return Ok((message, None));
         };
-        let value = self.lock().get(&slot).cloned();
-        if let Some(value) = value {
-            headers.insert(HeaderName::from_static("mecmcp-approver-assertion"), value);
+        let (header, oversize) = {
+            let slots = self.lock();
+            let slot = slots.get(&id);
+            (
+                slot.and_then(|slot| slot.header.clone()),
+                slot.map(|slot| slot.oversize.clone()),
+            )
+        };
+        if let Some(header) = header {
+            headers.insert(HeaderName::from_static("mecmcp-approver-assertion"), header);
         }
-        serde_json::from_value(json).unwrap_or(message)
+        // The marker must never leave the process: if the stripped body cannot
+        // be rebuilt, fail the request rather than send it as it was.
+        let rebuilt = serde_json::from_value(json).map_err(|_| slot_error())?;
+        Ok((rebuilt, oversize))
     }
+}
 
-    fn watch(&self, response: StreamableHttpPostResponse) -> StreamableHttpPostResponse {
-        let StreamableHttpPostResponse::Sse(stream, session) = response else {
-            return response;
-        };
-        let counter = self.oversize_events.clone();
-        let stream = stream
-            .inspect(move |item| {
-                if let Err(error) = item
-                    && error.to_string().contains("maximum size of")
-                {
-                    counter.fetch_add(1, Ordering::Relaxed);
-                }
-            })
-            .boxed();
-        StreamableHttpPostResponse::Sse(stream, session)
+fn watch(
+    response: StreamableHttpPostResponse,
+    oversize: Option<Arc<AtomicBool>>,
+) -> StreamableHttpPostResponse {
+    match (response, oversize) {
+        (StreamableHttpPostResponse::Sse(stream, session), Some(flag)) => {
+            let stream = stream
+                .inspect(move |item| {
+                    if let Err(error) = item
+                        && is_oversize_error(error)
+                    {
+                        flag.store(true, Ordering::Relaxed);
+                    }
+                })
+                .boxed();
+            StreamableHttpPostResponse::Sse(stream, session)
+        }
+        (response, _) => response,
     }
 }
 
@@ -168,12 +235,12 @@ impl StreamableHttpClient for AssertionClient {
         auth_header: Option<String>,
         mut custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<StreamableHttpPostResponse, StreamableHttpError<Self::Error>> {
-        let message = self.apply_slot(message, &mut custom_headers);
+        let (message, oversize) = self.apply_slot(message, &mut custom_headers)?;
         let response = self
             .inner
             .post_message(uri, message, session_id, auth_header, custom_headers)
             .await?;
-        Ok(self.watch(response))
+        Ok(watch(response, oversize))
     }
 
     async fn post_message_with_max_sse_event_size(
@@ -185,7 +252,7 @@ impl StreamableHttpClient for AssertionClient {
         mut custom_headers: HashMap<HeaderName, HeaderValue>,
         max_sse_event_size: usize,
     ) -> Result<StreamableHttpPostResponse, StreamableHttpError<Self::Error>> {
-        let message = self.apply_slot(message, &mut custom_headers);
+        let (message, oversize) = self.apply_slot(message, &mut custom_headers)?;
         let response = self
             .inner
             .post_message_with_max_sse_event_size(
@@ -197,7 +264,7 @@ impl StreamableHttpClient for AssertionClient {
                 max_sse_event_size,
             )
             .await?;
-        Ok(self.watch(response))
+        Ok(watch(response, oversize))
     }
 
     async fn delete_session(
@@ -244,5 +311,50 @@ impl StreamableHttpClient for AssertionClient {
                 max_sse_event_size,
             )
             .await
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // tests
+mod tests {
+    use super::*;
+
+    /// rmcp 3.10 words its oversize refusal exactly like this
+    /// (`BoundedSseStreamError::EventTooLarge`); if a bump changes it, this and
+    /// the `response_over_cap_is_rejected_while_streaming` integration test fail.
+    #[test]
+    fn recognises_rmcps_oversize_wording() {
+        let error = SseError::Body(Box::new(std::io::Error::other(
+            "SSE event exceeded the maximum size of 16 bytes",
+        )));
+        assert!(is_oversize_error(&error));
+        let other = SseError::Body(Box::new(std::io::Error::other("connection reset")));
+        assert!(!is_oversize_error(&other));
+    }
+
+    #[tokio::test]
+    async fn oversize_is_attributed_to_the_slot_whose_stream_failed() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let client = AssertionClient::new(reqwest::Client::new());
+        let (first, second) = (
+            client.register(None).unwrap(),
+            client.register(None).unwrap(),
+        );
+        let failing = futures::stream::iter(vec![Err(SseError::Body(Box::new(
+            std::io::Error::other("SSE event exceeded the maximum size of 16 bytes"),
+        )))])
+        .boxed();
+        let flag = first.oversize.clone();
+        let StreamableHttpPostResponse::Sse(mut stream, _) =
+            watch(StreamableHttpPostResponse::Sse(failing, None), Some(flag))
+        else {
+            panic!("watch must keep an SSE response an SSE response");
+        };
+        while stream.next().await.is_some() {}
+        assert!(first.saw_oversize());
+        assert!(
+            !second.saw_oversize(),
+            "oversize leaked onto an unrelated call"
+        );
     }
 }
