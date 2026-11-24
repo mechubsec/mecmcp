@@ -236,3 +236,42 @@ async fn call_tool_as_missing_structured_is_decode_error() {
         .unwrap_err();
     assert!(matches!(error, ClientError::Decode), "got {error:?}");
 }
+
+#[tokio::test]
+async fn cumulative_tool_bytes_over_the_cap_is_response_too_large() {
+    // each page is ~400 KB of JSON (under the 1 MiB cap); three exceed it
+    let handler: Handler = Arc::new(|request: &Seen| {
+        if request.rpc_method() != "tools/list" {
+            return modern_handler(false)(request);
+        }
+        let index = request.body["params"]["cursor"]
+            .as_str()
+            .and_then(|c| c.strip_prefix('p'))
+            .and_then(|n| n.parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut big = tool(&format!("t{index}"));
+        big["description"] = json!("x".repeat(400_000));
+        Reply::Json(result_for(
+            request,
+            json!({"tools": [big], "nextCursor": format!("p{}", index + 1)}),
+        ))
+    });
+    let stub = spawn(handler).await;
+    let mut config = config_for(&stub.url(), &stub.cert_pem);
+    config.max_response_bytes = 1024 * 1024;
+    let client = McpClient::connect(config).await.unwrap();
+    let outcome = client.list_tools().await;
+    assert!(
+        matches!(
+            outcome,
+            Err(ClientError::ResponseTooLarge { limit: 1_048_576 })
+        ),
+        "{outcome:?}"
+    );
+    let pages = stub
+        .requests()
+        .iter()
+        .filter(|r| r.rpc_method() == "tools/list")
+        .count();
+    assert_eq!(pages, 3, "must stop at the page that crosses the cap");
+}

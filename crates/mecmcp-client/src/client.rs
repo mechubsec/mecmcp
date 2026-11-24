@@ -184,16 +184,32 @@ impl McpClient {
     /// Each page has its own `request_timeout`. Nothing is cached; the
     /// `ttlMs`/`cacheScope` fields of a 2026-07-28 reply are parsed and ignored.
     ///
+    /// `max_response_bytes` also bounds the *cumulative* size of all tools
+    /// returned (measured as their JSON serialization), so many cursored pages
+    /// cannot add up to far more than the cap. A single `application/json` page
+    /// is still bounded only by rmcp's fixed 16 MiB.
+    ///
     /// # Errors
     /// [`ClientError::Protocol`] when the server repeats a cursor or still has a
-    /// next page after `max_tool_pages` pages; otherwise as
+    /// next page after `max_tool_pages` pages; [`ClientError::ResponseTooLarge`]
+    /// when the tools received so far, re-serialized, exceed `max_response_bytes`
+    /// in total; otherwise as
     /// [`call_tool`](Self::call_tool).
     pub async fn list_tools(&self) -> Result<Vec<Tool>, ClientError> {
         let mut tools = Vec::new();
         let mut seen_cursors = HashSet::new();
         let mut cursor: Option<String> = None;
+        let mut total_bytes = 0_usize;
         for _ in 0..self.config.max_tool_pages {
             let page = self.list_tools_page(cursor.take()).await?;
+            let page_bytes =
+                serde_json::to_vec(&page.tools).map_or(usize::MAX, |bytes| bytes.len());
+            total_bytes = total_bytes.saturating_add(page_bytes);
+            if total_bytes > self.config.max_response_bytes {
+                return Err(ClientError::ResponseTooLarge {
+                    limit: self.config.max_response_bytes,
+                });
+            }
             tools.extend(page.tools);
             let Some(next) = page.next_cursor else {
                 return Ok(tools);

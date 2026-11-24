@@ -223,7 +223,14 @@ async fn write_reply<S: AsyncWriteExt + Unpin>(
 ) {
     let reply = match reply {
         Reply::Gated(gate, inner) => {
-            let _ = tokio::time::timeout(Duration::from_secs(5), gate.notified()).await;
+            // Fail closed: if the gate never opens, drop the connection so the
+            // held call errors and the test fails, rather than replying anyway.
+            if tokio::time::timeout(Duration::from_secs(5), gate.notified())
+                .await
+                .is_err()
+            {
+                return;
+            }
             *inner
         }
         Reply::Delayed(delay, inner) => {
