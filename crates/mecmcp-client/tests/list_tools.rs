@@ -275,3 +275,39 @@ async fn cumulative_tool_bytes_over_the_cap_is_response_too_large() {
         .count();
     assert_eq!(pages, 3, "must stop at the page that crosses the cap");
 }
+
+#[tokio::test]
+async fn large_cursors_count_toward_the_budget() {
+    // empty pages, each with a distinct ~400 KB cursor: only the cursors add up
+    let handler: Handler = Arc::new(|request: &Seen| {
+        if request.rpc_method() != "tools/list" {
+            return modern_handler(false)(request);
+        }
+        let index = request.body["params"]["cursor"]
+            .as_str()
+            .map_or(0, |c| c.len() % 7 + c.matches('p').count());
+        let cursor = format!("p{index}{}", "c".repeat(400_000));
+        Reply::Json(result_for(
+            request,
+            json!({"tools": [], "nextCursor": cursor}),
+        ))
+    });
+    let stub = spawn(handler).await;
+    let mut config = config_for(&stub.url(), &stub.cert_pem);
+    config.max_response_bytes = 1024 * 1024;
+    let client = McpClient::connect(config).await.unwrap();
+    let outcome = client.list_tools().await;
+    assert!(
+        matches!(
+            outcome,
+            Err(ClientError::ResponseTooLarge { limit: 1_048_576 })
+        ),
+        "{outcome:?}"
+    );
+    let pages = stub
+        .requests()
+        .iter()
+        .filter(|r| r.rpc_method() == "tools/list")
+        .count();
+    assert_eq!(pages, 3);
+}

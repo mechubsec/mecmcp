@@ -185,7 +185,8 @@ impl McpClient {
     /// `ttlMs`/`cacheScope` fields of a 2026-07-28 reply are parsed and ignored.
     ///
     /// `max_response_bytes` also bounds the *cumulative* size of all tools
-    /// returned (measured as their JSON serialization), so many cursored pages
+    /// returned (measured as their JSON serialization, plus the byte length of every
+    /// `nextCursor` retained), so many cursored pages
     /// cannot add up to far more than the cap. A single `application/json` page
     /// is still bounded only by rmcp's fixed 16 MiB.
     ///
@@ -214,6 +215,13 @@ impl McpClient {
             let Some(next) = page.next_cursor else {
                 return Ok(tools);
             };
+            // Retained cursors (kept for loop detection) count toward the same budget.
+            total_bytes = total_bytes.saturating_add(next.len());
+            if total_bytes > self.config.max_response_bytes {
+                return Err(ClientError::ResponseTooLarge {
+                    limit: self.config.max_response_bytes,
+                });
+            }
             if !seen_cursors.insert(next.clone()) {
                 return Err(ClientError::Protocol(
                     "tools/list repeated a cursor".to_owned(),
