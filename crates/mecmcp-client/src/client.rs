@@ -215,18 +215,20 @@ impl McpClient {
             let Some(next) = page.next_cursor else {
                 return Ok(tools);
             };
-            if !seen_cursors.insert(next.clone()) {
+            if seen_cursors.contains(&next) {
                 return Err(ClientError::Protocol(
                     "tools/list repeated a cursor".to_owned(),
                 ));
             }
-            // A repeat is rejected above; only a new, retained cursor is charged.
+            // A repeat is rejected above; only a new cursor is charged, and only an
+            // accepted one is copied into `seen_cursors`.
             total_bytes = total_bytes.saturating_add(next.len());
             if total_bytes > self.config.max_response_bytes {
                 return Err(ClientError::ResponseTooLarge {
                     limit: self.config.max_response_bytes,
                 });
             }
+            seen_cursors.insert(next.clone());
             cursor = Some(next);
         }
         Err(ClientError::Protocol(format!(
