@@ -283,10 +283,11 @@ async fn large_cursors_count_toward_the_budget() {
         if request.rpc_method() != "tools/list" {
             return modern_handler(false)(request);
         }
+        // cursors are `NNNN` + padding: page N answers with cursor N+1, all distinct
         let index = request.body["params"]["cursor"]
             .as_str()
-            .map_or(0, |c| c.len() % 7 + c.matches('p').count());
-        let cursor = format!("p{index}{}", "c".repeat(400_000));
+            .map_or(0, |c| c[..4].parse::<usize>().unwrap() + 1);
+        let cursor = format!("{:04}{}", index + 1, "c".repeat(400_000));
         Reply::Json(result_for(
             request,
             json!({"tools": [], "nextCursor": cursor}),
@@ -310,4 +311,34 @@ async fn large_cursors_count_toward_the_budget() {
         .filter(|r| r.rpc_method() == "tools/list")
         .count();
     assert_eq!(pages, 3);
+}
+
+#[tokio::test]
+async fn repeated_cursor_is_a_protocol_error_not_a_size_error() {
+    // two distinct ~400 KB cursors, then the second again: 1.2 MB charged if the
+    // duplicate were counted, but the repeat must be reported first
+    let handler: Handler = Arc::new(|request: &Seen| {
+        if request.rpc_method() != "tools/list" {
+            return modern_handler(false)(request);
+        }
+        let cursor = match request.body["params"]["cursor"].as_str() {
+            None => format!("A{}", "c".repeat(400_000)),
+            Some(c) if c.starts_with('A') => format!("B{}", "c".repeat(400_000)),
+            Some(c) => c.to_owned(),
+        };
+        Reply::Json(result_for(
+            request,
+            json!({"tools": [], "nextCursor": cursor}),
+        ))
+    });
+    let stub = spawn(handler).await;
+    let mut config = config_for(&stub.url(), &stub.cert_pem);
+    config.max_response_bytes = 1024 * 1024;
+    let client = McpClient::connect(config).await.unwrap();
+    match client.list_tools().await {
+        Err(ClientError::Protocol(message)) => {
+            assert_eq!(message, "tools/list repeated a cursor");
+        }
+        other => panic!("got {other:?}"),
+    }
 }
