@@ -32,9 +32,10 @@ pub async fn run(args: &cli::Args) -> Result<(), ApproveError> {
     // Every URL this process dereferences directly carries credentials in
     // flight (the bearer token, the approver assertion, the OIDC client
     // secret, the authorization code) -- check both before doing anything
-    // else. Endpoints read back out of discovery get the same check inside
-    // `oidc::discover`.
-    scheme::require_secure("--server-url", &args.server_url, args.allow_insecure_http)?;
+    // else, in particular before the interactive login. `--server-url` has no
+    // insecure escape hatch. Endpoints read back out of discovery get the
+    // issuer's check inside `oidc::discover`.
+    scheme::require_https_server_url(&args.server_url)?;
     scheme::require_secure("--oidc-issuer", &args.oidc_issuer, args.allow_insecure_http)?;
 
     // Installed once, process-wide, before any `reqwest::Client` is built --
@@ -67,17 +68,77 @@ pub async fn run(args: &cli::Args) -> Result<(), ApproveError> {
         oidc::login_pkce(&http, &login_config).await?
     };
 
-    let bearer_token = match cli::resolve_static_bearer_token(args)? {
-        Some(token) => token,
-        None => BearerToken::from_secret(OutboundSecret::new_unchecked(login.access_token.clone())),
-    };
+    let (bearer_token, assertion) = credentials(cli::resolve_static_bearer_token(args)?, &login);
 
     review_and_approve(
         args,
         client_config(&args.server_url, bearer_token)?,
-        &login.id_token,
+        assertion.expose(),
     )
     .await
+}
+
+/// Route the login's tokens: the bearer is the static token when one was
+/// given, else the OIDC `access_token`; the approver assertion is always the
+/// OIDC `id_token`, never the access token.
+fn credentials(
+    static_bearer: Option<BearerToken>,
+    login: &oidc::LoginResult,
+) -> (BearerToken, OutboundSecret) {
+    let bearer = static_bearer.unwrap_or_else(|| {
+        BearerToken::from_secret(OutboundSecret::new_unchecked(login.access_token.clone()))
+    });
+    (
+        bearer,
+        OutboundSecret::new_unchecked(login.id_token.clone()),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `run` must refuse a non-https `--server-url` before any login/discovery
+    /// request: the issuer here would fail with `Discovery` if it were reached.
+    #[tokio::test]
+    async fn http_server_url_is_refused_before_login() {
+        use clap::Parser;
+        let args = cli::Args::parse_from([
+            "mecmcp-approve",
+            "--server-url=http://127.0.0.1:1/mcp",
+            "--approve-tool=approve",
+            "--oidc-issuer=https://127.0.0.1:1",
+            "--oidc-client-id=cid",
+            "--allow-insecure-http",
+        ]);
+        let result = run(&args).await;
+        assert!(matches!(result, Err(ApproveError::ServerUrlNotHttps)));
+    }
+
+    fn login() -> oidc::LoginResult {
+        oidc::LoginResult {
+            id_token: "the-id-token".to_owned(),
+            access_token: "the-access-token".to_owned(),
+        }
+    }
+
+    fn static_token() -> BearerToken {
+        BearerToken::from_secret(OutboundSecret::new_unchecked("the-static-token".to_owned()))
+    }
+
+    #[test]
+    fn static_bearer_wins_and_assertion_is_the_id_token() {
+        let (bearer, assertion) = credentials(Some(static_token()), &login());
+        assert_eq!(bearer.expose(), "the-static-token");
+        assert_eq!(assertion.expose(), "the-id-token");
+    }
+
+    #[test]
+    fn without_a_static_bearer_the_access_token_is_the_bearer() {
+        let (bearer, assertion) = credentials(None, &login());
+        assert_eq!(bearer.expose(), "the-access-token");
+        assert_eq!(assertion.expose(), "the-id-token");
+    }
 }
 
 /// The client configuration for `--server-url`: system roots (no CA flag),

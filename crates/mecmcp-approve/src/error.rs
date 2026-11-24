@@ -130,8 +130,8 @@ pub enum ApproveError {
     )]
     DigestUnverifiable,
 
-    /// A URL this CLI must dereference (`--server-url`, `--oidc-issuer`, or
-    /// an endpoint read from OIDC discovery) is neither `https` nor `http`
+    /// A URL this CLI must dereference (`--oidc-issuer` or an endpoint read
+    /// from OIDC discovery) is neither `https` nor `http`
     /// to a loopback host. Refusing rather than sending credentials,
     /// bearer tokens, or the approver assertion in cleartext.
     #[error(
@@ -143,6 +143,13 @@ pub enum ApproveError {
         /// The offending URL.
         url: String,
     },
+
+    /// `--server-url` is not an `https` URL. The MCP client refuses `http`
+    /// outright (loopback included), so `--allow-insecure-http` cannot help.
+    #[error(
+        "--server-url must be an https URL without credentials or a fragment; plain http is refused for the MCP server (--allow-insecure-http applies only to the OIDC issuer)"
+    )]
+    ServerUrlNotHttps,
 
     /// The human declined (or failed to correctly type) the confirmation
     /// prompt.
