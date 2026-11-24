@@ -9,25 +9,12 @@
 //! this CLI promises: that the preview the human confirms is the preview
 //! they actually saw.
 
-/// Escape every C0 control character except `\n`/`\t`, plus DEL and the C1
-/// range (U+0080-U+009F), as `\u{xx}`. Leaves `\n`, `\t`, and every other
-/// character -- including non-Latin Unicode -- untouched, so normal preview
-/// text is unaffected.
+use mecmcp_client::UntrustedText;
+
+/// Escape `input` for the terminal (see [`UntrustedText`] for the exact rules).
 #[must_use]
 pub(crate) fn terminal_safe(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        let code = u32::from(ch);
-        let is_c0_control = code < 0x20 && ch != '\n' && ch != '\t';
-        let is_del = ch == '\u{7f}';
-        let is_c1_control = (0x80..=0x9f).contains(&code);
-        if is_c0_control || is_del || is_c1_control {
-            out.push_str(&format!("\\u{{{code:02x}}}"));
-        } else {
-            out.push(ch);
-        }
-    }
-    out
+    UntrustedText::new(input).to_string()
 }
 
 #[cfg(test)]

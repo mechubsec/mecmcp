@@ -18,6 +18,8 @@ mod scheme;
 mod terminal;
 
 use error::ApproveError;
+use mecmcp_client::{BearerToken, ClientConfig, McpClient, ToolOutput};
+use mecmcp_secret::OutboundSecret;
 
 /// Run one approval end to end: OIDC login, preview, confirm, approve.
 ///
@@ -67,9 +69,50 @@ pub async fn run(args: &cli::Args) -> Result<(), ApproveError> {
 
     let bearer_token = match cli::resolve_static_bearer_token(args)? {
         Some(token) => token,
-        None => login.access_token.clone(),
+        None => BearerToken::from_secret(OutboundSecret::new_unchecked(login.access_token.clone())),
     };
 
+    review_and_approve(
+        args,
+        client_config(&args.server_url, bearer_token)?,
+        &login.id_token,
+    )
+    .await
+}
+
+/// The client configuration for `--server-url`: system roots (no CA flag),
+/// `https` only -- `mecmcp-client` refuses `http` even to loopback, so
+/// `--allow-insecure-http` no longer applies to the MCP server itself.
+///
+/// # Errors
+/// [`ApproveError::McpClient`] for a URL the client refuses.
+pub fn client_config(server_url: &str, token: BearerToken) -> Result<ClientConfig, ApproveError> {
+    ClientConfig::new(server_url, token).map_err(ApproveError::McpClient)
+}
+
+/// Everything after login: preview, confirm, approve, over one
+/// [`McpClient`]. The approver assertion rides on the approve call only.
+///
+/// # Errors
+/// As [`run`].
+pub async fn review_and_approve(
+    args: &cli::Args,
+    config: ClientConfig,
+    id_token: &str,
+) -> Result<(), ApproveError> {
+    let client = McpClient::connect(config)
+        .await
+        .map_err(ApproveError::McpClient)?;
+    let outcome = preview_and_approve(args, &client, id_token).await;
+    client.close().await;
+    outcome
+}
+
+async fn preview_and_approve(
+    args: &cli::Args,
+    client: &McpClient,
+    id_token: &str,
+) -> Result<(), ApproveError> {
     // The server-reported digest, once read from a preview reply, binding
     // the preview the human saw to the approve call about to be made below
     // (see `preview::check_expected_digest_arg` right before that call).
@@ -77,15 +120,11 @@ pub async fn run(args: &cli::Args) -> Result<(), ApproveError> {
 
     if let Some(preview_tool) = &args.preview_tool {
         let preview_args = cli::args_to_json(&args.preview_args);
-        let preview_result = mcp::call_tool(
-            &http,
-            &args.server_url,
-            &bearer_token,
-            None,
-            preview_tool,
-            preview_args,
-        )
-        .await?;
+        let preview_result = client
+            .call_tool(preview_tool, preview_args)
+            .await
+            .and_then(ToolOutput::into_result)
+            .map_err(|error| mcp::map_client_error(preview_tool, error))?;
 
         println!("--- {preview_tool} ---");
         println!(
@@ -108,15 +147,12 @@ pub async fn run(args: &cli::Args) -> Result<(), ApproveError> {
     preview::print_preview(&args.approve_tool, &approve_args, &request_digest);
     preview::confirm(args.yes)?;
 
-    let result = mcp::call_tool(
-        &http,
-        &args.server_url,
-        &bearer_token,
-        Some(&login.id_token),
-        &args.approve_tool,
-        approve_args,
-    )
-    .await?;
+    let assertion = OutboundSecret::new_unchecked(id_token.to_owned());
+    let result = client
+        .call_tool_with_assertion(&args.approve_tool, approve_args, &assertion)
+        .await
+        .and_then(ToolOutput::into_result)
+        .map_err(|error| mcp::map_client_error(&args.approve_tool, error))?;
 
     println!("{}", terminal::terminal_safe(&mcp::render_text(&result)));
     Ok(())

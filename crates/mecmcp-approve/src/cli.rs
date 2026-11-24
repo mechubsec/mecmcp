@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
+use mecmcp_client::BearerToken;
 use serde_json::{Map, Value};
 
 use crate::error::ApproveError;
@@ -121,11 +122,10 @@ pub struct Args {
     #[arg(long)]
     pub allow_cached_login: bool,
 
-    /// Allow `http://` (instead of `https://`) for `--server-url`,
-    /// `--oidc-issuer`, and every endpoint read from OIDC discovery, other
-    /// than loopback hosts (always allowed). Lab use only: every one of
-    /// those connections carries a bearer token, the approver assertion,
-    /// an authorization code, or a client secret.
+    /// Allow `http://` (instead of `https://`) for `--oidc-issuer` and
+    /// every endpoint read from OIDC discovery, other than loopback hosts
+    /// (always allowed). Lab use only. Does not apply to `--server-url`:
+    /// the MCP client is https-only.
     #[arg(long)]
     pub allow_insecure_http: bool,
 
@@ -171,7 +171,7 @@ pub fn args_to_json(pairs: &[(String, String)]) -> Map<String, Value> {
 
 /// Resolve the bearer token from exactly one of `--bearer-token-env` /
 /// `--bearer-token-file`, or fall back to the OIDC access token.
-pub fn resolve_static_bearer_token(args: &Args) -> Result<Option<String>, ApproveError> {
+pub fn resolve_static_bearer_token(args: &Args) -> Result<Option<BearerToken>, ApproveError> {
     match (&args.bearer_token_env, &args.bearer_token_file) {
         (Some(_), Some(_)) => Err(ApproveError::OidcConfig(
             "--bearer-token-env and --bearer-token-file are mutually exclusive".to_owned(),
@@ -179,13 +179,13 @@ pub fn resolve_static_bearer_token(args: &Args) -> Result<Option<String>, Approv
         (Some(var), None) => {
             let secret = mecmcp_secret::load_from_env(var, mecmcp_secret::SecretLimits::default())
                 .map_err(ApproveError::BearerToken)?;
-            Ok(Some(secret.expose().to_owned()))
+            Ok(Some(BearerToken::from_secret(secret)))
         }
         (None, Some(path)) => {
             let secret =
                 mecmcp_secret::load_from_file(path, mecmcp_secret::SecretLimits::default())
                     .map_err(ApproveError::BearerToken)?;
-            Ok(Some(secret.expose().to_owned()))
+            Ok(Some(BearerToken::from_secret(secret)))
         }
         (None, None) => Ok(None),
     }

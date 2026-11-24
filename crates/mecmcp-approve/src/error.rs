@@ -157,34 +157,29 @@ pub enum ApproveError {
     #[error("the --arg value {0:?} is not in KEY=VALUE form")]
     InvalidArg(String),
 
-    /// Sending the `tools/call` HTTP request failed.
+    /// The MCP client could not be configured or connected.
+    #[error("MCP client: {0}")]
+    McpClient(#[source] mecmcp_client::ClientError),
+
+    /// The `tools/call` request failed before a usable reply arrived
+    /// (connection, TLS, timeout, HTTP status or size limit).
     #[error("failed to send the {tool} tools/call request: {source}")]
     ToolCallSend {
         /// The tool name the call was for.
         tool: String,
-        /// The underlying HTTP error.
+        /// The underlying client error.
         #[source]
-        source: reqwest::Error,
+        source: mecmcp_client::ClientError,
     },
 
-    /// Reading the `tools/call` response body failed.
-    #[error("failed to read the {tool} tools/call response body: {source}")]
-    ToolCallBody {
-        /// The tool name the call was for.
-        tool: String,
-        /// The underlying HTTP error.
-        #[source]
-        source: reqwest::Error,
-    },
-
-    /// The `tools/call` response body was not valid JSON-RPC.
+    /// The `tools/call` response was not a valid MCP reply.
     #[error("the {tool} tools/call response was not a valid JSON-RPC response: {source}")]
     ToolCallDecode {
         /// The tool name the call was for.
         tool: String,
-        /// The underlying JSON decode error.
+        /// The underlying client error.
         #[source]
-        source: serde_json::Error,
+        source: mecmcp_client::ClientError,
     },
 
     /// The server returned a JSON-RPC error for the `tools/call` request.
@@ -194,23 +189,16 @@ pub enum ApproveError {
         tool: String,
         /// The JSON-RPC error code.
         code: i64,
-        /// The JSON-RPC error message.
+        /// The JSON-RPC error message, already escaped for the terminal.
         message: String,
     },
 
-    /// The `tools/call` response had neither a `result` nor an `error`.
-    #[error("the {tool} tools/call response had neither a result nor an error")]
-    ToolCallMissingResult {
-        /// The tool name the call was for.
-        tool: String,
-    },
-
-    /// The tool itself reported an error via `CallToolResult::is_error`.
+    /// The tool itself reported an error via `isError`.
     #[error("{tool} reported a tool-level error: {content}")]
     ToolCallToolError {
         /// The tool name the call was for.
         tool: String,
-        /// The tool result's rendered text content.
+        /// The tool result's text content, already escaped for the terminal.
         content: String,
     },
 }

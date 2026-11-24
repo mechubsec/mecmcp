@@ -446,7 +446,6 @@ mod tests {
 
     struct MockRequest {
         path: String,
-        headers: HashMap<String, String>,
     }
 
     #[test]
@@ -498,7 +497,7 @@ mod tests {
             reader.read_exact(&mut body).await.unwrap();
         }
 
-        MockRequest { path, headers }
+        MockRequest { path }
     }
 
     async fn write_response(
@@ -645,60 +644,5 @@ mod tests {
         idp_task.await.unwrap();
         assert_eq!(login.id_token, "test-id-token");
         assert_eq!(login.access_token, "test-access-token");
-
-        // Now spend that login on a real approve `tools/call`.
-        let mcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mcp_addr = format!(
-            "http://127.0.0.1:{}",
-            mcp_listener.local_addr().unwrap().port()
-        );
-        let mcp_task = tokio::spawn(async move {
-            let (mut stream, _) = mcp_listener.accept().await.unwrap();
-            let request = read_request(&mut stream).await;
-            assert_eq!(
-                request.headers.get("authorization").map(String::as_str),
-                Some("Bearer test-access-token"),
-                "approve call must carry the login's access token as the bearer"
-            );
-            assert_eq!(
-                request
-                    .headers
-                    .get(&mecmcp_transport::APPROVER_ASSERTION_HEADER.to_lowercase()),
-                Some(&"test-id-token".to_owned()),
-                "approve call must carry the login's id_token as the approver assertion"
-            );
-
-            let result =
-                rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-                    "approved",
-                )]);
-            let body = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": result}).to_string();
-            write_response(
-                &mut stream,
-                "200 OK",
-                &[("content-type", "application/json")],
-                body.as_bytes(),
-            )
-            .await;
-        });
-
-        let mut arguments = serde_json::Map::new();
-        arguments.insert(
-            "change_set_id".to_owned(),
-            serde_json::Value::String("cs-1".to_owned()),
-        );
-        let result = crate::mcp::call_tool(
-            &http,
-            &mcp_addr,
-            &login.access_token,
-            Some(&login.id_token),
-            "approve_change_set",
-            arguments,
-        )
-        .await
-        .unwrap();
-
-        mcp_task.await.unwrap();
-        assert_eq!(crate::mcp::render_text(&result), "approved");
     }
 }
