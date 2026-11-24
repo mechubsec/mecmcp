@@ -94,53 +94,6 @@ fn credentials(
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `run` must refuse a non-https `--server-url` before any login/discovery
-    /// request: the issuer here would fail with `Discovery` if it were reached.
-    #[tokio::test]
-    async fn http_server_url_is_refused_before_login() {
-        use clap::Parser;
-        let args = cli::Args::parse_from([
-            "mecmcp-approve",
-            "--server-url=http://127.0.0.1:1/mcp",
-            "--approve-tool=approve",
-            "--oidc-issuer=https://127.0.0.1:1",
-            "--oidc-client-id=cid",
-            "--allow-insecure-http",
-        ]);
-        let result = run(&args).await;
-        assert!(matches!(result, Err(ApproveError::ServerUrlNotHttps)));
-    }
-
-    fn login() -> oidc::LoginResult {
-        oidc::LoginResult {
-            id_token: "the-id-token".to_owned(),
-            access_token: "the-access-token".to_owned(),
-        }
-    }
-
-    fn static_token() -> BearerToken {
-        BearerToken::from_secret(OutboundSecret::new_unchecked("the-static-token".to_owned()))
-    }
-
-    #[test]
-    fn static_bearer_wins_and_assertion_is_the_id_token() {
-        let (bearer, assertion) = credentials(Some(static_token()), &login());
-        assert_eq!(bearer.expose(), "the-static-token");
-        assert_eq!(assertion.expose(), "the-id-token");
-    }
-
-    #[test]
-    fn without_a_static_bearer_the_access_token_is_the_bearer() {
-        let (bearer, assertion) = credentials(None, &login());
-        assert_eq!(bearer.expose(), "the-access-token");
-        assert_eq!(assertion.expose(), "the-id-token");
-    }
-}
-
 /// The client configuration for `--server-url`: system roots (no CA flag),
 /// `https` only -- `mecmcp-client` refuses `http` even to loopback, so
 /// `--allow-insecure-http` no longer applies to the MCP server itself.
@@ -217,4 +170,51 @@ async fn preview_and_approve(
 
     println!("{}", terminal::terminal_safe(&mcp::render_text(&result)));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `run` must refuse a non-https `--server-url` before any login/discovery
+    /// request: the issuer here would fail with `Discovery` if it were reached.
+    #[tokio::test]
+    async fn http_server_url_is_refused_before_login() {
+        use clap::Parser;
+        let args = cli::Args::parse_from([
+            "mecmcp-approve",
+            "--server-url=http://127.0.0.1:1/mcp",
+            "--approve-tool=approve",
+            "--oidc-issuer=https://127.0.0.1:1",
+            "--oidc-client-id=cid",
+            "--allow-insecure-http",
+        ]);
+        let result = run(&args).await;
+        assert!(matches!(result, Err(ApproveError::ServerUrlNotHttps)));
+    }
+
+    fn login() -> oidc::LoginResult {
+        oidc::LoginResult {
+            id_token: "the-id-token".to_owned(),
+            access_token: "the-access-token".to_owned(),
+        }
+    }
+
+    fn static_token() -> BearerToken {
+        BearerToken::from_secret(OutboundSecret::new_unchecked("the-static-token".to_owned()))
+    }
+
+    #[test]
+    fn static_bearer_wins_and_assertion_is_the_id_token() {
+        let (bearer, assertion) = credentials(Some(static_token()), &login());
+        assert_eq!(bearer.expose(), "the-static-token");
+        assert_eq!(assertion.expose(), "the-id-token");
+    }
+
+    #[test]
+    fn without_a_static_bearer_the_access_token_is_the_bearer() {
+        let (bearer, assertion) = credentials(None, &login());
+        assert_eq!(bearer.expose(), "the-access-token");
+        assert_eq!(assertion.expose(), "the-id-token");
+    }
 }
