@@ -5,6 +5,8 @@
 
 mod config;
 mod error;
+#[allow(dead_code, reason = "wired up by McpClient in the next commit")]
+mod http;
 mod token;
 mod untrusted;
 

@@ -17,8 +17,8 @@ pub enum ClientError {
     #[error("bearer token: {0}")]
     Token(String),
     /// TLS setup or handshake failed.
-    #[error("TLS failure")]
-    Tls,
+    #[error("TLS: {0}")]
+    Tls(String),
     /// The connection could not be established.
     #[error("connection failed")]
     Connect,
