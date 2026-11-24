@@ -1,0 +1,22 @@
+[package]
+name        = "mecmcp-client"
+description = "Shared streamable-HTTP MCP client for mechub tooling: hardened bearer-token loading, bounded responses, and terminal-safe rendering of untrusted server text."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Deliberately no mecmcp-transport / mecmcp-http: a client has no business
+# linking the server-side device transport or concurrency queue.
+mecmcp-secret = { version = "0.34.0", path = "../mecmcp-secret" }
+thiserror     = { workspace = true }
+url           = "2"
+
+[dev-dependencies]
+tempfile = { workspace = true }

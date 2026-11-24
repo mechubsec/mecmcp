@@ -1984,6 +1984,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mecmcp-client"
+version = "0.34.0"
+dependencies = [
+ "mecmcp-secret",
+ "tempfile",
+ "thiserror 2.0.21",
+ "url",
+]
+
+[[package]]
 name = "mecmcp-device"
 version = "0.34.0"
 dependencies = [
