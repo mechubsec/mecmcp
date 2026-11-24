@@ -173,7 +173,11 @@ async fn response_over_cap_is_rejected_while_streaming() {
         matches!(error, ClientError::ResponseTooLarge { limit: 1_048_576 }),
         "got {error:?}"
     );
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // The server must actually observe the close (a failed write), not merely
+    // stall on a full socket buffer.
+    tokio::time::timeout(Duration::from_secs(5), stub.flood_write_failed.notified())
+        .await
+        .expect("the server never saw the client close the connection");
     // 1 MiB cap: the server must have been cut off close to it, not at rmcp's default.
     let written = stub.flooded.load(Ordering::Relaxed);
     assert!(
@@ -340,15 +344,19 @@ async fn assertion_header_only_on_the_assertion_call() {
 
 #[tokio::test]
 async fn concurrent_plain_call_never_gets_the_assertion() {
-    let handler: support::Handler = Arc::new(|request: &Seen| {
-        // Hold the assertion call open so plain calls overlap it.
-        if request.rpc_method() == "tools/call"
-            && request.body["params"]["arguments"]["who"] == "assert"
-        {
-            return Reply::Delayed(
-                Duration::from_millis(300),
-                Box::new(Reply::Json(result_for(request, echo_result("a")))),
-            );
+    let plain_seen = Arc::new(tokio::sync::Notify::new());
+    let gate = plain_seen.clone();
+    let handler: support::Handler = Arc::new(move |request: &Seen| {
+        if request.rpc_method() == "tools/call" {
+            // Hold the assertion call open until a plain call has reached the
+            // stub, so the two provably overlap.
+            if request.body["params"]["arguments"]["who"] == "assert" {
+                return Reply::Gated(
+                    gate.clone(),
+                    Box::new(Reply::Json(result_for(request, echo_result("a")))),
+                );
+            }
+            gate.notify_one();
         }
         modern_handler(false)(request)
     });
@@ -368,7 +376,18 @@ async fn concurrent_plain_call_never_gets_the_assertion() {
                 .unwrap();
         })
     };
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Start the plain calls only once the asserted request is in flight.
+    for _ in 0..500 {
+        if !stub.calls().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        stub.calls().len(),
+        1,
+        "asserted call never reached the stub"
+    );
     let mut plain = Vec::new();
     for _ in 0..8 {
         let client = client.clone();

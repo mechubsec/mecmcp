@@ -44,6 +44,8 @@ pub enum Reply {
     Flood {
         chunks: usize,
     },
+    /// Hold the reply until the gate is notified (bounded at 5s), then send it.
+    Gated(Arc<tokio::sync::Notify>, Box<Reply>),
 }
 
 pub type Handler = Arc<dyn Fn(&Seen) -> Reply + Send + Sync>;
@@ -53,6 +55,9 @@ pub struct Stub {
     pub seen: Arc<Mutex<Vec<Seen>>>,
     /// Bytes the stub managed to write during `Reply::Flood`.
     pub flooded: Arc<AtomicUsize>,
+    /// Notified (one stored permit) when a write during `Reply::Flood` fails,
+    /// i.e. the server actually observed the client closing the connection.
+    pub flood_write_failed: Arc<tokio::sync::Notify>,
     pub cert_pem: String,
 }
 
@@ -118,24 +123,27 @@ pub async fn spawn_with(
     let port = listener.local_addr().unwrap().port();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let flooded = Arc::new(AtomicUsize::new(0));
+    let flood_write_failed = Arc::new(tokio::sync::Notify::new());
     let acceptor = tokio_rustls::TlsAcceptor::from(server_config);
-    let (seen_task, flooded_task) = (seen.clone(), flooded.clone());
+    let (seen_task, flooded_task, failed_task) =
+        (seen.clone(), flooded.clone(), flood_write_failed.clone());
     tokio::spawn(async move {
         loop {
             let Ok((socket, _)) = listener.accept().await else {
                 return;
             };
-            let (acceptor, handler, seen, flooded) = (
+            let (acceptor, handler, seen, flooded, failed) = (
                 acceptor.clone(),
                 handler.clone(),
                 seen_task.clone(),
                 flooded_task.clone(),
+                failed_task.clone(),
             );
             tokio::spawn(async move {
                 let Ok(mut tls) = acceptor.accept(socket).await else {
                     return;
                 };
-                serve_one(&mut tls, handler, seen, flooded).await;
+                serve_one(&mut tls, handler, seen, flooded, failed).await;
             });
         }
     });
@@ -143,6 +151,7 @@ pub async fn spawn_with(
         port,
         seen,
         flooded,
+        flood_write_failed,
         cert_pem,
     }
 }
@@ -152,6 +161,7 @@ async fn serve_one<S: AsyncReadExt + AsyncWriteExt + Unpin>(
     handler: Handler,
     seen: Arc<Mutex<Vec<Seen>>>,
     flooded: Arc<AtomicUsize>,
+    write_failed: Arc<tokio::sync::Notify>,
 ) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
@@ -201,12 +211,21 @@ async fn serve_one<S: AsyncReadExt + AsyncWriteExt + Unpin>(
     };
     seen.lock().unwrap().push(request.clone());
     let reply = handler(&request);
-    write_reply(tls, reply, &flooded).await;
+    write_reply(tls, reply, &flooded, &write_failed).await;
     let _ = tls.shutdown().await;
 }
 
-async fn write_reply<S: AsyncWriteExt + Unpin>(tls: &mut S, reply: Reply, flooded: &AtomicUsize) {
+async fn write_reply<S: AsyncWriteExt + Unpin>(
+    tls: &mut S,
+    reply: Reply,
+    flooded: &AtomicUsize,
+    write_failed: &tokio::sync::Notify,
+) {
     let reply = match reply {
+        Reply::Gated(gate, inner) => {
+            let _ = tokio::time::timeout(Duration::from_secs(5), gate.notified()).await;
+            *inner
+        }
         Reply::Delayed(delay, inner) => {
             tokio::time::sleep(delay).await;
             *inner
@@ -243,6 +262,7 @@ async fn write_reply<S: AsyncWriteExt + Unpin>(tls: &mut S, reply: Reply, floode
             let framed = format!("{:x}\r\n{payload}\r\n", payload.len());
             for _ in 0..chunks {
                 if tls.write_all(framed.as_bytes()).await.is_err() || tls.flush().await.is_err() {
+                    write_failed.notify_one();
                     return;
                 }
                 flooded.fetch_add(payload.len(), Ordering::Relaxed);
@@ -250,7 +270,7 @@ async fn write_reply<S: AsyncWriteExt + Unpin>(tls: &mut S, reply: Reply, floode
             }
             return;
         }
-        Reply::Delayed(..) => return,
+        Reply::Delayed(..) | Reply::Gated(..) => return,
     };
     let _ = tls.write_all(&raw).await;
 }
