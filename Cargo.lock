@@ -1996,6 +1996,7 @@ dependencies = [
  "reqwest",
  "rmcp",
  "rustls",
+ "serde",
  "serde_json",
  "sse-stream",
  "tempfile",

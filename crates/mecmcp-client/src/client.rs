@@ -1,21 +1,23 @@
 //! `McpClient`: connect, call tools, close.
 
+use std::collections::HashSet;
 use std::error::Error as StdError;
 
 use mecmcp_secret::OutboundSecret;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ClientCapabilities, ContentBlock, Implementation,
-    MetaObject, ProtocolVersion, RequestMetaObject,
+    ListToolsResult, MetaObject, PaginatedRequestParams, ProtocolVersion, RequestMetaObject, Tool,
 };
 use rmcp::service::{ClientInitializeError, ClientLifecycleMode, ClientServiceExt, RunningService};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransportConfig, StreamableHttpError,
 };
-use rmcp::{ClientHandler, RoleClient, ServiceError};
+use rmcp::{ClientCacheConfig, ClientHandler, RoleClient, ServiceError};
+use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
-use crate::http::{AssertionClient, CALL_SLOT_KEY, build_reqwest_client};
+use crate::http::{AssertionClient, CALL_SLOT_KEY, SlotGuard, build_reqwest_client};
 use crate::{ClientConfig, ClientError, ProtocolMode, UntrustedText};
 
 /// The result of a tool call.
@@ -130,6 +132,12 @@ impl McpClient {
             Ok(Err(error)) => return Err(map_initialize(&error)),
             Ok(Ok(service)) => service,
         };
+        // rmcp would otherwise answer a repeat `tools/list` from its own cache
+        // (and serve a stale page on error); this client never caches.
+        service
+            .peer()
+            .set_response_cache_config(ClientCacheConfig::disabled())
+            .await;
         Ok(Self {
             service,
             http,
@@ -168,6 +176,54 @@ impl McpClient {
         self.call(name, args, Some(assertion)).await
     }
 
+    /// List every tool, following `nextCursor` one page per request.
+    ///
+    /// Each page has its own `request_timeout`. Nothing is cached; the
+    /// `ttlMs`/`cacheScope` fields of a 2026-07-28 reply are parsed and ignored.
+    ///
+    /// # Errors
+    /// [`ClientError::Protocol`] when the server repeats a cursor or still has a
+    /// next page after `max_tool_pages` pages; otherwise as
+    /// [`call_tool`](Self::call_tool).
+    pub async fn list_tools(&self) -> Result<Vec<Tool>, ClientError> {
+        let mut tools = Vec::new();
+        let mut seen_cursors = HashSet::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..self.config.max_tool_pages {
+            let page = self.list_tools_page(cursor.take()).await?;
+            tools.extend(page.tools);
+            let Some(next) = page.next_cursor else {
+                return Ok(tools);
+            };
+            if !seen_cursors.insert(next.clone()) {
+                return Err(ClientError::Protocol(
+                    "tools/list repeated a cursor".to_owned(),
+                ));
+            }
+            cursor = Some(next);
+        }
+        Err(ClientError::Protocol(format!(
+            "tools/list cursor loop exceeded {} pages",
+            self.config.max_tool_pages
+        )))
+    }
+
+    /// [`call_tool`](Self::call_tool), then decode `structuredContent` as `T`.
+    ///
+    /// # Errors
+    /// [`ClientError::Tool`] for an `isError` result, [`ClientError::Decode`]
+    /// when `structuredContent` is absent or does not fit `T`, otherwise as
+    /// [`call_tool`](Self::call_tool).
+    pub async fn call_tool_as<T: DeserializeOwned>(
+        &self,
+        name: &str,
+        args: Map<String, Value>,
+    ) -> Result<T, ClientError> {
+        let output = self.call_tool(name, args).await?.into_result()?;
+        let structured = output.structured.ok_or(ClientError::Decode)?;
+        serde_json::from_value(structured).map_err(|_| ClientError::Decode)
+    }
+
     /// Close the session (sends `DELETE` for a legacy session).
     pub async fn close(self) {
         let _ = self.service.cancel().await;
@@ -181,14 +237,9 @@ impl McpClient {
     ) -> Result<ToolOutput, ClientError> {
         let operation = format!("tools/call {name}");
         let slot = self.http.register(assertion)?;
-        let mut meta = MetaObject::new();
-        meta.0.insert(
-            CALL_SLOT_KEY.to_owned(),
-            Value::String(slot.id().to_owned()),
-        );
         let mut params = CallToolRequestParams::new(name.to_owned());
         params.arguments = Some(args);
-        params.meta = Some(RequestMetaObject(meta));
+        params.meta = Some(slot_meta(&slot));
         let pending = self.service.call_tool_once(params);
         let outcome = match tokio::time::timeout(self.config.request_timeout, pending).await {
             Err(_) => return Err(ClientError::Timeout { operation }),
@@ -207,6 +258,39 @@ impl McpClient {
             )),
         }
     }
+
+    async fn list_tools_page(
+        &self,
+        cursor: Option<String>,
+    ) -> Result<ListToolsResult, ClientError> {
+        let operation = "tools/list".to_owned();
+        let slot = self.http.register(None)?;
+        let mut params = PaginatedRequestParams::default().with_cursor(cursor);
+        params.meta = Some(slot_meta(&slot));
+        let pending = self.service.list_tools(Some(params));
+        let outcome = match tokio::time::timeout(self.config.request_timeout, pending).await {
+            Err(_) => return Err(ClientError::Timeout { operation }),
+            Ok(outcome) => outcome,
+        };
+        outcome.map_err(|error| {
+            map_service(
+                &error,
+                &operation,
+                self.config.max_response_bytes,
+                slot.saw_oversize(),
+            )
+        })
+    }
+}
+
+/// `_meta` carrying the per-request slot id the HTTP wrapper looks up.
+fn slot_meta(slot: &SlotGuard) -> RequestMetaObject {
+    let mut meta = MetaObject::new();
+    meta.0.insert(
+        CALL_SLOT_KEY.to_owned(),
+        Value::String(slot.id().to_owned()),
+    );
+    RequestMetaObject(meta)
 }
 
 fn tool_output(result: rmcp::model::CallToolResult) -> ToolOutput {
