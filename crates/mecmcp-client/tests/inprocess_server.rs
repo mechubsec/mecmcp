@@ -333,7 +333,7 @@ async fn assertion_header_only_on_the_assertion_call() {
     assert!(calls[1].header("mecmcp-approver-assertion").is_none());
     let wire = serde_json::to_string(&calls[0].body).unwrap();
     assert!(
-        !wire.contains("assertion-slot"),
+        !wire.contains("call-slot"),
         "slot marker leaked onto the wire: {wire}"
     );
 }
@@ -516,5 +516,19 @@ async fn concurrent_oversize_and_rpc_error_keep_their_own_errors() {
     assert!(
         matches!(boom, Err(ClientError::Rpc { code: -32000, .. })),
         "{boom:?}"
+    );
+}
+
+#[tokio::test]
+async fn certificate_outside_ca_pem_is_refused_before_any_request() {
+    let stub = spawn(modern_handler(false)).await;
+    // A different, equally valid self-signed cert: `ca_pem` replaces the root
+    // store, so the stub's own cert (A) is untrusted.
+    let (other_cert_pem, _) = support::tls_material();
+    let result = McpClient::connect(config_for(&stub.url(), &other_cert_pem)).await;
+    assert!(result.is_err(), "connected to an untrusted server");
+    assert!(
+        stub.requests().is_empty(),
+        "an HTTP request reached the untrusted server"
     );
 }

@@ -92,6 +92,9 @@ impl McpClient {
             StreamableHttpClientTransportConfig::with_uri(config.url.as_str().to_owned());
         transport_config.auth_header = Some(config.token.expose().to_owned());
         transport_config.max_sse_event_size = config.max_response_bytes;
+        // An expired session is an error, never a silent re-`initialize` that
+        // replays a tools/call (an approval) under a new session.
+        transport_config.reinit_on_expired_session = false;
         let transport = StreamableHttpClientTransport::with_client(http.clone(), transport_config);
 
         let modern = vec![ProtocolVersion::V_2026_07_28];

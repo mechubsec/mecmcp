@@ -62,7 +62,7 @@ async fn follows_cursors_to_the_end() {
     assert!(
         lists
             .iter()
-            .all(|r| !r.body.to_string().contains("assertion-slot"))
+            .all(|r| !r.body.to_string().contains("call-slot"))
     );
 }
 

@@ -55,14 +55,7 @@ impl ClientConfig {
     /// userinfo or a fragment.
     pub fn new(url: &str, token: BearerToken) -> Result<Self, ClientError> {
         let url = Url::parse(url).map_err(|_| ClientError::Config { field: "url" })?;
-        if url.scheme() != "https"
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.fragment().is_some()
-        {
-            return Err(ClientError::Config { field: "url" });
-        }
-        Ok(Self {
+        let config = Self {
             url,
             token,
             ca_pem: Vec::new(),
@@ -73,16 +66,26 @@ impl ClientConfig {
             protocol: ProtocolMode::Auto,
             client_name: "mecmcp-client".to_owned(),
             client_version: env!("CARGO_PKG_VERSION").to_owned(),
-        })
+        };
+        config.validate()?;
+        Ok(config)
     }
 
-    /// Reject zero timeouts/pages and an out-of-range response cap. Call after
-    /// editing public fields, before connecting.
+    /// Reject a url that is not plain `https` (userinfo, fragment), zero
+    /// timeouts/pages and an out-of-range response cap. [`crate::McpClient::connect`]
+    /// calls this; call it yourself after editing public fields.
     ///
     /// # Errors
     /// [`ClientError::Config`] naming the first bad field.
     pub fn validate(&self) -> Result<(), ClientError> {
         let bad = |field| Err(ClientError::Config { field });
+        if self.url.scheme() != "https"
+            || !self.url.username().is_empty()
+            || self.url.password().is_some()
+            || self.url.fragment().is_some()
+        {
+            return bad("url");
+        }
         if self.connect_timeout.is_zero() {
             return bad("connect_timeout");
         }
@@ -122,6 +125,22 @@ mod tests {
     fn rejects_userinfo_in_url() {
         assert!(ClientConfig::new("https://user:pw@mcp.example/mcp", token()).is_err());
         assert!(ClientConfig::new("https://user@mcp.example/mcp", token()).is_err());
+    }
+
+    #[test]
+    fn validate_rechecks_a_url_edited_after_construction() {
+        for edited in [
+            "http://mcp.example/mcp",
+            "https://u:p@mcp.example/",
+            "https://mcp.example/#f",
+        ] {
+            let mut cfg = config();
+            cfg.url = Url::parse(edited).unwrap();
+            assert!(matches!(
+                cfg.validate(),
+                Err(ClientError::Config { field: "url" })
+            ));
+        }
     }
 
     #[test]

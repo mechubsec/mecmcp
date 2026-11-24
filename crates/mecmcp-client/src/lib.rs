@@ -1,7 +1,10 @@
 //! Shared streamable-HTTP MCP client for mechub tooling.
 //!
-//! This crate holds the configuration, credential and error types; the
-//! transport lands on top of them.
+//! [`McpClient`] speaks MCP over HTTPS only (no redirects, no proxy, no
+//! skip-verify), stateless 2026-07-28 with a legacy-session fallback, with
+//! bounded responses and per-call timeouts. Bearer tokens and the per-call
+//! approver assertion are held in redacted secret types, and server text is
+//! returned as [`UntrustedText`] so it cannot reach a terminal unescaped.
 
 mod client;
 mod config;

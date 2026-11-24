@@ -22,8 +22,9 @@ use crate::{ClientConfig, ClientError};
 pub const APPROVER_ASSERTION_HEADER: &str = "Mecmcp-Approver-Assertion";
 
 /// Private `_meta` key naming the per-call slot a `tools/call` owns. It selects
-/// a slot in [`AssertionClient`] and is stripped before the request is sent.
-pub(crate) const CALL_SLOT_KEY: &str = "mecmcp-client/assertion-slot";
+/// a slot in [`AssertionClient`] (assertion header and oversize flag) and is
+/// stripped before the request is sent.
+pub(crate) const CALL_SLOT_KEY: &str = "mecmcp-client/call-slot";
 
 /// Build the HTTP client: https only, no redirects, no proxy, HTTP/1.1; a
 /// non-empty `ca_pem` replaces the root store (mirrors `mecmcp-http`).
@@ -168,7 +169,7 @@ impl AssertionClient {
 
     /// Strip the slot marker from `message`, add that slot's header, and return
     /// the slot's oversize flag. A message without a marker passes untouched.
-    #[allow(clippy::type_complexity)] // (message, flag) pair, used twice
+    #[allow(clippy::type_complexity)] // (rebuilt message, the slot's oversize flag); both POST paths destructure it
     fn apply_slot(
         &self,
         message: ClientJsonRpcMessage,
