@@ -17,13 +17,7 @@ workspace = true
 
 [dependencies]
 mecmcp-secret = { version = "0.34.0", path = "../mecmcp-secret" }
-mecmcp-transport = { version = "0.34.0", path = "../mecmcp-transport" }
-# Minimal: only `rmcp::model`'s typed `CallToolRequestParams`/`CallToolResult`,
-# so the approve call's request/response shapes stay identical to what a real
-# MCP server returns instead of a hand-rolled JSON guess. No transport or
-# server feature -- this binary speaks streamable HTTP itself over `reqwest`
-# (below), matching mecmcp-server's own `default-features = false` rationale.
-rmcp       = { version = "3", default-features = false }
+mecmcp-client = { version = "0.34.0", path = "../mecmcp-client" }
 # De facto standard OAuth2/OIDC client crate (also what rmcp's own client-side
 # "auth" feature is built on) -- chosen over hand-rolling PKCE and the device
 # flow per the dependency-surface-is-attack-surface lens: PKCE code-verifier
@@ -34,8 +28,8 @@ oauth2     = { version = "5", default-features = false }
 # Same client/TLS posture as mecmcp-http (D4): rustls with an explicitly
 # installed `aws-lc-rs` CryptoProvider, HTTP/1.1 only, no native-tls. Pulled
 # directly (not through mecmcp-http) because this binary needs the raw
-# `reqwest::Client` oauth2's `AsyncHttpClient` impl and the MCP tools/call POST
-# both expect, not mecmcp-http's path-templated vendor-REST abstraction, which
+# `reqwest::Client` oauth2's `AsyncHttpClient` impl expects (the MCP calls go
+# through mecmcp-client), not mecmcp-http's path-templated vendor-REST abstraction, which
 # existed to keep device-supplied strings out of request paths -- not a
 # concern here, since every URL this binary calls is operator-supplied at
 # startup, never data from an untrusted device or model.
@@ -63,3 +57,8 @@ uuid       = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Const-equality pin only (Decision 5): mecmcp-client does not depend on transport.
+mecmcp-transport = { version = "0.34.0", path = "../mecmcp-transport" }
+# tests/client_adoption.rs reuses mecmcp-client's raw TLS stub.
+rcgen        = "0.14"
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }

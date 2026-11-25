@@ -1,14 +1,28 @@
-//! HTTPS enforcement for every URL this CLI dereferences: `--server-url`,
-//! `--oidc-issuer`, and every endpoint read back out of OIDC discovery.
-//! Bearer tokens, the approver assertion, the authorization code, and any
-//! OIDC client secret all travel over these connections, so plain `http`
-//! would send them in cleartext. Loopback hosts are the one exception --
-//! required for local IdPs and this crate's own tests -- and
-//! `--allow-insecure-http` is the explicit, named escape hatch for lab use.
+//! HTTPS enforcement for the URLs this CLI dereferences. `--oidc-issuer` and
+//! every endpoint read back out of OIDC discovery go through
+//! [`require_secure`]: loopback `http` is allowed (local IdPs, this crate's
+//! tests) and `--allow-insecure-http` is the named lab escape hatch.
+//! `--server-url` carries the bearer token and the approver assertion and has
+//! no exception at all ([`require_https_server_url`]): `mecmcp-client` is
+//! https-only, so it is refused up front, before the interactive login.
 
 use crate::error::ApproveError;
 
 const LOOPBACK_HOSTS: [&str; 3] = ["127.0.0.1", "::1", "localhost"];
+
+/// Require `--server-url` to be `https` with no userinfo or fragment, the
+/// same rule `mecmcp-client` enforces, so a bad value fails before login.
+pub(crate) fn require_https_server_url(url: &str) -> Result<(), ApproveError> {
+    let parsed = url::Url::parse(url).map_err(|_source| ApproveError::ServerUrlNotHttps)?;
+    if parsed.scheme() == "https"
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.fragment().is_none()
+    {
+        return Ok(());
+    }
+    Err(ApproveError::ServerUrlNotHttps)
+}
 
 /// Require `url` to be `https`, or `http` to a loopback host, unless
 /// `allow_insecure` opts out.
@@ -43,6 +57,26 @@ pub(crate) fn require_secure(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_url_must_be_plain_https() {
+        assert!(require_https_server_url("https://mcp.example/mcp").is_ok());
+        for bad in [
+            "http://127.0.0.1:1/mcp",
+            "http://mcp.example/mcp",
+            "https://u:p@mcp.example/mcp",
+            "https://mcp.example/mcp#f",
+            "not a url",
+        ] {
+            assert!(
+                matches!(
+                    require_https_server_url(bad),
+                    Err(ApproveError::ServerUrlNotHttps)
+                ),
+                "{bad}"
+            );
+        }
+    }
 
     #[test]
     fn accepts_https() {
