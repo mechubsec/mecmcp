@@ -14,7 +14,7 @@ workspace = true
 [dependencies]
 # Deliberately no mecmcp-transport / mecmcp-http: a client has no business
 # linking the server-side device transport or concurrency queue.
-mecmcp-secret = { version = "0.34.0", path = "../mecmcp-secret" }
+mecmcp-secret = { version = "0.35.0", path = "../mecmcp-secret" }
 thiserror     = { workspace = true }
 url           = "2"
 # rmcp's own `reqwest` feature is deliberately off: it enables reqwest/rustls and
@@ -32,8 +32,8 @@ tokio      = { version = "1", features = ["time", "sync"] }
 [dev-dependencies]
 tempfile         = { workspace = true }
 # test-util only here: the real-server tests, never a normal dependency.
-mecmcp-transport = { version = "0.34.0", path = "../mecmcp-transport", features = ["test-util"] }
-mecmcp-auth      = { version = "0.34.0", path = "../mecmcp-auth" }
+mecmcp-transport = { version = "0.35.0", path = "../mecmcp-transport", features = ["test-util"] }
+mecmcp-auth      = { version = "0.35.0", path = "../mecmcp-auth" }
 rmcp             = { version = "3", default-features = false, features = ["server"] }
 tokio-util       = { workspace = true }
 rcgen            = "0.14"

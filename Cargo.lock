@@ -1879,7 +1879,7 @@ checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 
 [[package]]
 name = "mecmcp-approve"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1906,7 +1906,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-audit"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1940,7 +1940,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-auth"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "arc-swap",
  "chrono",
@@ -1958,7 +1958,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-changeset"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1987,7 +1987,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-client"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "futures",
  "http",
@@ -2011,7 +2011,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-device"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "async-trait",
  "rustix",
@@ -2027,7 +2027,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-http"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "mecmcp-openapi",
  "mecmcp-secret",
@@ -2045,7 +2045,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-inventory"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "mecmcp-auth",
  "mecmcp-secret",
@@ -2059,7 +2059,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-job"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "mecmcp-device",
  "thiserror 2.0.21",
@@ -2069,7 +2069,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-oidc"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -2087,14 +2087,14 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-openapi"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "mecmcp-policy"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "globset",
  "quick-xml",
@@ -2104,7 +2104,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-redact"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "clap",
  "hmac",
@@ -2119,7 +2119,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-runtime"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2139,7 +2139,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-scp"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -2158,7 +2158,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-secret"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "rustix",
  "tempfile",
@@ -2168,7 +2168,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-server"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "chrono",
  "http",
@@ -2187,7 +2187,7 @@ dependencies = [
 
 [[package]]
 name = "mecmcp-transport"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
