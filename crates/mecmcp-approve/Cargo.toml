@@ -16,8 +16,8 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-mecmcp-secret = { version = "0.34.0", path = "../mecmcp-secret" }
-mecmcp-client = { version = "0.34.0", path = "../mecmcp-client" }
+mecmcp-secret = { version = "0.35.0", path = "../mecmcp-secret" }
+mecmcp-client = { version = "0.35.0", path = "../mecmcp-client" }
 # De facto standard OAuth2/OIDC client crate (also what rmcp's own client-side
 # "auth" feature is built on) -- chosen over hand-rolling PKCE and the device
 # flow per the dependency-surface-is-attack-surface lens: PKCE code-verifier
@@ -58,7 +58,7 @@ uuid       = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 # Const-equality pin only (Decision 5): mecmcp-client does not depend on transport.
-mecmcp-transport = { version = "0.34.0", path = "../mecmcp-transport" }
+mecmcp-transport = { version = "0.35.0", path = "../mecmcp-transport" }
 # tests/client_adoption.rs reuses mecmcp-client's raw TLS stub.
 rcgen        = "0.14"
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }

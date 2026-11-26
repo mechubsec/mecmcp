@@ -27,6 +27,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > Entries from 0.21.0 onward should be written by hand at release time.
 
+## [0.35.0] - 2026-11-26
+
+### Security
+
+- **deps**: url 2.5.9 for RUSTSEC-2026-0592 (stack overflow in
+  `Url::origin()`) and cookie 0.18.3 for RUSTSEC-2026-0594 (private-cookie
+  nonce reuse after fork), with form_urlencoded 1.2.3 pulled along by url
+  (#639). Lockfile only, in both `Cargo.lock` and `fuzz/Cargo.lock`.
+
+### Added
+
+- **mecmcp-client**: a shared, hardened streamable-HTTP MCP client (#638,
+  Part A of #637). `ClientConfig` accepts https only (no userinfo or
+  fragment), with no redirects, no proxy, and a non-empty `ca_pem` replacing
+  the root store. `BearerToken` is built on `mecmcp-secret`, and reply text
+  comes back as `UntrustedText`. `McpClient` offers `connect`, `call_tool`,
+  `call_tool_as`, `list_tools`, `call_tool_with_assertion` and `close`. The
+  `Mecmcp-Approver-Assertion` header goes on that one call only, never on the
+  handshake, and an expired session is never re-initialised, so an approval
+  is never replayed. Replies are capped per call, `tools/list` has a
+  cumulative budget and a bounded cursor loop, and every call has a timeout.
+  It connects with the 2026-07-28 stateless wire form (protocol, method and
+  name headers, the three `_meta` keys, no session id).
+
+### Changed
+
+- **mecmcp-approve**: now runs on `mecmcp-client`, one client per run; the
+  private `tools/call` POST is gone (#638). **Breaking** for operators:
+  `--server-url` is https-only. It used to allow http on loopback or with
+  `--allow-insecure-http`, which now applies only to the OIDC issuer. The URL
+  is checked before login. The tail of the `ToolCallDecode` message is fixed
+  text, and `ToolCallBody` and `ToolCallMissingResult` are removed.
+
+### Known limits
+
+- **mecmcp-client**: plain-JSON bodies are bounded by rmcp's fixed 16 MiB, not
+  by `max_response_bytes`, so that setting is capped at 16 MiB. The
+  verified-approver assertion path is tested against stubs only.
+
 ## [0.34.0] - 2026-11-21
 
 ### Security
